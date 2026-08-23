@@ -1,0 +1,48 @@
+{
+  "artifactVersion": 1,
+  "projectId": "project-uncountable-zero-length",
+  "schemaVersion": 1,
+  "compilerDeterministic": true,
+  "pythonAstParsed": true,
+  "durationSeconds": 28,
+  "requiredAiCommandsExercised": 5,
+  "diagnostics": [],
+  "files": {
+    "uncountable-yet-zero-length.proofcanvas.json": {
+      "bytes": 30543,
+      "sha256": "7215837ae02639364c67f48eaf9d76ca0fc7fe7ea13ac86be83b4be6ea0995f9"
+    },
+    "uncountable-yet-zero-length.py": {
+      "bytes": 16773,
+      "sha256": "064df3d9548836ee681508e2b894277923b69c4eb6308e5697341693e3b50db6"
+    },
+    "ai-command-results.json": {
+      "bytes": 14241,
+      "sha256": "faabae153919d01f7911a671aabcd5f6627522110ccf0f87fc3fa26c3c1accb4"
+    },
+    "uncountable-yet-zero-length.mp4": {
+      "bytes": 473780,
+      "sha256": "638041f76b602646fdc1b81116c02c0d0b77d32204c77c7e99172fd015d3b8e9"
+    },
+    "render-metadata.json": {
+      "bytes": 524,
+      "sha256": "92b4552c9ae9574b7c7122469ce40b40c1513831dd153746109ba9de22c496aa"
+    },
+    "evidence/browser-summary.json": {
+      "bytes": 1032,
+      "sha256": "77f92d662118c9edb79b175d7a638c5ae1b2aafe39f1d188c594120c6d8097ba"
+    },
+    "evidence/proofcanvas-editorial-1440x900.png": {
+      "bytes": 149882,
+      "sha256": "654ab354edcec886bcb8f5ada568fe3b7d0b6946da79c3d7ef174bee0823885c"
+    },
+    "evidence/proofcanvas-editorial-1280x800.png": {
+      "bytes": 131016,
+      "sha256": "b84e06d35d034d6efec9334af2400bb390ff9c05cc7e340aa92e5a5f11038031"
+    },
+    "render-evidence/proofcanvas-manim-frame-12s.png": {
+      "bytes": 54281,
+      "sha256": "68e874490083b26e8c6581ab97f74e5524e94be3726465bd2e9f5f275d370ffb"
+    }
+  }
+}

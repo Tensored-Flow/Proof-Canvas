@@ -1,0 +1,53 @@
+{
+  "name": "proof-canvas",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A structured, style-first editor for mathematical animation and deterministic Manim export.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Tensored-Flow/Proof-Canvas.git"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "scripts": {
+    "dev": "next dev --hostname 127.0.0.1",
+    "build": "next build --webpack",
+    "start": "next start --hostname 127.0.0.1",
+    "test": "jest --runInBand",
+    "test:unit": "jest --runInBand",
+    "test:e2e": "bash scripts/proofcanvas/run-e2e-docker.sh && npm run artifacts",
+    "test:renderer": "docker build --target proofcanvas-render-test -t proofcanvas-render:test services/proofcanvas-render && docker run --rm --init proofcanvas-render:test /opt/venv/bin/python -m pytest -q /app/tests && docker build -t proofcanvas-render:local services/proofcanvas-render",
+    "typecheck": "tsc --noEmit",
+    "artifacts": "tsx scripts/proofcanvas/generate-artifacts.ts",
+    "artifacts:prepare-render": "tsx scripts/proofcanvas/generate-artifacts.ts --prepare-render",
+    "artifacts:verify": "tsx scripts/proofcanvas/verify-artifacts.ts",
+    "render": "npm run artifacts:prepare-render && bash scripts/proofcanvas/render-example.sh && npm run artifacts"
+  },
+  "dependencies": {
+    "geist": "^1.7.0",
+    "katex": "^0.18.4",
+    "next": "^16.1.5",
+    "openai": "^7.5.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "server-only": "^0.0.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
+    "@playwright/test": "1.62.1",
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/jest-dom": "^6.4.2",
+    "@testing-library/react": "^16.3.0",
+    "@types/jest": "^30.0.0",
+    "@types/katex": "^0.16.8",
+    "@types/node": "^20.19.30",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "jest": "^29.7.0",
+    "jest-environment-jsdom": "^29.7.0",
+    "tsx": "^4.23.12",
+    "typescript": "^5.9.3"
+  }
+}

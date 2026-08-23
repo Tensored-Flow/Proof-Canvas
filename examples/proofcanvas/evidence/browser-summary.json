@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "journey": "complete structured edit-to-Manim journey",
+  "executions": 2,
+  "skipped": 0,
+  "retried": 0,
+  "failures": 0,
+  "screenshots": [
+    {
+      "project": "proofcanvas-chromium-1440",
+      "file": "proofcanvas-editorial-1440x900.png",
+      "width": 1440,
+      "height": 900,
+      "bytes": 149882,
+      "sha256": "654ab354edcec886bcb8f5ada568fe3b7d0b6946da79c3d7ef174bee0823885c",
+      "status": "passed",
+      "durationMs": 18079
+    },
+    {
+      "project": "proofcanvas-chromium-1280",
+      "file": "proofcanvas-editorial-1280x800.png",
+      "width": 1280,
+      "height": 800,
+      "bytes": 131016,
+      "sha256": "b84e06d35d034d6efec9334af2400bb390ff9c05cc7e340aa92e5a5f11038031",
+      "status": "passed",
+      "durationMs": 9153
+    }
+  ],
+  "render": {
+    "project": "proofcanvas-chromium-1440",
+    "fileValidatedInTemporaryRun": true,
+    "bytes": 571542,
+    "sha256": "5aae4f3537e2defb9a60c3c1cd1a4dff6e8dc5a9f8b187f7bb2489d57577160d",
+    "container": "mp4/ftyp"
+  }
+}

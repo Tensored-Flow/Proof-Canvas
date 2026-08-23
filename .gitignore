@@ -1,0 +1,40 @@
+# JavaScript dependencies and build output
+node_modules/
+.next/
+out/
+coverage/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*.crt
+
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Browser and render scratch
+.proofcanvas-evidence/
+test-results/
+playwright-report/
+blob-report/
+render-scratch/
+uploads/
+tmp/
+*.sqlite
+*.sqlite3
+*.db
+*.tsbuildinfo
+
+# Local editor and agent state
+.DS_Store
+.idea/
+.vscode/
+.codex/

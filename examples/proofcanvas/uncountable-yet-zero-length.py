@@ -1,0 +1,185 @@
+from manim import *
+import math
+
+
+class GeneratedScene(MovingCameraScene):
+    def construct(self):
+        # Shot 1: The construction
+        self.next_section("The construction")
+        self.camera.background_color = "#f3eedf"
+        self.camera.frame.become(Rectangle(width=config.frame_width / 1.0, height=config.frame_height / 1.0).move_to([0.0, 0.0, 0]).rotate(0.0 * DEGREES))
+        pc_uncountable_yet_zero_length = Text("Uncountable, Yet Zero Length", font_size=38.0).set_color("#252722")
+        pc_uncountable_yet_zero_length.scale(min(7.70370358 / max(pc_uncountable_yet_zero_length.width, 0.001), 0.77037036 / max(pc_uncountable_yet_zero_length.height, 0.001)))
+        pc_uncountable_yet_zero_length.move_to([-1.58814812, 2.82548144, 0])
+        pc_uncountable_yet_zero_length.stretch(1.28, 0).stretch(1.28, 1)
+        pc_ref_533feefd = pc_uncountable_yet_zero_length.copy()
+        pc_a_quiet_paradox = Text("A quiet paradox in thirds", font_size=19.0).set_color("#4f534c")
+        pc_a_quiet_paradox.scale(min(5.92592583 / max(pc_a_quiet_paradox.width, 0.001), 0.44444444 / max(pc_a_quiet_paradox.height, 0.001)))
+        pc_a_quiet_paradox.move_to([-3.49629624, 2.28148145, 0])
+        pc_ref_7995a2a9 = pc_a_quiet_paradox.copy()
+        pc_original_interval = Rectangle(width=8.44444431, height=0.2074074).set_color("#252722").set_fill("#252722", opacity=1.0).set_stroke("#252722", width=1.75)
+        pc_original_interval.move_to([0.0, 0.96296295, 0])
+        pc_ref_9e40e534 = pc_original_interval.copy()
+        pc_first_left_interval = Rectangle(width=2.81481477, height=0.2074074).set_color("#252722").set_fill("#315866", opacity=1.0).set_stroke("#252722", width=1.75)
+        pc_first_left_interval.move_to([-2.81481477, 0.17777777, 0])
+        pc_ref_e154d848 = pc_first_left_interval.copy()
+        pc_first_right_interval = Rectangle(width=2.81481477, height=0.2074074).set_color("#252722").set_fill("#315866", opacity=1.0).set_stroke("#252722", width=1.75)
+        pc_first_right_interval.move_to([2.81481477, 0.17777777, 0])
+        pc_ref_8ab03d9b = pc_first_right_interval.copy()
+        pc_first_removal = Rectangle(width=2.81481477, height=0.2074074).set_color("#71402d").set_fill("#252722", opacity=1.0).set_stroke("#71402d", width=1.75).set_opacity(0.35)
+        pc_first_removal.move_to([0.0, 0.17777777, 0])
+        pc_ref_a1bebae4 = pc_first_removal.copy()
+        pc_second_generation_i = Rectangle(width=0.9185185, height=0.17777777).set_color("#252722").set_fill("#252722", opacity=1.0).set_stroke("#252722", width=1.75)
+        pc_second_generation_i.move_to([-3.7629629, -0.6074074, 0])
+        pc_ref_46df2fb2 = pc_second_generation_i.copy()
+        pc_second_generation_ii = Rectangle(width=0.9185185, height=0.17777777).set_color("#252722").set_fill("#252722", opacity=1.0).set_stroke("#252722", width=1.75)
+        pc_second_generation_ii.move_to([-1.86666664, -0.6074074, 0])
+        pc_ref_20dcb549 = pc_second_generation_ii.copy()
+        pc_second_generation_iii = Rectangle(width=0.9185185, height=0.17777777).set_color("#252722").set_fill("#252722", opacity=1.0).set_stroke("#252722", width=1.75)
+        pc_second_generation_iii.move_to([1.86666664, -0.6074074, 0])
+        pc_ref_516af869 = pc_second_generation_iii.copy()
+        pc_second_generation_iv = Rectangle(width=0.9185185, height=0.17777777).set_color("#252722").set_fill("#252722", opacity=1.0).set_stroke("#252722", width=1.75)
+        pc_second_generation_iv.move_to([3.7629629, -0.6074074, 0])
+        pc_ref_776d72d2 = pc_second_generation_iv.copy()
+        pc_second_removal = Rectangle(width=0.94814813, height=0.17777777).set_color("#71402d").set_fill("#252722", opacity=1.0).set_stroke("#71402d", width=1.75).set_opacity(0.3)
+        pc_second_removal.move_to([-2.81481477, -0.6074074, 0])
+        pc_ref_addb316e = pc_second_removal.copy()
+        pc_recursive_note = Text("remove the open middle third\n— then repeat", font_size=17.0).set_color("#252722")
+        pc_recursive_note.scale(min(3.25925921 / max(pc_recursive_note.width, 0.001), 0.77037036 / max(pc_recursive_note.height, 0.001)))
+        pc_recursive_note.move_to([5.09629622, 1.70370368, 0])
+        pc_recursive_note.rotate(-1.28 * DEGREES)
+        pc_ref_43340a46 = pc_recursive_note.copy()
+        pc_third_generation_1 = Rectangle(width=0.29629629, height=0.14814815).set_color("#252722").set_fill("#315866", opacity=1.0).set_stroke("#252722", width=1.75)
+        pc_third_generation_1.move_to([-4.07407401, -1.2148148, 0])
+        pc_ref_a9bfcdfe = pc_third_generation_1.copy()
+        pc_third_removal_1 = Rectangle(width=0.29629629, height=0.14814815).set_color("#71402d").set_fill("#252722", opacity=1.0).set_stroke("#71402d", width=1.75).set_opacity(0.32)
+        pc_third_removal_1.move_to([-3.7629629, -1.2148148, 0])
+        pc_ref_c6f19501 = pc_third_removal_1.copy()
+        pc_third_generation_2 = Rectangle(width=0.29629629, height=0.14814815).set_color("#252722").set_fill("#315866", opacity=1.0).set_stroke("#252722", width=1.75)
+        pc_third_generation_2.move_to([-3.4518518, -1.2148148, 0])
+        pc_ref_eea547fd = pc_third_generation_2.copy()
+        pc_third_generation_3 = Rectangle(width=0.29629629, height=0.14814815).set_color("#252722").set_fill("#315866", opacity=1.0).set_stroke("#252722", width=1.75)
+        pc_third_generation_3.move_to([-2.17777774, -1.2148148, 0])
+        pc_ref_cd151d5d = pc_third_generation_3.copy()
+        pc_third_removal_2 = Rectangle(width=0.29629629, height=0.14814815).set_color("#71402d").set_fill("#252722", opacity=1.0).set_stroke("#71402d", width=1.75).set_opacity(0.32)
+        pc_third_removal_2.move_to([-1.86666664, -1.2148148, 0])
+        pc_ref_ecf40f6a = pc_third_removal_2.copy()
+        pc_third_generation_4 = Rectangle(width=0.29629629, height=0.14814815).set_color("#252722").set_fill("#315866", opacity=1.0).set_stroke("#252722", width=1.75)
+        pc_third_generation_4.move_to([-1.55555553, -1.2148148, 0])
+        pc_ref_80525346 = pc_third_generation_4.copy()
+        pc_third_generation_5 = Rectangle(width=0.29629629, height=0.14814815).set_color("#252722").set_fill("#315866", opacity=1.0).set_stroke("#252722", width=1.75)
+        pc_third_generation_5.move_to([1.55555553, -1.2148148, 0])
+        pc_ref_78c0c13c = pc_third_generation_5.copy()
+        pc_third_removal_3 = Rectangle(width=0.29629629, height=0.14814815).set_color("#71402d").set_fill("#252722", opacity=1.0).set_stroke("#71402d", width=1.75).set_opacity(0.32)
+        pc_third_removal_3.move_to([1.86666664, -1.2148148, 0])
+        pc_ref_12f689d3 = pc_third_removal_3.copy()
+        pc_third_generation_6 = Rectangle(width=0.29629629, height=0.14814815).set_color("#252722").set_fill("#315866", opacity=1.0).set_stroke("#252722", width=1.75)
+        pc_third_generation_6.move_to([2.17777774, -1.2148148, 0])
+        pc_ref_3db174ef = pc_third_generation_6.copy()
+        pc_third_generation_7 = Rectangle(width=0.29629629, height=0.14814815).set_color("#252722").set_fill("#315866", opacity=1.0).set_stroke("#252722", width=1.75)
+        pc_third_generation_7.move_to([3.4518518, -1.2148148, 0])
+        pc_ref_6112badb = pc_third_generation_7.copy()
+        pc_third_removal_4 = Rectangle(width=0.29629629, height=0.14814815).set_color("#71402d").set_fill("#252722", opacity=1.0).set_stroke("#71402d", width=1.75).set_opacity(0.32)
+        pc_third_removal_4.move_to([3.7629629, -1.2148148, 0])
+        pc_ref_38f9043c = pc_third_removal_4.copy()
+        pc_third_generation_8 = Rectangle(width=0.29629629, height=0.14814815).set_color("#252722").set_fill("#315866", opacity=1.0).set_stroke("#252722", width=1.75)
+        pc_third_generation_8.move_to([4.07407401, -1.2148148, 0])
+        pc_ref_b52704f0 = pc_third_generation_8.copy()
+        pc_cantor_interval_diagram = Group(pc_original_interval, pc_first_left_interval, pc_first_right_interval, pc_first_removal, pc_second_generation_i, pc_second_generation_ii, pc_second_generation_iii, pc_second_generation_iv, pc_second_removal, pc_recursive_note, pc_third_generation_1, pc_third_removal_1, pc_third_generation_2, pc_third_generation_3, pc_third_removal_2, pc_third_generation_4, pc_third_generation_5, pc_third_removal_3, pc_third_generation_6, pc_third_generation_7, pc_third_removal_4, pc_third_generation_8)
+        pc_length_after_n_stages = MathTex("L_n = (2/3)^n", font_size=31.0).set_color("#252722")
+        pc_length_after_n_stages.scale(min(4.88888881 / max(pc_length_after_n_stages.width, 0.001), 0.62222221 / max(pc_length_after_n_stages.height, 0.001)))
+        pc_length_after_n_stages.move_to([-3.25925921, -1.88148145, 0])
+        pc_ref_40bcd348 = pc_length_after_n_stages.copy()
+        pc_limit_of_surviving_length = MathTex("\\lim_{n\\to\\infty} L_n = 0", font_size=26.0).set_color("#315866")
+        pc_limit_of_surviving_length.scale(min(5.55555547 / max(pc_limit_of_surviving_length.width, 0.001), 0.56296295 / max(pc_limit_of_surviving_length.height, 0.001)))
+        pc_limit_of_surviving_length.move_to([-2.90370366, -2.59259255, 0])
+        pc_ref_a53c3c29 = pc_limit_of_surviving_length.copy()
+        pc_surviving_length_equation = VGroup(pc_length_after_n_stages, pc_limit_of_surviving_length)
+        pc_measure_note = Text("Length vanishes.\nCardinality does not.", font_size=18.0).set_color("#4f534c")
+        pc_measure_note.scale(min(2.81481477 / max(pc_measure_note.width, 0.001), 1.06666665 / max(pc_measure_note.height, 0.001)))
+        pc_measure_note.move_to([4.50370363, -2.37037033, 0])
+        pc_measure_note.rotate(-1.28 * DEGREES)
+        pc_ref_2b60b10e = pc_measure_note.copy()
+        # Animation component 1: 0.0s to 1.5s
+        self.play(AnimationGroup(
+            Write(pc_uncountable_yet_zero_length, run_time=1.2, rate_func=rate_functions.ease_out_quart),
+            Succession(Wait(0.7), FadeIn(pc_a_quiet_paradox, run_time=0.8, rate_func=rate_functions.ease_out_quart), group=Group()),
+            group=Group(),
+            lag_ratio=0,
+        ))
+        # Animation component 2: 1.8s to 3.0s
+        self.wait(0.3)
+        self.play(Create(pc_original_interval, run_time=1.2, rate_func=rate_functions.ease_out_quart))
+        # Animation component 3: 3.5s to 4.1s
+        self.wait(0.5)
+        self.play(FadeIn(pc_first_removal, run_time=0.6, rate_func=rate_functions.ease_out_quart))
+        # Animation component 4: 4.2s to 6.0s
+        self.wait(0.1)
+        self.play(AnimationGroup(
+            Transform(pc_first_removal, pc_ref_a1bebae4.copy().set_opacity(0.0), run_time=1.1, rate_func=rate_functions.ease_out_quart),
+            Succession(Wait(0.6), AnimationGroup(Create(pc_first_left_interval, run_time=1.2, rate_func=rate_functions.ease_out_quart), Create(pc_first_right_interval, run_time=1.2, rate_func=rate_functions.ease_out_quart), lag_ratio=0), group=Group()),
+            Succession(Wait(1.0), FadeIn(pc_second_removal, run_time=0.7, rate_func=rate_functions.ease_out_quart), group=Group()),
+            group=Group(),
+            lag_ratio=0,
+        ))
+        # Animation component 5: 6.4s to 7.2s
+        self.wait(0.4)
+        self.play(FadeIn(pc_recursive_note, run_time=0.8, rate_func=rate_functions.ease_out_quart))
+        # Animation component 6: 7.4s to 9.5s
+        self.wait(0.2)
+        self.play(AnimationGroup(
+            Transform(pc_second_removal, pc_ref_addb316e.copy().set_opacity(0.0), run_time=1.0, rate_func=rate_functions.ease_out_quart),
+            Succession(Wait(0.7), AnimationGroup(Create(pc_second_generation_i, run_time=1.4, rate_func=rate_functions.ease_out_quart), Create(pc_second_generation_ii, run_time=1.4, rate_func=rate_functions.ease_out_quart), Create(pc_second_generation_iii, run_time=1.4, rate_func=rate_functions.ease_out_quart), Create(pc_second_generation_iv, run_time=1.4, rate_func=rate_functions.ease_out_quart), lag_ratio=0), group=Group()),
+            group=Group(),
+            lag_ratio=0,
+        ))
+        # Animation component 7: 10.6s to 11.8s
+        self.wait(1.1)
+        self.play(AnimationGroup(Create(pc_third_generation_1, run_time=1.2, rate_func=rate_functions.ease_out_quart), Create(pc_third_removal_1, run_time=1.2, rate_func=rate_functions.ease_out_quart), Create(pc_third_generation_2, run_time=1.2, rate_func=rate_functions.ease_out_quart), Create(pc_third_generation_3, run_time=1.2, rate_func=rate_functions.ease_out_quart), Create(pc_third_removal_2, run_time=1.2, rate_func=rate_functions.ease_out_quart), Create(pc_third_generation_4, run_time=1.2, rate_func=rate_functions.ease_out_quart), Create(pc_third_generation_5, run_time=1.2, rate_func=rate_functions.ease_out_quart), Create(pc_third_removal_3, run_time=1.2, rate_func=rate_functions.ease_out_quart), Create(pc_third_generation_6, run_time=1.2, rate_func=rate_functions.ease_out_quart), Create(pc_third_generation_7, run_time=1.2, rate_func=rate_functions.ease_out_quart), Create(pc_third_removal_4, run_time=1.2, rate_func=rate_functions.ease_out_quart), Create(pc_third_generation_8, run_time=1.2, rate_func=rate_functions.ease_out_quart), lag_ratio=0))
+        # Animation component 8: 12.0s to 13.1s
+        self.wait(0.2)
+        self.play(AnimationGroup(Transform(pc_third_removal_1, pc_ref_c6f19501.copy().set_opacity(0.0), run_time=1.1, rate_func=rate_functions.ease_out_quart), Transform(pc_third_removal_2, pc_ref_ecf40f6a.copy().set_opacity(0.0), run_time=1.1, rate_func=rate_functions.ease_out_quart), Transform(pc_third_removal_3, pc_ref_12f689d3.copy().set_opacity(0.0), run_time=1.1, rate_func=rate_functions.ease_out_quart), Transform(pc_third_removal_4, pc_ref_38f9043c.copy().set_opacity(0.0), run_time=1.1, rate_func=rate_functions.ease_out_quart), lag_ratio=0))
+        # Animation component 9: 13.2s to 14.0s
+        self.wait(0.1)
+        self.play(Transform(self.camera.frame, Rectangle(width=config.frame_width / 1.05, height=config.frame_height / 1.05).move_to([0.0, -0.22222222, 0]).rotate(0.0 * DEGREES), run_time=0.8, rate_func=rate_functions.ease_out_quart))
+        # Animation component 10: 14.2s to 15.9s
+        self.wait(0.2)
+        self.play(Write(pc_surviving_length_equation, run_time=1.7, rate_func=rate_functions.ease_out_quart))
+        # Animation component 11: 17.2s to 18.5s
+        self.wait(1.3)
+        self.play(Indicate(pc_limit_of_surviving_length, color="#71402d", scale_factor=1.08, run_time=1.3, rate_func=rate_functions.there_and_back))
+        # Animation component 12: 19.0s to 20.1s
+        self.wait(0.5)
+        self.play(FadeIn(pc_measure_note, run_time=1.1, rate_func=rate_functions.ease_out_quart))
+        self.wait(0.9)
+        self.clear()
+
+        # Shot 2: The paradox
+        self.next_section("The paradox")
+        self.camera.background_color = "#f3eedf"
+        self.camera.frame.become(Rectangle(width=config.frame_width / 1.0, height=config.frame_height / 1.0).move_to([0.0, 0.0, 0]).rotate(0.0 * DEGREES))
+        pc_the_contrast = Text("The contrast", font_size=38.0).set_color("#252722")
+        pc_the_contrast.scale(min(5.77777769 / max(pc_the_contrast.width, 0.001), 0.66666666 / max(pc_the_contrast.height, 0.001)))
+        pc_the_contrast.move_to([-2.30222219, 2.42518515, 0])
+        pc_the_contrast.stretch(1.28, 0).stretch(1.28, 1)
+        pc_ref_a884f76b = pc_the_contrast.copy()
+        pc_uncountable = Text("uncountably many points", font_size=31.0).set_color("#315866")
+        pc_uncountable.scale(min(5.33333325 / max(pc_uncountable.width, 0.001), 0.77037036 / max(pc_uncountable.height, 0.001)))
+        pc_uncountable.move_to([-2.66666662, 0.22222222, 0])
+        pc_ref_40503791 = pc_uncountable.copy()
+        pc_zero_length = Text("zero total length", font_size=30.0).set_color("#71402d")
+        pc_zero_length.scale(min(4.29629623 / max(pc_zero_length.width, 0.001), 0.7111111 / max(pc_zero_length.height, 0.001)))
+        pc_zero_length.move_to([2.51851848, -1.33333331, 0])
+        pc_ref_5f8970db = pc_zero_length.copy()
+        # Animation component 1: 0.0s to 1.0s
+        self.play(Write(pc_the_contrast, run_time=1.0, rate_func=rate_functions.ease_out_quart))
+        # Animation component 2: 1.4s to 2.6s
+        self.wait(0.4)
+        self.play(FadeIn(pc_uncountable, run_time=1.2, rate_func=rate_functions.ease_out_quart))
+        # Animation component 3: 3.2s to 4.4s
+        self.wait(0.6)
+        self.play(FadeIn(pc_zero_length, run_time=1.2, rate_func=rate_functions.ease_out_quart))
+        # Animation component 4: 4.8s to 6.0s
+        self.wait(0.4)
+        self.play(Transform(self.camera.frame, Rectangle(width=config.frame_width / 1.08, height=config.frame_height / 1.08).move_to([0.29629629, -0.14814815, 0]).rotate(0.0 * DEGREES), run_time=1.2, rate_func=rate_functions.ease_out_quart))
+        self.wait(1.0)

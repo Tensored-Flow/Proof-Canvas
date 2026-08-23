@@ -1,0 +1,15 @@
+{
+  "genuineManimRender": true,
+  "manimVersion": "0.21.0",
+  "image": "manimcommunity/manim@sha256:89ab433ce59134a4dcf351deb2511e067ab354393c0bb7d1859f3e8f0b2406a3",
+  "codec": "h264",
+  "width": 854,
+  "height": 480,
+  "fps": 15.000349612862024,
+  "durationSeconds": 27.932682,
+  "frames": 419,
+  "evidenceFrameSeconds": 12.5330078125,
+  "bytes": 473780,
+  "sha256": "638041f76b602646fdc1b81116c02c0d0b77d32204c77c7e99172fd015d3b8e9",
+  "sourceSha256": "064df3d9548836ee681508e2b894277923b69c4eb6308e5697341693e3b50db6"
+}

@@ -1,0 +1,1189 @@
+{
+  "activeStyleId": "style-editorial-ink",
+  "aspectRatio": "16:9",
+  "metadata": {
+    "createdAt": "2026-08-23T00:00:00.000Z",
+    "id": "project-uncountable-zero-length",
+    "title": "Uncountable, Yet Zero Length",
+    "updatedAt": "2026-08-23T00:00:00.000Z"
+  },
+  "schemaVersion": 1,
+  "shots": [
+    {
+      "animations": [
+        {
+          "duration": 1.2,
+          "easing": "editorial",
+          "id": "animation-title-write",
+          "properties": {},
+          "start": 0,
+          "targetIds": [
+            "object-title"
+          ],
+          "type": "write"
+        },
+        {
+          "duration": 0.8,
+          "easing": "editorial",
+          "id": "animation-subtitle-fade",
+          "properties": {},
+          "start": 0.7,
+          "targetIds": [
+            "object-subtitle"
+          ],
+          "type": "fade-in"
+        },
+        {
+          "duration": 1.2,
+          "easing": "editorial",
+          "id": "animation-original-create",
+          "properties": {},
+          "start": 1.8,
+          "targetIds": [
+            "object-interval-generation-0"
+          ],
+          "type": "create"
+        },
+        {
+          "duration": 0.6,
+          "easing": "editorial",
+          "id": "animation-first-marker-in",
+          "properties": {},
+          "start": 3.5,
+          "targetIds": [
+            "object-removal-first"
+          ],
+          "type": "fade-in"
+        },
+        {
+          "duration": 1.1,
+          "easing": "editorial",
+          "id": "animation-first-removal",
+          "properties": {},
+          "start": 4.2,
+          "targetIds": [
+            "object-removal-first"
+          ],
+          "type": "fade-out"
+        },
+        {
+          "duration": 1.2,
+          "easing": "editorial",
+          "id": "animation-first-split",
+          "properties": {},
+          "start": 4.8,
+          "targetIds": [
+            "object-interval-left-1",
+            "object-interval-right-1"
+          ],
+          "type": "create"
+        },
+        {
+          "duration": 0.7,
+          "easing": "editorial",
+          "id": "animation-second-marker-in",
+          "properties": {},
+          "start": 5.2,
+          "targetIds": [
+            "object-removal-second"
+          ],
+          "type": "fade-in"
+        },
+        {
+          "duration": 0.8,
+          "easing": "editorial",
+          "id": "animation-generation-note-in",
+          "properties": {},
+          "start": 6.4,
+          "targetIds": [
+            "object-generation-note"
+          ],
+          "type": "fade-in"
+        },
+        {
+          "duration": 1,
+          "easing": "editorial",
+          "id": "animation-second-removal",
+          "properties": {},
+          "start": 7.4,
+          "targetIds": [
+            "object-removal-second"
+          ],
+          "type": "fade-out"
+        },
+        {
+          "duration": 1.4,
+          "easing": "editorial",
+          "id": "animation-second-split",
+          "properties": {},
+          "start": 8.1,
+          "targetIds": [
+            "object-interval-left-2a",
+            "object-interval-left-2b",
+            "object-interval-right-2a",
+            "object-interval-right-2b"
+          ],
+          "type": "create"
+        },
+        {
+          "duration": 1.2,
+          "easing": "editorial",
+          "id": "animation-third-split",
+          "properties": {},
+          "start": 10.6,
+          "targetIds": [
+            "object-interval-third-1-left",
+            "object-removal-third-1",
+            "object-interval-third-1-right",
+            "object-interval-third-2-left",
+            "object-removal-third-2",
+            "object-interval-third-2-right",
+            "object-interval-third-3-left",
+            "object-removal-third-3",
+            "object-interval-third-3-right",
+            "object-interval-third-4-left",
+            "object-removal-third-4",
+            "object-interval-third-4-right"
+          ],
+          "type": "create"
+        },
+        {
+          "duration": 1.1,
+          "easing": "editorial",
+          "id": "animation-third-removals",
+          "properties": {},
+          "start": 12,
+          "targetIds": [
+            "object-removal-third-1",
+            "object-removal-third-2",
+            "object-removal-third-3",
+            "object-removal-third-4"
+          ],
+          "type": "fade-out"
+        },
+        {
+          "duration": 0.8,
+          "easing": "editorial",
+          "id": "animation-camera-focus",
+          "properties": {
+            "x": 480,
+            "y": 285,
+            "zoom": 1.05
+          },
+          "start": 13.2,
+          "targetIds": [
+            "object-interval-diagram"
+          ],
+          "type": "camera-focus"
+        },
+        {
+          "duration": 1.7,
+          "easing": "editorial",
+          "id": "animation-equation-write",
+          "properties": {},
+          "start": 14.2,
+          "targetIds": [
+            "object-equation-chain"
+          ],
+          "type": "write"
+        },
+        {
+          "duration": 1.3,
+          "easing": "editorial",
+          "id": "animation-limit-emphasis",
+          "properties": {
+            "scale": 1.08
+          },
+          "start": 17.2,
+          "targetIds": [
+            "object-equation-limit"
+          ],
+          "type": "emphasise"
+        },
+        {
+          "duration": 1.1,
+          "easing": "editorial",
+          "id": "animation-note-fade",
+          "properties": {},
+          "start": 19,
+          "targetIds": [
+            "object-margin-note"
+          ],
+          "type": "fade-in"
+        }
+      ],
+      "camera": {
+        "rotation": 0,
+        "x": 480,
+        "y": 270,
+        "zoom": 1
+      },
+      "duration": 21,
+      "id": "shot-cantor-construction",
+      "name": "The construction",
+      "objects": [
+        {
+          "id": "object-title",
+          "locked": false,
+          "name": "Uncountable, Yet Zero Length",
+          "properties": {
+            "content": "Uncountable, Yet Zero Length"
+          },
+          "semanticRole": "title",
+          "style": {
+            "fontSize": 38,
+            "fontWeight": 600,
+            "textAlign": "left"
+          },
+          "transform": {
+            "height": 52,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 520,
+            "x": 300,
+            "y": 72
+          },
+          "type": "text",
+          "visible": true
+        },
+        {
+          "id": "object-subtitle",
+          "locked": false,
+          "name": "A quiet paradox",
+          "properties": {
+            "content": "A quiet paradox in thirds"
+          },
+          "semanticRole": "subtitle",
+          "style": {
+            "color": "#4f534c",
+            "fontSize": 19,
+            "textAlign": "left"
+          },
+          "transform": {
+            "height": 30,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 400,
+            "x": 244,
+            "y": 116
+          },
+          "type": "text",
+          "visible": true
+        },
+        {
+          "id": "object-interval-diagram",
+          "locked": false,
+          "name": "Cantor interval diagram",
+          "properties": {},
+          "semanticRole": "interval-diagram",
+          "style": {},
+          "transform": {
+            "height": 225,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 660,
+            "x": 480,
+            "y": 276
+          },
+          "type": "group",
+          "visible": true
+        },
+        {
+          "id": "object-interval-generation-0",
+          "locked": false,
+          "name": "Original interval",
+          "parentId": "object-interval-diagram",
+          "properties": {
+            "generation": 0
+          },
+          "semanticRole": "surviving-interval",
+          "style": {
+            "fill": "#252722"
+          },
+          "transform": {
+            "height": 14,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 570,
+            "x": 480,
+            "y": 205
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-interval-left-1",
+          "locked": false,
+          "name": "First left interval",
+          "parentId": "object-interval-diagram",
+          "properties": {
+            "generation": 1
+          },
+          "semanticRole": "surviving-interval",
+          "style": {
+            "fill": "#315866"
+          },
+          "transform": {
+            "height": 14,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 190,
+            "x": 290,
+            "y": 258
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-interval-right-1",
+          "locked": false,
+          "name": "First right interval",
+          "parentId": "object-interval-diagram",
+          "properties": {
+            "generation": 1
+          },
+          "semanticRole": "surviving-interval",
+          "style": {
+            "fill": "#315866"
+          },
+          "transform": {
+            "height": 14,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 190,
+            "x": 670,
+            "y": 258
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-removal-first",
+          "locked": false,
+          "name": "First removal",
+          "parentId": "object-interval-diagram",
+          "properties": {
+            "generation": 1,
+            "removed": true
+          },
+          "semanticRole": "first-removal",
+          "style": {
+            "opacity": 0.35,
+            "stroke": "#71402d"
+          },
+          "transform": {
+            "height": 14,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 190,
+            "x": 480,
+            "y": 258
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-interval-left-2a",
+          "locked": false,
+          "name": "Second generation I",
+          "parentId": "object-interval-diagram",
+          "properties": {
+            "generation": 2
+          },
+          "semanticRole": "surviving-interval",
+          "style": {
+            "fill": "#252722"
+          },
+          "transform": {
+            "height": 12,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 62,
+            "x": 226,
+            "y": 311
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-interval-left-2b",
+          "locked": false,
+          "name": "Second generation II",
+          "parentId": "object-interval-diagram",
+          "properties": {
+            "generation": 2
+          },
+          "semanticRole": "surviving-interval",
+          "style": {
+            "fill": "#252722"
+          },
+          "transform": {
+            "height": 12,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 62,
+            "x": 354,
+            "y": 311
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-interval-right-2a",
+          "locked": false,
+          "name": "Second generation III",
+          "parentId": "object-interval-diagram",
+          "properties": {
+            "generation": 2
+          },
+          "semanticRole": "surviving-interval",
+          "style": {
+            "fill": "#252722"
+          },
+          "transform": {
+            "height": 12,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 62,
+            "x": 606,
+            "y": 311
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-interval-right-2b",
+          "locked": false,
+          "name": "Second generation IV",
+          "parentId": "object-interval-diagram",
+          "properties": {
+            "generation": 2
+          },
+          "semanticRole": "surviving-interval",
+          "style": {
+            "fill": "#252722"
+          },
+          "transform": {
+            "height": 12,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 62,
+            "x": 734,
+            "y": 311
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-removal-second",
+          "locked": false,
+          "name": "Second removal",
+          "parentId": "object-interval-diagram",
+          "properties": {
+            "generation": 2,
+            "removed": true
+          },
+          "semanticRole": "second-removal",
+          "style": {
+            "opacity": 0.3,
+            "stroke": "#71402d"
+          },
+          "transform": {
+            "height": 12,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 64,
+            "x": 290,
+            "y": 311
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-generation-note",
+          "locked": false,
+          "name": "Recursive note",
+          "parentId": "object-interval-diagram",
+          "properties": {
+            "content": "remove the open middle third\n— then repeat"
+          },
+          "semanticRole": "annotation",
+          "style": {
+            "fontSize": 17,
+            "roughEmphasis": true,
+            "textAlign": "left"
+          },
+          "transform": {
+            "height": 52,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 220,
+            "x": 810,
+            "y": 155
+          },
+          "type": "text",
+          "visible": true
+        },
+        {
+          "id": "object-interval-third-1-left",
+          "locked": false,
+          "name": "Third generation 1",
+          "parentId": "object-interval-diagram",
+          "properties": {
+            "generation": 3
+          },
+          "semanticRole": "surviving-interval",
+          "style": {
+            "fill": "#315866"
+          },
+          "transform": {
+            "height": 10,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 20,
+            "x": 205,
+            "y": 352
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-removal-third-1",
+          "locked": false,
+          "name": "Third removal 1",
+          "parentId": "object-interval-diagram",
+          "properties": {
+            "generation": 3,
+            "removed": true
+          },
+          "semanticRole": "third-removal",
+          "style": {
+            "opacity": 0.32,
+            "stroke": "#71402d"
+          },
+          "transform": {
+            "height": 10,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 20,
+            "x": 226,
+            "y": 352
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-interval-third-1-right",
+          "locked": false,
+          "name": "Third generation 2",
+          "parentId": "object-interval-diagram",
+          "properties": {
+            "generation": 3
+          },
+          "semanticRole": "surviving-interval",
+          "style": {
+            "fill": "#315866"
+          },
+          "transform": {
+            "height": 10,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 20,
+            "x": 247,
+            "y": 352
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-interval-third-2-left",
+          "locked": false,
+          "name": "Third generation 3",
+          "parentId": "object-interval-diagram",
+          "properties": {
+            "generation": 3
+          },
+          "semanticRole": "surviving-interval",
+          "style": {
+            "fill": "#315866"
+          },
+          "transform": {
+            "height": 10,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 20,
+            "x": 333,
+            "y": 352
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-removal-third-2",
+          "locked": false,
+          "name": "Third removal 2",
+          "parentId": "object-interval-diagram",
+          "properties": {
+            "generation": 3,
+            "removed": true
+          },
+          "semanticRole": "third-removal",
+          "style": {
+            "opacity": 0.32,
+            "stroke": "#71402d"
+          },
+          "transform": {
+            "height": 10,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 20,
+            "x": 354,
+            "y": 352
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-interval-third-2-right",
+          "locked": false,
+          "name": "Third generation 4",
+          "parentId": "object-interval-diagram",
+          "properties": {
+            "generation": 3
+          },
+          "semanticRole": "surviving-interval",
+          "style": {
+            "fill": "#315866"
+          },
+          "transform": {
+            "height": 10,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 20,
+            "x": 375,
+            "y": 352
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-interval-third-3-left",
+          "locked": false,
+          "name": "Third generation 5",
+          "parentId": "object-interval-diagram",
+          "properties": {
+            "generation": 3
+          },
+          "semanticRole": "surviving-interval",
+          "style": {
+            "fill": "#315866"
+          },
+          "transform": {
+            "height": 10,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 20,
+            "x": 585,
+            "y": 352
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-removal-third-3",
+          "locked": false,
+          "name": "Third removal 3",
+          "parentId": "object-interval-diagram",
+          "properties": {
+            "generation": 3,
+            "removed": true
+          },
+          "semanticRole": "third-removal",
+          "style": {
+            "opacity": 0.32,
+            "stroke": "#71402d"
+          },
+          "transform": {
+            "height": 10,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 20,
+            "x": 606,
+            "y": 352
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-interval-third-3-right",
+          "locked": false,
+          "name": "Third generation 6",
+          "parentId": "object-interval-diagram",
+          "properties": {
+            "generation": 3
+          },
+          "semanticRole": "surviving-interval",
+          "style": {
+            "fill": "#315866"
+          },
+          "transform": {
+            "height": 10,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 20,
+            "x": 627,
+            "y": 352
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-interval-third-4-left",
+          "locked": false,
+          "name": "Third generation 7",
+          "parentId": "object-interval-diagram",
+          "properties": {
+            "generation": 3
+          },
+          "semanticRole": "surviving-interval",
+          "style": {
+            "fill": "#315866"
+          },
+          "transform": {
+            "height": 10,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 20,
+            "x": 713,
+            "y": 352
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-removal-third-4",
+          "locked": false,
+          "name": "Third removal 4",
+          "parentId": "object-interval-diagram",
+          "properties": {
+            "generation": 3,
+            "removed": true
+          },
+          "semanticRole": "third-removal",
+          "style": {
+            "opacity": 0.32,
+            "stroke": "#71402d"
+          },
+          "transform": {
+            "height": 10,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 20,
+            "x": 734,
+            "y": 352
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-interval-third-4-right",
+          "locked": false,
+          "name": "Third generation 8",
+          "parentId": "object-interval-diagram",
+          "properties": {
+            "generation": 3
+          },
+          "semanticRole": "surviving-interval",
+          "style": {
+            "fill": "#315866"
+          },
+          "transform": {
+            "height": 10,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 20,
+            "x": 755,
+            "y": 352
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-equation-chain",
+          "locked": true,
+          "name": "Surviving length equation",
+          "properties": {},
+          "semanticRole": "equation-chain",
+          "style": {},
+          "transform": {
+            "height": 96,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 390,
+            "x": 264,
+            "y": 414
+          },
+          "type": "group",
+          "visible": true
+        },
+        {
+          "id": "object-equation-length",
+          "locked": true,
+          "name": "Length after n stages",
+          "parentId": "object-equation-chain",
+          "properties": {
+            "content": "L_n = (2/3)^n"
+          },
+          "semanticRole": "surviving-length-equation",
+          "style": {
+            "fontSize": 31,
+            "textAlign": "left"
+          },
+          "transform": {
+            "height": 42,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 330,
+            "x": 260,
+            "y": 397
+          },
+          "type": "math",
+          "visible": true
+        },
+        {
+          "id": "object-equation-limit",
+          "locked": true,
+          "name": "Limit of surviving length",
+          "parentId": "object-equation-chain",
+          "properties": {
+            "content": "\\lim_{n\\to\\infty} L_n = 0"
+          },
+          "semanticRole": "limit-equation",
+          "style": {
+            "color": "#315866",
+            "fontSize": 26,
+            "textAlign": "left"
+          },
+          "transform": {
+            "height": 38,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 375,
+            "x": 284,
+            "y": 445
+          },
+          "type": "math",
+          "visible": true
+        },
+        {
+          "id": "object-margin-note",
+          "locked": false,
+          "name": "Measure note",
+          "properties": {
+            "content": "Length vanishes.\nCardinality does not."
+          },
+          "semanticRole": "marginal-note",
+          "style": {
+            "color": "#4f534c",
+            "fontSize": 18,
+            "roughEmphasis": true,
+            "textAlign": "left"
+          },
+          "transform": {
+            "height": 72,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 190,
+            "x": 770,
+            "y": 430
+          },
+          "type": "text",
+          "visible": true
+        }
+      ]
+    },
+    {
+      "animations": [
+        {
+          "duration": 1,
+          "easing": "editorial",
+          "id": "animation-conclusion-title",
+          "properties": {},
+          "start": 0,
+          "targetIds": [
+            "object-conclusion-title"
+          ],
+          "type": "write"
+        },
+        {
+          "duration": 1.2,
+          "easing": "editorial",
+          "id": "animation-conclusion-cardinality",
+          "properties": {},
+          "start": 1.4,
+          "targetIds": [
+            "object-conclusion-cardinality"
+          ],
+          "type": "fade-in"
+        },
+        {
+          "duration": 1.2,
+          "easing": "editorial",
+          "id": "animation-conclusion-measure",
+          "properties": {},
+          "start": 3.2,
+          "targetIds": [
+            "object-conclusion-measure"
+          ],
+          "type": "fade-in"
+        },
+        {
+          "duration": 1.2,
+          "easing": "editorial",
+          "id": "animation-conclusion-focus",
+          "properties": {
+            "x": 500,
+            "y": 280,
+            "zoom": 1.08
+          },
+          "start": 4.8,
+          "targetIds": [
+            "object-conclusion-cardinality",
+            "object-conclusion-measure"
+          ],
+          "type": "camera-focus"
+        }
+      ],
+      "camera": {
+        "rotation": 0,
+        "x": 480,
+        "y": 270,
+        "zoom": 1
+      },
+      "duration": 7,
+      "id": "shot-cantor-conclusion",
+      "name": "The paradox",
+      "objects": [
+        {
+          "id": "object-conclusion-title",
+          "locked": false,
+          "name": "The contrast",
+          "properties": {
+            "content": "The contrast"
+          },
+          "semanticRole": "title",
+          "style": {
+            "fontSize": 38,
+            "textAlign": "left"
+          },
+          "transform": {
+            "height": 45,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 390,
+            "x": 270,
+            "y": 100
+          },
+          "type": "text",
+          "visible": true
+        },
+        {
+          "id": "object-conclusion-cardinality",
+          "locked": false,
+          "name": "Uncountable",
+          "properties": {
+            "content": "uncountably many points"
+          },
+          "semanticRole": "main-claim",
+          "style": {
+            "color": "#315866",
+            "fontSize": 31,
+            "textAlign": "left"
+          },
+          "transform": {
+            "height": 52,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 360,
+            "x": 300,
+            "y": 255
+          },
+          "type": "text",
+          "visible": true
+        },
+        {
+          "id": "object-conclusion-measure",
+          "locked": false,
+          "name": "Zero length",
+          "properties": {
+            "content": "zero total length"
+          },
+          "semanticRole": "main-claim",
+          "style": {
+            "color": "#71402d",
+            "fontSize": 30,
+            "textAlign": "left"
+          },
+          "transform": {
+            "height": 48,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 290,
+            "x": 650,
+            "y": 360
+          },
+          "type": "text",
+          "visible": true
+        }
+      ]
+    }
+  ],
+  "styles": [
+    {
+      "annotation": {
+        "offset": 14,
+        "roughness": 0.32,
+        "treatment": "marginal-hand"
+      },
+      "colors": {
+        "background": "#f3eedf",
+        "coolAccent": "#315866",
+        "ink": "#252722",
+        "mutedInk": "#4f534c",
+        "rule": "#655f55",
+        "warmAccent": "#71402d"
+      },
+      "corners": {
+        "object": 1,
+        "panel": 2
+      },
+      "graph": {
+        "axisWeight": 1.15,
+        "curveWeight": 2.25,
+        "gridOpacity": 0.12
+      },
+      "id": "style-editorial-ink",
+      "layout": {
+        "hierarchyContrast": 1.5,
+        "tendency": "editorial-asymmetric",
+        "titleAnchor": "upper-left"
+      },
+      "motion": {
+        "cameraMaxPan": 140,
+        "cameraMaxZoom": 1.35,
+        "defaultDuration": 0.8,
+        "easing": "editorial",
+        "emphasis": "emphasise",
+        "entrance": "write",
+        "exit": "fade-out"
+      },
+      "name": "Editorial Ink",
+      "spacing": {
+        "margin": 48,
+        "objectGap": 18,
+        "unit": 8
+      },
+      "strokes": {
+        "emphasis": 3,
+        "fine": 1,
+        "regular": 1.75
+      },
+      "typography": {
+        "bodyScale": 1,
+        "controls": "Geist, Arial, sans-serif",
+        "math": "STIX Two Math, Times New Roman, serif",
+        "statement": "Cormorant Garamond, Georgia, serif",
+        "titleScale": 1.28
+      }
+    },
+    {
+      "annotation": {
+        "offset": 8,
+        "roughness": 0,
+        "treatment": "plain"
+      },
+      "colors": {
+        "background": "#ffffff",
+        "coolAccent": "#176b80",
+        "ink": "#000000",
+        "mutedInk": "#555555",
+        "rule": "#656565",
+        "warmAccent": "#b3261e"
+      },
+      "corners": {
+        "object": 0,
+        "panel": 0
+      },
+      "graph": {
+        "axisWeight": 1,
+        "curveWeight": 2,
+        "gridOpacity": 0.2
+      },
+      "id": "style-raw-manim",
+      "layout": {
+        "hierarchyContrast": 1,
+        "tendency": "centred",
+        "titleAnchor": "center"
+      },
+      "motion": {
+        "cameraMaxPan": 80,
+        "cameraMaxZoom": 1.2,
+        "defaultDuration": 1,
+        "easing": "linear",
+        "emphasis": "scale",
+        "entrance": "appear",
+        "exit": "fade-out"
+      },
+      "name": "Raw Manim",
+      "spacing": {
+        "margin": 24,
+        "objectGap": 12,
+        "unit": 8
+      },
+      "strokes": {
+        "emphasis": 3,
+        "fine": 1,
+        "regular": 2
+      },
+      "typography": {
+        "bodyScale": 1,
+        "controls": "Arial, sans-serif",
+        "math": "Computer Modern, serif",
+        "statement": "Arial, sans-serif",
+        "titleScale": 1
+      }
+    }
+  ]
+}

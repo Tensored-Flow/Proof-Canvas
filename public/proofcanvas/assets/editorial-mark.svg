@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 90" role="img" aria-labelledby="title description">
+  <title id="title">Editorial interval mark</title>
+  <desc id="description">Two ink intervals separated by an open middle third.</desc>
+  <rect width="160" height="90" fill="#f3eedf"/>
+  <path d="M18 46H66M94 46H142" fill="none" stroke="#315866" stroke-width="8"/>
+  <path d="M71 29L89 63M89 29L71 63" fill="none" stroke="#71402d" stroke-width="3"/>
+</svg>

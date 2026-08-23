@@ -1,0 +1,502 @@
+{
+  "artifactVersion": 1,
+  "projectId": "project-uncountable-zero-length",
+  "commands": [
+    {
+      "commandNumber": 1,
+      "command": "Move the title into the upper-left margin, but do not move the interval diagram.",
+      "provider": "deterministic-demo",
+      "intention": "Move only the title to the upper-left editorial margin.",
+      "summary": [
+        "Update object-title: transform, style"
+      ],
+      "operations": [
+        {
+          "type": "update-object",
+          "objectId": "object-title",
+          "patch": {
+            "transform": {
+              "x": 250,
+              "y": 70
+            },
+            "style": {
+              "textAlign": "left"
+            }
+          }
+        }
+      ],
+      "operationCount": 1,
+      "beforeProjectSha256": "7215837ae02639364c67f48eaf9d76ca0fc7fe7ea13ac86be83b4be6ea0995f9",
+      "afterProjectSha256": "b526456841eb2f5d2ccd7b57b7e28bc4935b4b1fed559a256484f976b2f3df2c",
+      "historyEntries": 1,
+      "undoRestoredExactProject": true,
+      "semanticEvidence": {
+        "titlePosition": {
+          "x": 250,
+          "y": 70
+        },
+        "intervalDiagramUnchanged": true
+      }
+    },
+    {
+      "commandNumber": 2,
+      "command": "Make the second removal the main moment of emphasis and slow that animation down.",
+      "provider": "deterministic-demo",
+      "intention": "Slow the second removal and make it the focal beat.",
+      "summary": [
+        "Update animation animation-second-removal",
+        "Add emphasise at 6.05s"
+      ],
+      "operations": [
+        {
+          "type": "update-animation",
+          "animationId": "animation-second-removal",
+          "patch": {
+            "duration": 1.8,
+            "easing": "ease-in-out"
+          }
+        },
+        {
+          "type": "add-animation",
+          "animation": {
+            "id": "animation-second-removal-emphasis",
+            "type": "emphasise",
+            "targetIds": [
+              "object-removal-second"
+            ],
+            "start": 6.05,
+            "duration": 1.2,
+            "easing": "editorial",
+            "properties": {
+              "scale": 1.16
+            }
+          }
+        }
+      ],
+      "operationCount": 2,
+      "beforeProjectSha256": "7215837ae02639364c67f48eaf9d76ca0fc7fe7ea13ac86be83b4be6ea0995f9",
+      "afterProjectSha256": "0569715a90e473d445ec781e2e055f24d408ff7552a088b4377130c077ace7f0",
+      "historyEntries": 1,
+      "undoRestoredExactProject": true,
+      "semanticEvidence": {
+        "durationBefore": 1,
+        "durationAfter": 1.8,
+        "easingAfter": "ease-in-out",
+        "emphasisAnimationId": "animation-second-removal-emphasis",
+        "emphasisEndsBeforeRemoval": true
+      }
+    },
+    {
+      "commandNumber": 3,
+      "command": "Add a brace beneath the surviving intervals labelled ‘2^n pieces’ and reveal it after the third split.",
+      "provider": "deterministic-demo",
+      "intention": "Add an editable brace after the third split.",
+      "summary": [
+        "Add “Surviving intervals brace”",
+        "Add fade-in at 13.25s"
+      ],
+      "operations": [
+        {
+          "type": "add-object",
+          "object": {
+            "id": "object-surviving-intervals-brace",
+            "type": "brace",
+            "name": "Surviving intervals brace",
+            "parentId": "object-interval-diagram",
+            "locked": false,
+            "visible": true,
+            "transform": {
+              "x": 480,
+              "y": 355,
+              "width": 570,
+              "height": 34,
+              "rotation": 0,
+              "scaleX": 1,
+              "scaleY": 1
+            },
+            "style": {
+              "stroke": "#71402d",
+              "fontSize": 20
+            },
+            "semanticRole": "surviving-intervals-brace",
+            "properties": {
+              "label": "2^n pieces",
+              "orientation": "below"
+            }
+          }
+        },
+        {
+          "type": "add-animation",
+          "animation": {
+            "id": "animation-brace-reveal",
+            "type": "fade-in",
+            "targetIds": [
+              "object-surviving-intervals-brace"
+            ],
+            "start": 13.25,
+            "duration": 0.8,
+            "easing": "editorial",
+            "properties": {}
+          }
+        }
+      ],
+      "operationCount": 2,
+      "beforeProjectSha256": "7215837ae02639364c67f48eaf9d76ca0fc7fe7ea13ac86be83b4be6ea0995f9",
+      "afterProjectSha256": "66caa7e31bb96e64878aafa60a2c48f947ca87d534aca90416c6af0c02587476",
+      "historyEntries": 1,
+      "undoRestoredExactProject": true,
+      "semanticEvidence": {
+        "braceId": "object-surviving-intervals-brace",
+        "label": "2^n pieces",
+        "revealAnimationId": "animation-brace-reveal",
+        "revealStart": 13.25,
+        "thirdRemovalsEnd": 13.1,
+        "revealAfterThirdRemoval": true
+      }
+    },
+    {
+      "commandNumber": 4,
+      "command": "Make the composition less centred and more editorial without changing the mathematical content.",
+      "provider": "deterministic-demo",
+      "intention": "Apply Editorial Ink and introduce quiet asymmetry without changing object content.",
+      "summary": [
+        "Use style style-editorial-ink",
+        "Update object-title: transform, style",
+        "Update object-subtitle: transform, style",
+        "Update object-margin-note: transform, style"
+      ],
+      "operations": [
+        {
+          "type": "set-style",
+          "styleId": "style-editorial-ink"
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-title",
+          "patch": {
+            "transform": {
+              "x": 268
+            },
+            "style": {
+              "textAlign": "left"
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-subtitle",
+          "patch": {
+            "transform": {
+              "x": 283
+            },
+            "style": {
+              "textAlign": "left"
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-margin-note",
+          "patch": {
+            "transform": {
+              "x": 724
+            },
+            "style": {
+              "textAlign": "left"
+            }
+          }
+        }
+      ],
+      "operationCount": 4,
+      "beforeProjectSha256": "7215837ae02639364c67f48eaf9d76ca0fc7fe7ea13ac86be83b4be6ea0995f9",
+      "afterProjectSha256": "0e9b8a1d415bdaef8f656a1f9916b9d4901b04fc787d6e5c39c44625e7fba99f",
+      "historyEntries": 1,
+      "undoRestoredExactProject": true,
+      "semanticEvidence": {
+        "activeStyleId": "style-editorial-ink",
+        "mathematicalContentUnchanged": true,
+        "repositionedObjectCount": 3
+      }
+    },
+    {
+      "commandNumber": 5,
+      "command": "Keep the equation locked and make everything else quieter.",
+      "provider": "deterministic-demo",
+      "intention": "Preserve the locked equation while lowering the visual weight of every unlocked supporting object.",
+      "summary": [
+        "Update object-title: style",
+        "Update object-subtitle: style",
+        "Update object-interval-diagram: style",
+        "Update object-interval-generation-0: style",
+        "Update object-interval-left-1: style",
+        "Update object-interval-right-1: style",
+        "Update object-removal-first: style",
+        "Update object-interval-left-2a: style",
+        "Update object-interval-left-2b: style",
+        "Update object-interval-right-2a: style",
+        "Update object-interval-right-2b: style",
+        "Update object-removal-second: style",
+        "Update object-generation-note: style",
+        "Update object-interval-third-1-left: style",
+        "Update object-removal-third-1: style",
+        "Update object-interval-third-1-right: style",
+        "Update object-interval-third-2-left: style",
+        "Update object-removal-third-2: style",
+        "Update object-interval-third-2-right: style",
+        "Update object-interval-third-3-left: style",
+        "Update object-removal-third-3: style",
+        "Update object-interval-third-3-right: style",
+        "Update object-interval-third-4-left: style",
+        "Update object-removal-third-4: style",
+        "Update object-interval-third-4-right: style",
+        "Update object-margin-note: style"
+      ],
+      "operations": [
+        {
+          "type": "update-object",
+          "objectId": "object-title",
+          "patch": {
+            "style": {
+              "opacity": 0.82
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-subtitle",
+          "patch": {
+            "style": {
+              "opacity": 0.62
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-interval-diagram",
+          "patch": {
+            "style": {
+              "opacity": 0.62
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-interval-generation-0",
+          "patch": {
+            "style": {
+              "opacity": 0.62
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-interval-left-1",
+          "patch": {
+            "style": {
+              "opacity": 0.62
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-interval-right-1",
+          "patch": {
+            "style": {
+              "opacity": 0.62
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-removal-first",
+          "patch": {
+            "style": {
+              "opacity": 0.35
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-interval-left-2a",
+          "patch": {
+            "style": {
+              "opacity": 0.62
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-interval-left-2b",
+          "patch": {
+            "style": {
+              "opacity": 0.62
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-interval-right-2a",
+          "patch": {
+            "style": {
+              "opacity": 0.62
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-interval-right-2b",
+          "patch": {
+            "style": {
+              "opacity": 0.62
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-removal-second",
+          "patch": {
+            "style": {
+              "opacity": 0.3
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-generation-note",
+          "patch": {
+            "style": {
+              "opacity": 0.62
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-interval-third-1-left",
+          "patch": {
+            "style": {
+              "opacity": 0.62
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-removal-third-1",
+          "patch": {
+            "style": {
+              "opacity": 0.32
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-interval-third-1-right",
+          "patch": {
+            "style": {
+              "opacity": 0.62
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-interval-third-2-left",
+          "patch": {
+            "style": {
+              "opacity": 0.62
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-removal-third-2",
+          "patch": {
+            "style": {
+              "opacity": 0.32
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-interval-third-2-right",
+          "patch": {
+            "style": {
+              "opacity": 0.62
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-interval-third-3-left",
+          "patch": {
+            "style": {
+              "opacity": 0.62
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-removal-third-3",
+          "patch": {
+            "style": {
+              "opacity": 0.32
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-interval-third-3-right",
+          "patch": {
+            "style": {
+              "opacity": 0.62
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-interval-third-4-left",
+          "patch": {
+            "style": {
+              "opacity": 0.62
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-removal-third-4",
+          "patch": {
+            "style": {
+              "opacity": 0.32
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-interval-third-4-right",
+          "patch": {
+            "style": {
+              "opacity": 0.62
+            }
+          }
+        },
+        {
+          "type": "update-object",
+          "objectId": "object-margin-note",
+          "patch": {
+            "style": {
+              "opacity": 0.62
+            }
+          }
+        }
+      ],
+      "operationCount": 26,
+      "beforeProjectSha256": "7215837ae02639364c67f48eaf9d76ca0fc7fe7ea13ac86be83b4be6ea0995f9",
+      "afterProjectSha256": "3749e47f71826ea5e2f043ac5aeae25a97c39740b35a3b0f94b71d46e898be43",
+      "historyEntries": 1,
+      "undoRestoredExactProject": true,
+      "semanticEvidence": {
+        "equationFamilyLocked": true,
+        "quietedObjectCount": 26,
+        "supportingObjectCount": 26
+      }
+    }
+  ]
+}
