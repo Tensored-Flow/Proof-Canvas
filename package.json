@@ -8,7 +8,7 @@
     "url": "https://github.com/Tensored-Flow/Proof-Canvas.git"
   },
   "engines": {
-    "node": ">=20.9.0"
+    "node": ">=24 <25"
   },
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1",
@@ -22,9 +22,13 @@
     "artifacts": "tsx scripts/proofcanvas/generate-artifacts.ts",
     "artifacts:prepare-render": "tsx scripts/proofcanvas/generate-artifacts.ts --prepare-render",
     "artifacts:verify": "tsx scripts/proofcanvas/verify-artifacts.ts",
-    "render": "npm run artifacts:prepare-render && bash scripts/proofcanvas/render-example.sh && npm run artifacts"
+    "render": "npm run artifacts:prepare-render && bash scripts/proofcanvas/render-example.sh && npm run artifacts",
+    "auth:hash-password": "tsx scripts/proofcanvas/hash-password.ts",
+    "db:backup": "tsx scripts/proofcanvas/backup.ts",
+    "db:restore": "tsx scripts/proofcanvas/restore.ts"
   },
   "dependencies": {
+    "better-sqlite3": "13.0.3",
     "geist": "^1.7.0",
     "katex": "^0.18.4",
     "next": "^16.1.5",
@@ -40,6 +44,7 @@
     "@testing-library/dom": "^10.4.0",
     "@testing-library/jest-dom": "^6.4.2",
     "@testing-library/react": "^16.3.0",
+    "@types/better-sqlite3": "9.6.0",
     "@types/jest": "^30.0.0",
     "@types/katex": "^0.16.8",
     "@types/node": "^20.19.30",

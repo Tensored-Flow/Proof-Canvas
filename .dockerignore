@@ -1,0 +1,13 @@
+.git
+.next
+.proofcanvas-data
+.codex
+coverage
+examples
+node_modules
+npm-debug.log*
+services/proofcanvas-render/.venv
+tests
+.env
+.env.*
+!.env.example

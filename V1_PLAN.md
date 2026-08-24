@@ -38,6 +38,15 @@ Acceptance criteria: AC-03, AC-04, parts of AC-05 and AC-18.
 - Add dashboard CRUD and route the editor through a durable project ID.
 - Prove cross-browser and process-restart persistence.
 
+Slice 2 implements the engineering path: no-signup owner login; opaque expiring sessions and
+session-bound CSRF; protected dashboard/editor/AI/render routes; a checksummed STRICT SQLite
+repository; revision-CAS and idempotent mutations; autosave; explicit local recovery; checkpoints;
+duplicate/soft delete; validated online backup and offline restore; and live/ready endpoints.
+Automated Node/jsdom coverage proves repository reopen, two-connection CAS, API authentication,
+autosave serialization, and recovery semantics. Fresh real-browser, container-restart, and hosted
+persistent-volume evidence remains a Milestone 6 qualification item rather than an implementation
+claim.
+
 ## Milestone 3 — professional editor and manual authoring
 
 Acceptance criteria: AC-05, AC-06, remaining AC-07 and AC-08, AC-11, AC-16.

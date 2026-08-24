@@ -1,0 +1,30 @@
+services:
+  proofcanvas:
+    build: .
+    container_name: proofcanvas-app
+    init: true
+    restart: unless-stopped
+    read_only: true
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      NODE_ENV: production
+      PROOFCANVAS_APP_ORIGIN: ${PROOFCANVAS_APP_ORIGIN:?set PROOFCANVAS_APP_ORIGIN to the exact public HTTPS origin}
+      PROOFCANVAS_OWNER_PASSWORD_HASH: ${PROOFCANVAS_OWNER_PASSWORD_HASH:?set the scrypt owner password hash}
+      PROOFCANVAS_SESSION_SECRET: ${PROOFCANVAS_SESSION_SECRET:?set an independent 32-byte encoded secret}
+      PROOFCANVAS_DATA_DIR: /var/lib/proofcanvas
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      PROOFCANVAS_OPENAI_MODEL: ${PROOFCANVAS_OPENAI_MODEL:-}
+      PROOFCANVAS_RENDER_URL: ${PROOFCANVAS_RENDER_URL:-}
+      PROOFCANVAS_RENDER_TOKEN: ${PROOFCANVAS_RENDER_TOKEN:-}
+    volumes:
+      - proofcanvas-data:/var/lib/proofcanvas
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  proofcanvas-data:

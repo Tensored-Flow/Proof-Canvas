@@ -1,4 +1,6 @@
 import { RenderClientError, fetchRenderVideo } from "@/lib/proofcanvas/renderClient.server";
+import { authenticateRequest } from "@/lib/proofcanvas/auth.server";
+import { routeFailure } from "@/lib/proofcanvas/http.server";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -10,8 +12,9 @@ function failure(status: number, code: string, message: string) {
   return new Response(JSON.stringify({ ok: false, code, message }), { status, headers: FAILURE_HEADERS });
 }
 
-export async function GET(_: Request, context: { params: Promise<{ jobId: string }> }) {
+export async function GET(request: Request, context: { params: Promise<{ jobId: string }> }) {
   try {
+    authenticateRequest(request);
     const { jobId } = await context.params;
     const video = await fetchRenderVideo(jobId);
     return new Response(video.body, {
@@ -28,6 +31,6 @@ export async function GET(_: Request, context: { params: Promise<{ jobId: string
     });
   } catch (error) {
     if (error instanceof RenderClientError) return failure(error.status, error.code, error.message);
-    return failure(500, "renderer_error", "ProofCanvas rendering could not complete the request.");
+    return routeFailure(error);
   }
 }

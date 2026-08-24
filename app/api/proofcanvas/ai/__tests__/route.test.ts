@@ -13,6 +13,37 @@ jest.mock("openai", () => {
   };
 });
 
+jest.mock("@/lib/proofcanvas/auth.server", () => {
+  class ProofCanvasAuthError extends Error {
+    constructor(public status: number, public code: string, message: string) {
+      super(message);
+    }
+  }
+  return {
+    ProofCanvasAuthError,
+    authorizeStateChangingRequest: jest.fn(),
+  };
+});
+
+jest.mock("@/lib/proofcanvas/repository.server", () => {
+  class ProjectRepositoryError extends Error {
+    constructor(
+      public status: number,
+      public code: string,
+      message: string,
+      public currentRevision?: number,
+    ) {
+      super(message);
+    }
+  }
+  const getProject = jest.fn();
+  return {
+    ProjectRepositoryError,
+    projectRepository: jest.fn(() => ({ getProject })),
+    __mockGetProject: getProject,
+  };
+});
+
 jest.mock("next/server", () => ({
   NextResponse: {
     json(body: unknown, init: { status?: number; headers?: Record<string, string> } = {}) {
@@ -29,7 +60,7 @@ jest.mock("next/server", () => ({
 }));
 
 import { createCantorDemoProject } from "@/lib/proofcanvas/demo";
-import { PROOFCANVAS_SCHEMA_LIMITS, cloneSerializable } from "@/lib/proofcanvas/schema";
+import { ProofCanvasAuthError, authorizeStateChangingRequest } from "@/lib/proofcanvas/auth.server";
 import { POST } from "../route";
 
 const {
@@ -39,8 +70,28 @@ const {
   __mockResponsesParse: jest.Mock;
   __mockOpenAiConstructor: jest.Mock;
 };
+const { __mockGetProject: mockGetProject } = jest.requireMock("@/lib/proofcanvas/repository.server") as {
+  __mockGetProject: jest.Mock;
+};
 
 const ORIGINAL_ENV = { ...process.env };
+const PROJECT_ID = "project-0123456789abcdef01234567";
+const REVISION = 7;
+
+function durableProject(document = createCantorDemoProject(), revision = REVISION) {
+  return {
+    id: PROJECT_ID,
+    title: document.metadata.title,
+    revision,
+    createdAt: document.metadata.createdAt,
+    updatedAt: document.metadata.updatedAt,
+    thumbnail: null,
+    shotCount: document.shots.length,
+    objectCount: document.shots.reduce((sum, shot) => sum + shot.objects.length, 0),
+    durationSeconds: document.shots.reduce((sum, shot) => sum + shot.duration, 0),
+    document,
+  };
+}
 
 function setProviderEnvironment(available: boolean) {
   if (available) {
@@ -80,7 +131,8 @@ function request(body: unknown, headers: Record<string, string> = {}) {
 
 function validBody() {
   return {
-    project: createCantorDemoProject(),
+    projectId: PROJECT_ID,
+    revision: REVISION,
     shotId: "shot-cantor-construction",
     selectedObjectIds: ["object-title"],
     instruction: "Move this title left.",
@@ -88,8 +140,11 @@ function validBody() {
 }
 
 beforeEach(() => {
+  jest.clearAllMocks();
   mockResponsesParse.mockReset();
   mockOpenAiConstructor.mockClear();
+  (authorizeStateChangingRequest as jest.Mock).mockReturnValue({ tokenHash: "session" });
+  mockGetProject.mockReturnValue(durableProject());
   setProviderEnvironment(false);
 });
 
@@ -105,21 +160,38 @@ test("rejects malformed request bodies before provider resolution", async () => 
   expect(mockOpenAiConstructor).not.toHaveBeenCalled();
 });
 
-test("rejects a structurally oversized project before calling OpenAI", async () => {
+test("rejects caller-supplied project data instead of trusting it", async () => {
   setProviderEnvironment(true);
-  const body = validBody();
-  const style = body.project.styles[0];
-  body.project.styles = Array.from(
-    { length: PROOFCANVAS_SCHEMA_LIMITS.styles + 1 },
-    (_, index) => ({ ...cloneSerializable(style), id: `style-api-limit-${index}` }),
-  );
-
-  const response = await POST(request(body));
+  const response = await POST(request({ ...validBody(), project: createCantorDemoProject() }));
 
   expect(response.status).toBe(400);
   expect(await response.json()).toMatchObject({ ok: false, code: "invalid_request" });
+  expect(mockGetProject).not.toHaveBeenCalled();
   expect(mockOpenAiConstructor).not.toHaveBeenCalled();
   expect(mockResponsesParse).not.toHaveBeenCalled();
+});
+
+test("authenticates before provider configuration or request-body work", async () => {
+  let bodyRead = false;
+  (authorizeStateChangingRequest as jest.Mock).mockImplementation(() => {
+    throw new ProofCanvasAuthError(401, "unauthenticated", "Authentication is required");
+  });
+  const unauthenticated = {
+    headers: { get: () => null },
+    body: {
+      getReader() {
+        bodyRead = true;
+        throw new Error("body must not be read");
+      },
+    },
+  } as unknown as Request;
+
+  const response = await POST(unauthenticated);
+
+  expect(response.status).toBe(401);
+  expect(bodyRead).toBe(false);
+  expect(mockOpenAiConstructor).not.toHaveBeenCalled();
+  expect(mockGetProject).not.toHaveBeenCalled();
 });
 
 test("returns typed provider_unavailable without key and model configuration", async () => {
@@ -180,12 +252,15 @@ test("returns a validated configured-provider proposal from mocked OpenAI", asyn
   expect(JSON.stringify(payload)).not.toContain("server-only-test-key");
   expect(mockOpenAiConstructor).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "server-only-test-key" }));
   expect(mockResponsesParse).toHaveBeenCalledWith(expect.objectContaining({ model: "test-model-from-env", store: false }));
+  expect(mockGetProject).toHaveBeenCalledWith(PROJECT_ID);
 });
 
 test("maps inherited-lock provider output to a fail-closed response", async () => {
   setProviderEnvironment(true);
+  const project = createCantorDemoProject();
+  project.shots[0].objects.find(({ id }) => id === "object-interval-diagram")!.locked = true;
+  mockGetProject.mockReturnValue(durableProject(project));
   const body = validBody();
-  body.project.shots[0].objects.find(({ id }) => id === "object-interval-diagram")!.locked = true;
   body.selectedObjectIds = ["object-interval-left-1"];
   mockResponsesParse.mockResolvedValue({
     output_parsed: {
@@ -202,6 +277,21 @@ test("maps inherited-lock provider output to a fail-closed response", async () =
   const response = await POST(request(body));
   expect(response.status).toBe(422);
   expect(await response.json()).toMatchObject({ ok: false, code: "invalid_provider_output" });
+});
+
+test("rejects a stale durable revision before invoking the provider", async () => {
+  setProviderEnvironment(true);
+  mockGetProject.mockReturnValue(durableProject(createCantorDemoProject(), REVISION + 1));
+
+  const response = await POST(request(validBody()));
+
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({
+    ok: false,
+    code: "revision_conflict",
+    currentRevision: REVISION + 1,
+  });
+  expect(mockOpenAiConstructor).not.toHaveBeenCalled();
 });
 
 test("rejects declared oversized bodies without reading or calling OpenAI", async () => {

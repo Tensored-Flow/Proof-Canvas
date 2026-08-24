@@ -3,6 +3,7 @@ import { GeistSans } from 'geist/font/sans'
 import 'katex/dist/katex.min.css'
 import './globals.css'
 import './proofcanvas.css'
+import './studio.css'
 
 export const metadata: Metadata = {
   title: 'ProofCanvas — Mathematical animation editor',

@@ -11,6 +11,38 @@ jest.mock("next/server", () => ({
   },
 }));
 
+jest.mock("@/lib/proofcanvas/auth.server", () => {
+  class ProofCanvasAuthError extends Error {
+    constructor(public status: number, public code: string, message: string) {
+      super(message);
+    }
+  }
+  return {
+    ProofCanvasAuthError,
+    authenticateRequest: jest.fn(),
+    authorizeStateChangingRequest: jest.fn(),
+  };
+});
+
+jest.mock("@/lib/proofcanvas/repository.server", () => {
+  class ProjectRepositoryError extends Error {
+    constructor(
+      public status: number,
+      public code: string,
+      message: string,
+      public currentRevision?: number,
+    ) {
+      super(message);
+    }
+  }
+  const getProject = jest.fn();
+  return {
+    ProjectRepositoryError,
+    projectRepository: jest.fn(() => ({ getProject })),
+    __mockGetProject: getProject,
+  };
+});
+
 jest.mock("@/lib/proofcanvas/renderClient.server", () => {
   class RenderClientError extends Error {
     constructor(public status: number, public code: string, message: string) {
@@ -27,6 +59,11 @@ jest.mock("@/lib/proofcanvas/renderClient.server", () => {
 
 import { createCantorDemoProject } from "@/lib/proofcanvas/demo";
 import {
+  ProofCanvasAuthError,
+  authenticateRequest,
+  authorizeStateChangingRequest,
+} from "@/lib/proofcanvas/auth.server";
+import {
   RenderClientError,
   getRenderJob,
   readBoundedJson,
@@ -34,6 +71,10 @@ import {
 } from "@/lib/proofcanvas/renderClient.server";
 import { GET as GET_STATUS } from "../[jobId]/route";
 import { POST } from "../route";
+
+const { __mockGetProject: mockGetProject } = jest.requireMock("@/lib/proofcanvas/repository.server") as {
+  __mockGetProject: jest.Mock;
+};
 
 const job = {
   id: "abcdefghijklmnopqrstuvwx",
@@ -50,6 +91,24 @@ const job = {
 
 const ORIGINAL_ENV = { ...process.env };
 const TOKEN = "proofcanvas-render-route-test-token-long-enough";
+const PROJECT_ID = "project-0123456789abcdef01234567";
+const REVISION = 7;
+const project = createCantorDemoProject();
+
+function durableProject(revision = REVISION) {
+  return {
+    id: PROJECT_ID,
+    title: project.metadata.title,
+    revision,
+    createdAt: project.metadata.createdAt,
+    updatedAt: project.metadata.updatedAt,
+    thumbnail: null,
+    shotCount: project.shots.length,
+    objectCount: project.shots.reduce((sum, shot) => sum + shot.objects.length, 0),
+    durationSeconds: project.shots.reduce((sum, shot) => sum + shot.duration, 0),
+    document: project,
+  };
+}
 
 function request(contentType = "application/json") {
   return {
@@ -59,6 +118,9 @@ function request(contentType = "application/json") {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  (authorizeStateChangingRequest as jest.Mock).mockReturnValue({ tokenHash: "session" });
+  (authenticateRequest as jest.Mock).mockReturnValue({ tokenHash: "session" });
+  mockGetProject.mockReturnValue(durableProject());
   process.env.PROOFCANVAS_RENDER_URL = "http://renderer.example:8080";
   process.env.PROOFCANVAS_RENDER_TOKEN = TOKEN;
 });
@@ -68,7 +130,7 @@ afterAll(() => {
 });
 
 test("POST accepts the strict public envelope and returns an asynchronous job", async () => {
-  const body = { project: createCantorDemoProject(), shotId: "shot-cantor-construction", quality: "preview" };
+  const body = { projectId: PROJECT_ID, revision: REVISION, shotId: "shot-cantor-construction", quality: "preview" };
   (readBoundedJson as jest.Mock).mockResolvedValue(body);
   (submitRender as jest.Mock).mockResolvedValue(job);
 
@@ -76,13 +138,15 @@ test("POST accepts the strict public envelope and returns an asynchronous job", 
 
   expect(response.status).toBe(202);
   expect(response.headers.get("cache-control")).toContain("no-store");
-  expect(await response.json()).toEqual({ ok: true, job });
-  expect(submitRender).toHaveBeenCalledWith(body);
+  expect(await response.json()).toEqual({ ok: true, projectId: PROJECT_ID, revision: REVISION, job });
+  expect(submitRender).toHaveBeenCalledWith({ project, shotId: body.shotId, quality: body.quality });
+  expect(mockGetProject).toHaveBeenCalledWith(PROJECT_ID);
 });
 
 test("POST rejects extra public fields before compiling", async () => {
   (readBoundedJson as jest.Mock).mockResolvedValue({
-    project: createCantorDemoProject(),
+    projectId: PROJECT_ID,
+    revision: REVISION,
     quality: "preview",
     source: "arbitrary Python",
   });
@@ -95,7 +159,7 @@ test("POST rejects extra public fields before compiling", async () => {
 });
 
 test("POST preserves the typed render-duration admission error", async () => {
-  const body = { project: createCantorDemoProject(), quality: "preview" };
+  const body = { projectId: PROJECT_ID, revision: REVISION, quality: "preview" };
   (readBoundedJson as jest.Mock).mockResolvedValue(body);
   (submitRender as jest.Mock).mockRejectedValue(new RenderClientError(
     422,
@@ -128,6 +192,30 @@ test("POST returns render_unavailable without reading an unconfigured request bo
   expect(submitRender).not.toHaveBeenCalled();
 });
 
+test("POST authenticates before renderer configuration or body work", async () => {
+  (authorizeStateChangingRequest as jest.Mock).mockImplementation(() => {
+    throw new ProofCanvasAuthError(401, "unauthenticated", "Authentication is required");
+  });
+  delete process.env.PROOFCANVAS_RENDER_URL;
+
+  const response = await POST(request());
+
+  expect(response.status).toBe(401);
+  expect(readBoundedJson).not.toHaveBeenCalled();
+  expect(mockGetProject).not.toHaveBeenCalled();
+});
+
+test("POST rejects stale durable revisions before submitting", async () => {
+  (readBoundedJson as jest.Mock).mockResolvedValue({ projectId: PROJECT_ID, revision: REVISION, quality: "preview" });
+  mockGetProject.mockReturnValue(durableProject(REVISION + 1));
+
+  const response = await POST(request());
+
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({ code: "revision_conflict", currentRevision: REVISION + 1 });
+  expect(submitRender).not.toHaveBeenCalled();
+});
+
 test("status GET relays typed job state without caching", async () => {
   (getRenderJob as jest.Mock).mockResolvedValue({ ...job, status: "running", startedAt: 1001 });
 
@@ -136,6 +224,7 @@ test("status GET relays typed job state without caching", async () => {
   expect(response.status).toBe(200);
   expect(response.headers.get("cache-control")).toContain("no-store");
   expect(await response.json()).toMatchObject({ ok: true, job: { id: job.id, status: "running" } });
+  expect(authenticateRequest).toHaveBeenCalledTimes(1);
 });
 
 test("status GET preserves a typed not-found boundary", async () => {

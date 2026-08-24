@@ -1,12 +1,15 @@
 import { TextDecoder } from "node:util";
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { authorizeStateChangingRequest } from "@/lib/proofcanvas/auth.server";
+import { routeFailure } from "@/lib/proofcanvas/http.server";
 import {
   ProofCanvasProviderOutputError,
   proofCanvasOpenAiConfiguration,
   proposeWithOpenAi,
 } from "@/lib/proofcanvas/openaiProvider";
-import { ProjectDocumentSchema, type SceneOperation } from "@/lib/proofcanvas/schema";
+import { ProjectRepositoryError, projectRepository } from "@/lib/proofcanvas/repository.server";
+import type { ProjectDocument, SceneOperation } from "@/lib/proofcanvas/schema";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -15,24 +18,20 @@ export const runtime = "nodejs";
 const MAX_BODY_BYTES = 192 * 1024;
 const IdSchema = z.string().regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/i).max(96);
 const RequestSchema = z.object({
-  project: ProjectDocumentSchema,
+  projectId: z.string().regex(/^project-[a-f0-9]{24}$/),
+  revision: z.number().int().positive(),
   shotId: IdSchema,
   selectedObjectIds: z.array(IdSchema).max(64),
   instruction: z.string().trim().min(1).max(1_000),
-}).strict().superRefine((value, context) => {
-  const shot = value.project.shots.find(({ id }) => id === value.shotId);
-  if (!shot) {
-    context.addIssue({ code: "custom", path: ["shotId"], message: "Shot does not exist" });
-    return;
-  }
-  if (new Set(value.selectedObjectIds).size !== value.selectedObjectIds.length) {
-    context.addIssue({ code: "custom", path: ["selectedObjectIds"], message: "Selection contains duplicate IDs" });
-  }
+}).strict();
+
+function validateProjectContext(project: ProjectDocument, value: z.infer<typeof RequestSchema>): boolean {
+  const shot = project.shots.find(({ id }) => id === value.shotId);
+  if (!shot) return false;
+  if (new Set(value.selectedObjectIds).size !== value.selectedObjectIds.length) return false;
   const objectIds = new Set(shot.objects.map(({ id }) => id));
-  value.selectedObjectIds.forEach((id, index) => {
-    if (!objectIds.has(id)) context.addIssue({ code: "custom", path: ["selectedObjectIds", index], message: "Selected object does not exist in the shot" });
-  });
-});
+  return value.selectedObjectIds.every((id) => objectIds.has(id));
+}
 
 export interface ProofCanvasAiSuccessResponse {
   ok: true;
@@ -97,6 +96,12 @@ async function readBoundedBody(request: Request): Promise<string> {
 }
 
 export async function POST(request: Request) {
+  try {
+    // Authentication must precede provider configuration and body work.
+    authorizeStateChangingRequest(request);
+  } catch (error) {
+    return routeFailure(error);
+  }
   const mediaType = request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
   if (mediaType !== "application/json") {
     return errorResponse(415, "invalid_request", "Content-Type must be application/json");
@@ -137,12 +142,25 @@ export async function POST(request: Request) {
   }
 
   try {
-    const proposal = await proposeWithOpenAi(parsed.data, configuration);
+    const durable = projectRepository().getProject(parsed.data.projectId);
+    if (durable.revision !== parsed.data.revision) {
+      throw new ProjectRepositoryError(409, "revision_conflict", "Project changed since this revision was loaded", durable.revision);
+    }
+    if (!validateProjectContext(durable.document, parsed.data)) {
+      return errorResponse(400, "invalid_request", "Request references an unknown shot, duplicate selection, or unknown object");
+    }
+    const proposal = await proposeWithOpenAi({
+      project: durable.document,
+      shotId: parsed.data.shotId,
+      selectedObjectIds: parsed.data.selectedObjectIds,
+      instruction: parsed.data.instruction,
+    }, configuration);
     return json({ ok: true, ...proposal });
   } catch (error) {
     if (error instanceof ProofCanvasProviderOutputError || error instanceof z.ZodError) {
       return errorResponse(422, "invalid_provider_output", "The provider response did not pass ProofCanvas operation validation");
     }
+    if (error instanceof ProjectRepositoryError) return routeFailure(error);
     return errorResponse(502, "provider_error", "The configured AI provider could not complete the request");
   }
 }

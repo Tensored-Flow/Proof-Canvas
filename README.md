@@ -10,21 +10,28 @@ editable format, and AI suggestions are validated scene operations rather than e
 
 ## Quick start
 
-Editor quick-start requirements: Node.js 20.9+ and npm. The documented renderer, browser, and
+Editor quick-start requirements: Node.js 24 and npm. The documented renderer, browser, and
 genuine-Manim verification commands additionally target an x86_64 Linux host with Docker, Git, Python 3,
 ripgrep, Bash 4+, and GNU `timeout`. Those exact shell workflows are not currently portable to the
 stock macOS command-line environment.
 
 ```bash
 npm ci
+npm run auth:hash-password
 npm run dev
 ```
 
-Open <http://localhost:3000/>. `/proofcanvas` redirects to `/` for compatibility.
+Pipe a private owner passphrase of at least 16 UTF-8 bytes to `npm run auth:hash-password`, then put
+its scrypt output and an independent `openssl rand -hex 32` session secret in `.env.local` using [`.env.example`](./.env.example).
+Set `PROOFCANVAS_APP_ORIGIN` to the exact browser origin and `PROOFCANVAS_DATA_DIR` to durable local
+storage. Open <http://127.0.0.1:3000/> and log in; there is deliberately no sign-up route.
+`/proofcanvas` redirects authenticated owners to the project dashboard for compatibility.
 
-Without credentials or a render service, the editor still supports structured editing, multiple
-shots, timeline playback, components, undo/redo, browser-local save/load, JSON import/export,
-Manim Python export, critique, and the visibly labelled deterministic AI demo.
+The dashboard creates blank or sample projects and supports metadata-only listing, rename,
+duplicate, confirmed soft delete, and durable editor links. The editor serializes optimistic
+autosaves, exposes checkpoints and recovery, and offers project-scoped browser recovery explicitly
+without auto-loading it. Without an AI or render service, direct editing, JSON/Python export,
+critique, and the visibly labelled deterministic AI demo remain available.
 
 The shared format contract caps canonical project JSON and browser imports at 2 MiB. Oversized files
 are rejected before the browser reads them, and every schema-valid project remains exportable and
@@ -45,6 +52,9 @@ npm run test:e2e   # run the Docker-isolated browser and renderer journey
 npm run artifacts  # regenerate canonical JSON, Python, AI evidence, and hashes
 npm run artifacts:verify # reject missing, changed, or stale retained evidence
 npm run render     # regenerate source, render it, then refresh and verify evidence
+npm run auth:hash-password # read one password from stdin and print a scrypt hash
+npm run db:backup  # make and validate an online SQLite backup
+npm run db:restore -- /absolute/backup.sqlite3 # offline validated restore
 ```
 
 `npm run artifacts` requires `python3`. `npm run render` requires Docker and consumes the generated
@@ -117,8 +127,9 @@ appropriate TLS/network controls in front of the application.
 - Locks are inherited through groups. AI cannot unlock objects.
 - The browser preview is deterministic but approximate. SVG/KaTeX typography, paths, easing,
   graphs, group geometry, and camera motion do not promise frame parity with Manim.
-- Browser persistence is single-device `localStorage`. There are no accounts, server persistence,
-  collaboration, autosave, or conflict resolution.
+- Projects are private to one installation and persist in a checksummed, STRICT SQLite repository.
+  Writes use compare-and-swap revisions and idempotent mutation IDs; browser storage is only an
+  explicit project-scoped recovery bridge.
 - Arbitrary Python import or execution is unsupported. Only compiler-generated source may cross the
   authenticated renderer boundary.
 
@@ -126,11 +137,21 @@ For module boundaries and trust flows, see [`ARCHITECTURE.md`](./ARCHITECTURE.md
 
 ## Security and deployment status
 
-The AI and render proxy routes validate and bound their inputs, but they do **not** authenticate an
-end user, authorize a tenant, enforce per-user quotas, or provide billing controls. The render
-sidecar's one-running-plus-one-pending capacity is overload protection, not public admission
-control. Do not expose the current application as an untrusted multi-tenant service without an
-authenticated admission and rate-limiting layer.
+Every dashboard, editor, project, AI, render-status, and render-video boundary performs route-level
+owner authentication. State changes additionally require the exact configured Origin and a
+session-bound double-submit CSRF token. AI and render submissions carry only `{projectId, revision}`
+plus bounded action context; the server loads the active canonical document. Sessions are opaque,
+HMAC-signed, expire within 12 hours, are stored only as hashes, and are revoked on logout.
+
+Login verification has a two-job non-queueing scrypt cap and a global ten-attempt, 15-minute
+window. A trusted same-host reverse proxy should add source-aware throttling; ProofCanvas does not
+derive client identity from spoofable forwarding headers, so the global window can otherwise cause
+a temporary owner lockout. The dashboard and checkpoint recovery lists are currently capped at the
+newest 500 and 100 entries; pagination and retention automation are deferred.
+
+This is intentionally a private single-owner installation, not a multi-tenant account system.
+Deploy exactly one application instance on a persistent local volume behind HTTPS. See
+[`DEPLOY.md`](./DEPLOY.md) for secrets, health checks, backup/restore, and the bounded Docker setup.
 
 Renderer jobs are process-local, ephemeral, and lost on restart. Render requests transfer generated
 source only; checked-in image paths need a future trusted asset-packaging design. The direct editor

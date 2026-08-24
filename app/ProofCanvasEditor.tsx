@@ -6,6 +6,7 @@ import { REQUIRED_AI_COMMANDS, interpretDemoCommand, type AiProposal } from '@/l
 import { compileManim } from '@/lib/proofcanvas/compiler'
 import { SEMANTIC_COMPONENTS, insertSemanticComponent, type SemanticComponentId } from '@/lib/proofcanvas/components'
 import { critiqueProject, type CritiqueIssue } from '@/lib/proofcanvas/critique'
+import { ensureSessionCsrfToken } from '@/lib/proofcanvas/csrf.client'
 import { createCantorDemoProject } from '@/lib/proofcanvas/demo'
 import { canRedo, canUndo, commitOperations, commitProject, createHistory, redo, undo, type ProjectHistory } from '@/lib/proofcanvas/history'
 import { allocateId, collectProjectIds } from '@/lib/proofcanvas/ids'
@@ -14,6 +15,7 @@ import { PROOFCANVAS_BRACE_LABEL_MAX_CHARS, PROOFCANVAS_LATEX_MAX_CHARS, PROOFCA
 import { EDITORIAL_INK_STYLE_ID, RAW_MANIM_STYLE_ID, styleById } from '@/lib/proofcanvas/styles'
 
 const STORAGE_KEY = 'proofcanvas_project_v1'
+const recoveryStorageKey = (projectId: string) => `proofcanvas_recovery_${projectId}`
 const OBJECT_TYPES: Array<{ type: Exclude<SceneObject['type'], 'group'>; label: string }> = [
   { type: 'text', label: 'text' }, { type: 'math', label: 'math' }, { type: 'circle', label: 'circle' },
   { type: 'rectangle', label: 'rectangle' }, { type: 'line', label: 'line' }, { type: 'arrow', label: 'arrow' },
@@ -43,6 +45,29 @@ type CritiqueResult = {
   issues: CritiqueIssue[]
   revision: string
   shotId: string
+}
+
+type DurableEditorContext = {
+  projectId: string
+  revision: number
+  csrfToken: string | null
+}
+
+type DurableSaveState = 'saved' | 'waiting' | 'saving' | 'offline' | 'conflict'
+
+type DurableCheckpoint = {
+  id: string
+  projectId: string
+  revision: number
+  label: string
+  createdAt: string
+}
+
+type PendingDurableSave = {
+  canonical: string
+  document: ProjectDocument
+  mutationId: string
+  expectedRevision: number
 }
 
 type NumericField = {
@@ -281,11 +306,20 @@ function animationTargetsLocked(shot: Shot, animation: SceneAnimation): boolean 
   return [...familyIds].some((id) => Boolean(effectiveLockOwner(shot, id)))
 }
 
-export default function ProofCanvasEditor({ aiConfigured = false }: { aiConfigured?: boolean }) {
-  const [history, setHistory] = useState<ProjectHistory>(() => createHistory(createCantorDemoProject()))
+export default function ProofCanvasEditor({
+  aiConfigured = false,
+  initialProject,
+  durableProject,
+}: {
+  aiConfigured?: boolean
+  initialProject?: ProjectDocument
+  durableProject?: DurableEditorContext
+}) {
+  const startingProjectRef = useRef<ProjectDocument>(ProjectDocumentSchema.parse(cloneSerializable(initialProject ?? createCantorDemoProject())))
+  const [history, setHistory] = useState<ProjectHistory>(() => createHistory(startingProjectRef.current))
   const [selectedIds, setSelectedIds] = useState<string[]>([])
-  const [activeShotId, setActiveShotId] = useState('shot-cantor-construction')
-  const [playhead, setPlayhead] = useState(INITIAL_DEMO_PLAYHEAD)
+  const [activeShotId, setActiveShotId] = useState(startingProjectRef.current.shots[0].id)
+  const [playhead, setPlayhead] = useState(initialProject ? 0 : INITIAL_DEMO_PLAYHEAD)
   const [libraryTab, setLibraryTab] = useState<'objects' | 'components'>('objects')
   const [animationType, setAnimationType] = useState<AnimationType>('fade-in')
   const [selectedAnimationId, setSelectedAnimationId] = useState<string | null>(null)
@@ -298,7 +332,7 @@ export default function ProofCanvasEditor({ aiConfigured = false }: { aiConfigur
   const [aiPending, setAiPending] = useState(false)
   const [aiError, setAiError] = useState('')
   const [critique, setCritique] = useState<CritiqueResult | null>(null)
-  const [status, setStatus] = useState('Preloaded Cantor-set project')
+  const [status, setStatus] = useState(durableProject ? `Loaded durable revision ${durableProject.revision}` : 'Preloaded Cantor-set project')
   const [importError, setImportError] = useState('')
   const [exportPreview, setExportPreview] = useState<{ title: string; contents: string; diagnostics?: string[] } | null>(null)
   const [rendererMessage, setRendererMessage] = useState('')
@@ -307,12 +341,31 @@ export default function ProofCanvasEditor({ aiConfigured = false }: { aiConfigur
   const [renderPending, setRenderPending] = useState(false)
   const [renderPollFailures, setRenderPollFailures] = useState(0)
   const [renderPollingPaused, setRenderPollingPaused] = useState(false)
+  const [serverRevision, setServerRevision] = useState(durableProject?.revision ?? 0)
+  const [csrfToken, setCsrfToken] = useState(durableProject?.csrfToken ?? null)
+  const [saveState, setSaveState] = useState<DurableSaveState>('saved')
+  const [saveMessage, setSaveMessage] = useState('')
+  const [localRecovery, setLocalRecovery] = useState<ProjectDocument | null>(null)
+  const [recoveryIgnored, setRecoveryIgnored] = useState(false)
+  const [checkpoints, setCheckpoints] = useState<DurableCheckpoint[]>([])
+  const [recoveryOpen, setRecoveryOpen] = useState(false)
+  const [checkpointPending, setCheckpointPending] = useState(false)
   const trackRef = useRef<HTMLDivElement | null>(null)
   const exportDialogRef = useRef<HTMLDivElement | null>(null)
   const exportTriggerRef = useRef<HTMLElement | null>(null)
   const aiRequestSequence = useRef(0)
   const importRequestSequence = useRef(0)
   const aiAbortController = useRef<AbortController | null>(null)
+  const serverRevisionRef = useRef(serverRevision)
+  const csrfTokenRef = useRef(csrfToken)
+  const lastSavedCanonicalRef = useRef(canonicalProjectJson(startingProjectRef.current))
+  const pendingSaveRef = useRef<PendingDurableSave | null>(null)
+  const savePromiseRef = useRef<Promise<boolean> | null>(null)
+  const saveConflictRef = useRef(false)
+  const recoveryAppliedRef = useRef(false)
+
+  serverRevisionRef.current = serverRevision
+  csrfTokenRef.current = csrfToken
 
   const project = history.present
   const shot = project.shots.find(({ id }) => id === activeShotId) ?? project.shots[0]
@@ -332,6 +385,99 @@ export default function ProofCanvasEditor({ aiConfigured = false }: { aiConfigur
   const projectRevision = useMemo(() => canonicalProjectJson(project), [project])
   const projectRevisionRef = useRef(projectRevision)
   projectRevisionRef.current = projectRevision
+  const ensureCsrfToken = useCallback(async () => {
+    const token = await ensureSessionCsrfToken(csrfTokenRef.current)
+    csrfTokenRef.current = token
+    setCsrfToken(token)
+    return token
+  }, [])
+
+  const durableMutation = useCallback(async (url: string, method: string, body: object) => {
+    const token = await ensureCsrfToken()
+    const response = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'X-ProofCanvas-CSRF': token },
+      body: JSON.stringify(body),
+    })
+    const payload: unknown = await response.json()
+    return { response, payload }
+  }, [ensureCsrfToken])
+
+  const performDurableSave = useCallback(async (): Promise<boolean> => {
+    if (!durableProject) return true
+    if (saveConflictRef.current) return false
+    if (savePromiseRef.current) return savePromiseRef.current
+    const run = async () => {
+      const currentCanonical = projectRevisionRef.current
+      if (!pendingSaveRef.current && currentCanonical === lastSavedCanonicalRef.current) {
+        setSaveState('saved')
+        return true
+      }
+      const pending = pendingSaveRef.current ?? {
+        canonical: currentCanonical,
+        document: ProjectDocumentSchema.parse(JSON.parse(currentCanonical)),
+        mutationId: window.crypto.randomUUID(),
+        expectedRevision: serverRevisionRef.current,
+      }
+      pendingSaveRef.current = pending
+      setSaveState('saving')
+      setSaveMessage('')
+      try {
+        const { response, payload } = await durableMutation(`/api/projects/${encodeURIComponent(durableProject.projectId)}`, 'PUT', {
+          expectedRevision: pending.expectedRevision,
+          mutationId: pending.mutationId,
+          document: pending.document,
+        })
+        if (response.status === 409 && payload && typeof payload === 'object' && (payload as { code?: unknown }).code === 'revision_conflict') {
+          pendingSaveRef.current = null
+          saveConflictRef.current = true
+          setSaveState('conflict')
+          setSaveMessage('This project changed elsewhere. Reload the durable version before continuing.')
+          return false
+        }
+        if (!response.ok || !payload || typeof payload !== 'object' || (payload as { ok?: unknown }).ok !== true) {
+          throw new Error(responseMessage(payload, 'Autosave could not complete'))
+        }
+        const receipt = (payload as { project?: unknown }).project
+        if (!receipt || typeof receipt !== 'object' || typeof (receipt as { revision?: unknown }).revision !== 'number') {
+          throw new Error('Autosave returned an invalid response')
+        }
+        const nextRevision = (receipt as { revision: number }).revision
+        serverRevisionRef.current = nextRevision
+        setServerRevision(nextRevision)
+        lastSavedCanonicalRef.current = pending.canonical
+        pendingSaveRef.current = null
+        const caughtUp = projectRevisionRef.current === pending.canonical
+        if (caughtUp) {
+          window.localStorage.removeItem(recoveryStorageKey(durableProject.projectId))
+          if (recoveryAppliedRef.current) {
+            recoveryAppliedRef.current = false
+            setLocalRecovery(null)
+          }
+        } else {
+          try { window.localStorage.setItem(recoveryStorageKey(durableProject.projectId), projectRevisionRef.current) }
+          catch { /* Keep autosave moving even if the best-effort recovery cache is unavailable. */ }
+        }
+        setSaveState(caughtUp ? 'saved' : 'waiting')
+        setSaveMessage(caughtUp ? `Saved revision ${nextRevision}` : 'Saving newer edits…')
+        return true
+      } catch (error) {
+        setSaveState('offline')
+        setSaveMessage(error instanceof Error ? `${error.message}. Retry uses the same mutation ID.` : 'Autosave is offline. Retry uses the same mutation ID.')
+        return false
+      }
+    }
+    const promise = run()
+    savePromiseRef.current = promise
+    try {
+      return await promise
+    } finally {
+      savePromiseRef.current = null
+      if (!saveConflictRef.current && !pendingSaveRef.current && projectRevisionRef.current !== lastSavedCanonicalRef.current) {
+        window.setTimeout(() => { void performDurableSave() }, 0)
+      }
+    }
+  }, [durableMutation, durableProject])
   const renderRepresentsCurrentProject = Boolean(renderJob && renderBaseRevision === projectRevision)
   const aiContextKey = `${projectRevision}\u0000${shot.id}`
   const aiContextRef = useRef(aiContextKey)
@@ -368,6 +514,35 @@ export default function ProofCanvasEditor({ aiConfigured = false }: { aiConfigur
       { key: 'zoom', label: 'Camera zoom', fallback: shot.camera.zoom, min: PROOFCANVAS_SCHEMA_LIMITS.cameraZoomMin, max: PROOFCANVAS_SCHEMA_LIMITS.cameraZoomMax },
       { key: 'rotation', label: 'Camera rotation', fallback: shot.camera.rotation, min: -PROOFCANVAS_SCHEMA_LIMITS.animationRotationMagnitude, max: PROOFCANVAS_SCHEMA_LIMITS.animationRotationMagnitude },
     ] : []
+
+  useEffect(() => {
+    if (!durableProject) return
+    try {
+      const scoped = window.localStorage.getItem(recoveryStorageKey(durableProject.projectId))
+      const legacy = window.localStorage.getItem(STORAGE_KEY)
+      const legacyProject = legacy ? parseProjectDocument(legacy) : null
+      const raw = scoped ?? (legacyProject?.metadata.id === durableProject.projectId ? legacy : null)
+      if (!raw) return
+      const candidate = parseProjectDocument(raw)
+      if (canonicalProjectJson(candidate) !== lastSavedCanonicalRef.current) setLocalRecovery(candidate)
+    } catch {
+      // Invalid legacy data is never loaded automatically and remains available
+      // for the owner to inspect or remove through browser storage tooling.
+    }
+  }, [durableProject])
+
+  useEffect(() => {
+    if (!durableProject || saveConflictRef.current) return
+    if (projectRevision === lastSavedCanonicalRef.current && !pendingSaveRef.current) {
+      setSaveState('saved')
+      return
+    }
+    try { window.localStorage.setItem(recoveryStorageKey(durableProject.projectId), projectRevision) }
+    catch { /* Durable autosave remains authoritative; browser recovery is best-effort. */ }
+    setSaveState((current) => current === 'saving' ? current : 'waiting')
+    const timeout = window.setTimeout(() => { void performDurableSave() }, 800)
+    return () => window.clearTimeout(timeout)
+  }, [durableProject, performDurableSave, projectRevision])
 
   useEffect(() => {
     if (shot.id !== activeShotId) setActiveShotId(shot.id)
@@ -822,17 +997,28 @@ export default function ProofCanvasEditor({ aiConfigured = false }: { aiConfigur
     setProposalBase(null)
     setAiPending(true)
     try {
-      const request = { project, shotId: shot.id, selectedObjectIds: selectedRootIds, instruction: value }
+      const localRequest = { project, shotId: shot.id, selectedObjectIds: selectedRootIds, instruction: value }
       if (!aiConfigured) {
-        setProposal(interpretDemoCommand(request))
+        setProposal(interpretDemoCommand(localRequest))
         setProposalBase(base)
         setAiProvider('deterministic-demo')
         setAiError('')
         return
       }
+      if (durableProject && (!await performDurableSave() || projectRevisionRef.current !== lastSavedCanonicalRef.current)) {
+        throw new Error('Save the current project before requesting an AI proposal')
+      }
+      const token = durableProject ? await ensureCsrfToken() : null
+      const request = durableProject ? {
+        projectId: durableProject.projectId,
+        revision: serverRevisionRef.current,
+        shotId: shot.id,
+        selectedObjectIds: selectedRootIds,
+        instruction: value,
+      } : localRequest
       const response = await fetch('/api/proofcanvas/ai', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(token ? { 'X-ProofCanvas-CSRF': token } : {}) },
         body: JSON.stringify(request),
         signal: controller.signal,
       })
@@ -849,7 +1035,7 @@ export default function ProofCanvasEditor({ aiConfigured = false }: { aiConfigur
         setProposalBase(base)
         setAiProvider('configured-provider')
       } else if (payload && typeof payload === 'object' && (payload as { code?: unknown }).code === 'provider_unavailable') {
-        setProposal(interpretDemoCommand(request))
+        setProposal(interpretDemoCommand(localRequest))
         setProposalBase(base)
         setAiProvider('deterministic-demo')
       } else {
@@ -877,10 +1063,16 @@ export default function ProofCanvasEditor({ aiConfigured = false }: { aiConfigur
     setRenderPollingPaused(false)
     setRenderPending(true)
     try {
+      if (durableProject && (!await performDurableSave() || projectRevisionRef.current !== lastSavedCanonicalRef.current)) {
+        throw new Error('Save the current project before starting a render')
+      }
+      const token = durableProject ? await ensureCsrfToken() : null
       const response = await fetch('/api/proofcanvas/render', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project, quality: 'preview' }),
+        headers: { 'Content-Type': 'application/json', ...(token ? { 'X-ProofCanvas-CSRF': token } : {}) },
+        body: JSON.stringify(durableProject
+          ? { projectId: durableProject.projectId, revision: serverRevisionRef.current, quality: 'preview' }
+          : { project, quality: 'preview' }),
       })
       const payload: unknown = await response.json()
       if (!response.ok) throw new Error(responseMessage(payload, 'ProofCanvas rendering could not start'))
@@ -908,10 +1100,44 @@ export default function ProofCanvasEditor({ aiConfigured = false }: { aiConfigur
   }
 
   const saveProject = () => {
+    if (durableProject) {
+      void performDurableSave()
+      return
+    }
     try { window.localStorage.setItem(STORAGE_KEY, canonicalProjectJson(project)); setStatus('Saved locally') }
     catch { setStatus('Local storage is unavailable') }
   }
+
+  const loadCheckpoints = async () => {
+    if (!durableProject) return
+    setCheckpointPending(true)
+    try {
+      const response = await fetch(`/api/projects/${encodeURIComponent(durableProject.projectId)}/checkpoints`, { cache: 'no-store' })
+      const payload: unknown = await response.json()
+      if (!response.ok || !payload || typeof payload !== 'object' || !Array.isArray((payload as { checkpoints?: unknown }).checkpoints)) {
+        throw new Error(responseMessage(payload, 'Checkpoints could not be loaded'))
+      }
+      const loaded = (payload as { checkpoints: unknown[] }).checkpoints.filter((candidate): candidate is DurableCheckpoint => Boolean(
+        candidate && typeof candidate === 'object'
+        && typeof (candidate as { id?: unknown }).id === 'string'
+        && typeof (candidate as { revision?: unknown }).revision === 'number'
+        && typeof (candidate as { label?: unknown }).label === 'string'
+        && typeof (candidate as { createdAt?: unknown }).createdAt === 'string',
+      ))
+      setCheckpoints(loaded)
+      setRecoveryOpen(true)
+    } catch (error) {
+      setSaveMessage(error instanceof Error ? error.message : 'Checkpoints could not be loaded')
+    } finally {
+      setCheckpointPending(false)
+    }
+  }
+
   const loadProject = () => {
+    if (durableProject) {
+      void loadCheckpoints()
+      return
+    }
     try {
       const raw = window.localStorage.getItem(STORAGE_KEY)
       if (!raw) return setStatus('No saved ProofCanvas project was found')
@@ -919,7 +1145,76 @@ export default function ProofCanvasEditor({ aiConfigured = false }: { aiConfigur
       if (commitDocument(loaded, 'Load saved project')) { setActiveShotId(loaded.shots[0].id); setSelectedIds([]); setCritique(null) }
     } catch (error) { setStatus(error instanceof Error ? error.message : 'Saved project is invalid') }
   }
-  const resetDemo = () => { const demo = createCantorDemoProject(); if (commitDocument(demo, 'Reset to preloaded demo')) { setActiveShotId(demo.shots[0].id); setSelectedIds([]); setPlayhead(INITIAL_DEMO_PLAYHEAD); setCritique(null) } }
+
+  const createCheckpoint = async () => {
+    if (!durableProject || checkpointPending || saveConflictRef.current) return
+    setCheckpointPending(true)
+    try {
+      if (!await performDurableSave()) throw new Error('Save the current project before creating a checkpoint')
+      const { response, payload } = await durableMutation(`/api/projects/${encodeURIComponent(durableProject.projectId)}/checkpoints`, 'POST', {
+        expectedRevision: serverRevisionRef.current,
+        mutationId: window.crypto.randomUUID(),
+        label: 'Manual checkpoint',
+      })
+      if (!response.ok || !payload || typeof payload !== 'object' || (payload as { ok?: unknown }).ok !== true) throw new Error(responseMessage(payload, 'Checkpoint could not be created'))
+      const receipt = (payload as { checkpoint?: unknown }).checkpoint
+      if (!receipt || typeof receipt !== 'object' || typeof (receipt as { revision?: unknown }).revision !== 'number') throw new Error('Checkpoint returned an invalid response')
+      const revision = (receipt as { revision: number }).revision
+      serverRevisionRef.current = revision
+      setServerRevision(revision)
+      setSaveState('saved')
+      setSaveMessage(`Checkpoint created at revision ${revision}`)
+      await loadCheckpoints()
+    } catch (error) {
+      setSaveMessage(error instanceof Error ? error.message : 'Checkpoint could not be created')
+    } finally {
+      setCheckpointPending(false)
+    }
+  }
+
+  const recoverCheckpoint = async (checkpoint: DurableCheckpoint) => {
+    if (!durableProject || checkpointPending) return
+    if (!window.confirm(`Recover “${checkpoint.label}” from revision ${checkpoint.revision}? A checkpoint of the current project will be created first.`)) return
+    setCheckpointPending(true)
+    try {
+      if (!await performDurableSave()) throw new Error('Resolve the current save before recovering a checkpoint')
+      const { response, payload } = await durableMutation(`/api/projects/${encodeURIComponent(durableProject.projectId)}/recover`, 'POST', {
+        checkpointId: checkpoint.id,
+        expectedRevision: serverRevisionRef.current,
+        mutationId: window.crypto.randomUUID(),
+      })
+      if (!response.ok || !payload || typeof payload !== 'object' || (payload as { ok?: unknown }).ok !== true) throw new Error(responseMessage(payload, 'Checkpoint could not be recovered'))
+      window.location.reload()
+    } catch (error) {
+      setSaveMessage(error instanceof Error ? error.message : 'Checkpoint could not be recovered')
+      setCheckpointPending(false)
+    }
+  }
+
+  const applyLocalRecovery = () => {
+    if (!localRecovery || !durableProject) return
+    const recovered = ProjectDocumentSchema.parse({
+      ...cloneSerializable(localRecovery),
+      metadata: { ...localRecovery.metadata, id: durableProject.projectId, createdAt: project.metadata.createdAt },
+    })
+    recoveryAppliedRef.current = true
+    setRecoveryIgnored(true)
+    if (commitDocument(recovered, 'Recover explicit browser copy')) {
+      setActiveShotId(recovered.shots[0].id)
+      setSelectedIds([])
+      setPlayhead(0)
+      setSaveMessage('Browser recovery applied; durable autosave is pending.')
+    }
+  }
+
+  const resetDemo = () => {
+    const source = createCantorDemoProject()
+    const demo = durableProject ? ProjectDocumentSchema.parse({
+      ...source,
+      metadata: { ...source.metadata, id: durableProject.projectId, title: project.metadata.title, createdAt: project.metadata.createdAt, updatedAt: project.metadata.updatedAt },
+    }) : source
+    if (commitDocument(demo, 'Reset to preloaded demo')) { setActiveShotId(demo.shots[0].id); setSelectedIds([]); setPlayhead(INITIAL_DEMO_PLAYHEAD); setCritique(null) }
+  }
 
   const importJson = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -960,17 +1255,20 @@ export default function ProofCanvasEditor({ aiConfigured = false }: { aiConfigur
   }
 
   return (
-    <main className="proofcanvas-app" role="application" aria-label="ProofCanvas editor" data-testid="proofcanvas-editor" data-pc-editor data-project-id={project.metadata.id} data-schema-version={project.schemaVersion} data-active-shot-id={shot.id} data-history-past-count={history.past.length} data-history-future-count={history.future.length}>
+    <main className="proofcanvas-app" role="application" aria-label="ProofCanvas editor" data-testid="proofcanvas-editor" data-pc-editor data-project-id={project.metadata.id} data-schema-version={project.schemaVersion} data-active-shot-id={shot.id} data-history-past-count={history.past.length} data-history-future-count={history.future.length} data-durable={durableProject ? 'true' : 'false'} data-server-revision={durableProject ? serverRevision : undefined} data-save-state={durableProject ? saveState : undefined}>
       <div className="pc-desktop-notice" aria-label="Desktop viewport required">ProofCanvas editing requires a desktop viewport at least 1100 px wide.</div>
       <header className="pc-header" aria-label="Project actions">
         <div className="pc-wordmark"><span aria-hidden="true">∴</span><div><h1>ProofCanvas</h1><p>Structured mathematical motion</p></div></div>
-        <div className="pc-project-title"><span>Project</span><strong>{project.metadata.title}</strong></div>
+        <div className="pc-project-title"><span>Project</span><strong>{project.metadata.title}</strong>{durableProject && <small role="status" aria-label="Autosave status" data-save-state={saveState}>{saveState === 'saved' ? `Saved · r${serverRevision}` : saveState === 'waiting' ? 'Autosave queued' : saveState === 'saving' ? 'Saving…' : saveState === 'conflict' ? 'Save conflict' : 'Offline · retry available'}</small>}</div>
         <div className="pc-history-actions">
           <button type="button" onClick={undoHistory} disabled={!canUndo(history)} aria-label="Undo">↶ Undo</button>
           <button type="button" onClick={redoHistory} disabled={!canRedo(history)} aria-label="Redo">↷ Redo</button>
         </div>
         <div className="pc-file-actions">
-          <button type="button" onClick={saveProject} aria-label="Save project">Save</button><button type="button" onClick={loadProject} aria-label="Load saved project">Load</button><button type="button" onClick={resetDemo}>Reset demo</button>
+          {durableProject && <a href="/" className="pc-header-link">Projects</a>}
+          <button type="button" onClick={saveProject} aria-label="Save project">{durableProject ? 'Save now' : 'Save'}</button>
+          {durableProject ? <><button type="button" onClick={() => void createCheckpoint()} disabled={checkpointPending || saveState === 'conflict'} aria-label="Create checkpoint">Checkpoint</button><button type="button" onClick={loadProject} disabled={checkpointPending} aria-label="Open project recovery">Recovery</button></> : <button type="button" onClick={loadProject} aria-label="Load saved project">Load</button>}
+          <button type="button" onClick={resetDemo}>Reset demo</button>
           <label className="pc-file-label">Import JSON<input type="file" accept="application/json,.json" onChange={importJson} aria-label="Import project JSON" /></label>
           <button type="button" onClick={exportJson} aria-label="Export project JSON">Export JSON</button><button type="button" onClick={exportPython} aria-label="Export Manim Python">Export Python</button><button type="button" onClick={startRender} disabled={renderPending || renderJob?.status === 'pending' || renderJob?.status === 'running'} aria-label="Render MP4">{renderPending ? 'Submitting…' : renderJob?.status === 'pending' || renderJob?.status === 'running' ? 'Rendering…' : 'Render MP4'}</button>
         </div>
@@ -1062,6 +1360,9 @@ export default function ProofCanvasEditor({ aiConfigured = false }: { aiConfigur
       </section>
 
       {(rendererMessage || importError) && <div className="pc-message" role="alert"><p>{importError || rendererMessage}</p><button type="button" onClick={() => { setRendererMessage(''); setImportError('') }}>Dismiss</button></div>}
+      {durableProject && saveMessage && <div className={`pc-save-message ${saveState === 'conflict' ? 'conflict' : ''}`} role={saveState === 'conflict' ? 'alert' : 'status'}><p>{saveMessage}</p>{(saveState === 'offline' || saveState === 'conflict') && <button type="button" onClick={() => saveState === 'conflict' ? window.location.reload() : void performDurableSave()}>{saveState === 'conflict' ? 'Reload durable project' : 'Retry autosave'}</button>}<button type="button" onClick={() => setSaveMessage('')} aria-label="Dismiss save message">×</button></div>}
+      {durableProject && localRecovery && !recoveryIgnored && <section className="pc-recovery-offer" role="region" aria-label="Browser recovery available"><strong>Unsaved browser recovery found</strong><p>ProofCanvas did not load it automatically. Apply this project-scoped copy only if it contains work missing from durable revision {serverRevision}.</p><div><button type="button" onClick={applyLocalRecovery}>Apply browser recovery</button><button type="button" onClick={() => setRecoveryIgnored(true)}>Ignore for now</button></div></section>}
+      {durableProject && recoveryOpen && <section className="pc-checkpoint-panel" role="dialog" aria-modal="false" aria-label="Project recovery"><header><div><span>Durable recovery</span><strong>Checkpoints</strong></div><button type="button" onClick={() => setRecoveryOpen(false)} aria-label="Close project recovery">×</button></header>{checkpoints.length === 0 ? <p>No checkpoints have been created yet.</p> : <ul>{checkpoints.map((checkpoint) => <li key={checkpoint.id}><div><strong>{checkpoint.label}</strong><span>Revision {checkpoint.revision} · {checkpoint.createdAt.replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC')}</span></div><button type="button" onClick={() => void recoverCheckpoint(checkpoint)} disabled={checkpointPending}>Recover…</button></li>)}</ul>}</section>}
       {renderJob && <section className="pc-render-panel" role="region" aria-label="Render status" data-render-job-id={renderJob.id} data-render-status={renderJob.status} data-render-current={renderRepresentsCurrentProject ? 'true' : 'false'}>
         <header><div><span>Manim render</span><strong>{renderJob.status}</strong></div><button type="button" onClick={() => { setRenderJob(null); setRenderBaseRevision(null) }} aria-label="Dismiss render status">×</button></header>
         <p>Source <code>{renderJob.sourceSha256.slice(0, 12)}</code> · {renderJob.quality}</p>
