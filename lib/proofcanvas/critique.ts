@@ -30,7 +30,9 @@ export interface CritiqueOptions {
 }
 
 function dimensions(project: ProjectDocument) {
-  return project.aspectRatio === "16:9" ? { width: 960, height: 540 } : { width: 540, height: 960 };
+  if (project.settings.aspectRatio === "16:9") return { width: 960, height: 540 };
+  if (project.settings.aspectRatio === "9:16") return { width: 540, height: 960 };
+  return { width: 720, height: 720 };
 }
 
 function bounds(object: SceneObject) {
@@ -92,6 +94,18 @@ function operationObjectIds(operation: SceneOperation, shot: Shot): string[] {
       return withGroupFamilies(operation.patch.targetIds ?? animation?.targetIds ?? []);
     }
     case "delete-animation": return withGroupFamilies(shot.animations.find(({ id }) => id === operation.animationId)?.targetIds ?? []);
+    case "set-object-lifetime": return withGroupFamilies([operation.objectId]);
+    case "add-property-track": return operation.track.target.kind === "object" ? withGroupFamilies([operation.track.target.objectId]) : [];
+    case "delete-property-track":
+    case "add-keyframe":
+    case "update-keyframe":
+    case "move-keyframe":
+    case "delete-keyframe":
+    case "duplicate-keyframe": {
+      const trackId = operation.type === "delete-property-track" ? operation.trackId : operation.trackId;
+      const track = shot.propertyTracks.find(({ id }) => id === trackId);
+      return track?.target.kind === "object" ? withGroupFamilies([track.target.objectId]) : [];
+    }
     case "set-camera":
     case "set-style": return [];
   }

@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { ReadableStream as NodeReadableStream } from "node:stream/web";
 import { TextDecoder, TextEncoder } from "node:util";
 import { compileManim, estimateManimTimelineDurationUpperBound } from "./compiler";
-import { PROOFCANVAS_PROJECT_MAX_BYTES, PROOFCANVAS_TIME_EPSILON, ProjectDocumentSchema, type ProjectDocument } from "./schema";
+import { PROOFCANVAS_PROJECT_MAX_BYTES, PROOFCANVAS_RENDER_SOURCE_MAX_BYTES, PROOFCANVAS_TIME_EPSILON, ProjectDocumentSchema, type ProjectDocument } from "./schema";
 
 export type RenderQuality = "preview" | "production";
 export type RenderJobStatus = "pending" | "running" | "succeeded" | "failed";
@@ -36,7 +36,6 @@ export interface RenderVideo {
 }
 
 const MAX_PUBLIC_BODY_BYTES = PROOFCANVAS_PROJECT_MAX_BYTES;
-const MAX_SOURCE_BYTES = 512 * 1024;
 const MAX_UPSTREAM_JSON_BYTES = 64 * 1024;
 const MAX_VIDEO_BYTES = 256 * 1024 * 1024;
 // Leave a ten-second envelope below the sidecar's 310-second decoded-output
@@ -56,6 +55,14 @@ export class RenderClientError extends Error {
     super(message);
     this.name = "RenderClientError";
   }
+}
+
+export function renderSourceBytes(source: string): Uint8Array {
+  const sourceBytes = new TextEncoder().encode(source);
+  if (sourceBytes.byteLength > PROOFCANVAS_RENDER_SOURCE_MAX_BYTES) {
+    throw new RenderClientError(413, "source_too_large", "Generated source exceeds the renderer limit.");
+  }
+  return sourceBytes;
 }
 
 function configuration(): { origin: string; token: string } {
@@ -320,10 +327,7 @@ export async function submitRender(input: SubmitRenderRequest): Promise<RenderJo
   if (compiled.diagnostics.some(({ severity }) => severity === "error")) {
     throw new RenderClientError(422, "compile_rejected", "Project could not be compiled for Manim.");
   }
-  const sourceBytes = new TextEncoder().encode(compiled.python);
-  if (sourceBytes.byteLength > MAX_SOURCE_BYTES) {
-    throw new RenderClientError(413, "source_too_large", "Generated source exceeds the renderer limit.");
-  }
+  const sourceBytes = renderSourceBytes(compiled.python);
   const sourceSha256 = createHash("sha256").update(sourceBytes).digest("hex");
   const request = await fetchRenderer("/v1/render", {
     method: "POST",

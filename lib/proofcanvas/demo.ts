@@ -84,16 +84,24 @@ export function createCantorDemoProject(): ProjectDocument {
   ];
 
   const project: ProjectDocument = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     metadata: {
       id: "project-uncountable-zero-length",
       title: "Uncountable, Yet Zero Length",
       createdAt: "2026-08-23T00:00:00.000Z",
       updatedAt: "2026-08-23T00:00:00.000Z",
     },
-    aspectRatio: "16:9",
+    settings: {
+      aspectRatio: "16:9",
+      frameRate: 30,
+      resolution: { width: 1280, height: 720 },
+      renderPreset: "720p",
+      previewQuality: "standard",
+    },
     activeStyleId: EDITORIAL_INK_STYLE_ID,
     styles: DEFAULT_STYLE_PACKS.map((style) => cloneSerializable(style)),
+    customEasings: [],
+    assets: [],
     shots: [
       {
         id: "shot-cantor-construction",
@@ -101,6 +109,10 @@ export function createCantorDemoProject(): ProjectDocument {
         duration: 21,
         objects,
         animations,
+        propertyTracks: [],
+        audioClips: [],
+        captionClips: [],
+        markers: [],
         camera: { x: 480, y: 270, zoom: 1, rotation: 0 },
       },
       {
@@ -118,6 +130,10 @@ export function createCantorDemoProject(): ProjectDocument {
           animation("animation-conclusion-measure", "fade-in", ["object-conclusion-measure"], 3.2, 1.2),
           animation("animation-conclusion-focus", "camera-focus", ["object-conclusion-cardinality", "object-conclusion-measure"], 4.8, 1.2, { x: 500, y: 280, zoom: 1.08 }),
         ],
+        propertyTracks: [],
+        audioClips: [],
+        captionClips: [],
+        markers: [],
         camera: { x: 480, y: 270, zoom: 1, rotation: 0 },
       },
     ],

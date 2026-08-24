@@ -1,7 +1,7 @@
 jest.mock("server-only", () => ({}), { virtual: true });
 
 import { createCantorDemoProject } from "@/lib/proofcanvas/demo";
-import { PROOFCANVAS_SCHEMA_LIMITS, cloneSerializable } from "@/lib/proofcanvas/schema";
+import { PROOFCANVAS_RENDER_SOURCE_MAX_BYTES, PROOFCANVAS_SCHEMA_LIMITS, ProjectDocumentSchema, cloneSerializable } from "@/lib/proofcanvas/schema";
 import {
   MAX_SELECTED_RENDER_DURATION_SECONDS,
   RenderClientError,
@@ -10,8 +10,40 @@ import {
   fetchRenderVideo,
   getRenderJob,
   readBoundedJson,
+  renderSourceBytes,
   submitRender,
 } from "@/lib/proofcanvas/renderClient.server";
+
+test("source transport guard shares the compiler limit and rejects 524289 bytes before fetch", () => {
+  expect(renderSourceBytes("x".repeat(PROOFCANVAS_RENDER_SOURCE_MAX_BYTES))).toHaveLength(PROOFCANVAS_RENDER_SOURCE_MAX_BYTES);
+  expect(() => renderSourceBytes("x".repeat(PROOFCANVAS_RENDER_SOURCE_MAX_BYTES + 1))).toThrow(expect.objectContaining({ status: 413, code: "source_too_large" }));
+  expect(global.fetch).not.toHaveBeenCalled();
+});
+
+test("fails closed on authored audio and audio tracks before renderer fetch", async () => {
+  const project = cloneSerializable(createCantorDemoProject());
+  const shot = project.shots[0];
+  project.assets.push({ id: "asset-audio", filename: "tone.wav", mimeType: "audio/wav", size: 16, sha256: "a".repeat(64), duration: 2, provenance: "uploaded" });
+  shot.audioClips.push({ id: "audio-clip", assetId: "asset-audio", name: "Tone", start: 0, duration: 2, sourceStart: 0, sourceEnd: 2, volume: 1, muted: false, solo: false });
+  shot.propertyTracks.push({ id: "track-audio-volume", target: { kind: "audio", audioClipId: "audio-clip" }, property: "volume", keyframes: [
+    { id: "keyframe-audio-a", time: 0, value: 1, interpolation: { kind: "linear" } },
+    { id: "keyframe-audio-b", time: 2, value: 0.5, interpolation: { kind: "linear" } },
+  ] });
+  await expect(submitRender({ project: ProjectDocumentSchema.parse(project), quality: "preview" })).rejects.toEqual(expect.objectContaining({ status: 422, code: "compile_rejected" }));
+  expect(global.fetch).not.toHaveBeenCalled();
+});
+
+test("fails closed on delayed initial property state before renderer fetch", async () => {
+  const project = cloneSerializable(createCantorDemoProject());
+  const shot = project.shots[0];
+  const object = shot.objects.find(({ type }) => type !== "group")!;
+  shot.propertyTracks = [{ id: "track-render-delayed", target: { kind: "object", objectId: object.id }, property: "x", keyframes: [
+    { id: "keyframe-render-delayed-a", time: 1, value: object.transform.x, interpolation: { kind: "linear" } },
+    { id: "keyframe-render-delayed-b", time: 2, value: object.transform.x + 10, interpolation: { kind: "linear" } },
+  ] }];
+  await expect(submitRender({ project: ProjectDocumentSchema.parse(project), quality: "preview" })).rejects.toEqual(expect.objectContaining({ status: 422, code: "compile_rejected" }));
+  expect(global.fetch).not.toHaveBeenCalled();
+});
 
 const ORIGINAL_ENV = { ...process.env };
 const TOKEN = "proofcanvas-next-test-token-that-is-long-enough";
@@ -167,7 +199,7 @@ test("rejects aggregate-safe timelines whose sub-frame plays and waits exceed th
       name: `Quantized ${shotIndex}`,
       duration: 37.5,
       objects: [object],
-      animations: Array.from({ length: 250 }, (_, animationIndex) => ({
+      animations: Array.from({ length: 125 }, (_, animationIndex) => ({
         id: `animation-quantized-${shotIndex}-${animationIndex}`,
         type: "move" as const,
         targetIds: [object.id],
@@ -202,20 +234,22 @@ test("rejects frame-boundary durations using the exact rounded literals emitted 
       ...cloneSerializable(template),
       id: `shot-frame-boundary-${shotIndex}`,
       name: `Frame boundary ${shotIndex}`,
-      duration: 16,
+      duration: 30,
       objects: [object],
-      animations: Array.from({ length: 240 }, (_, animationIndex) => ({
+      animations: Array.from({ length: 100 }, (_, animationIndex) => ({
         id: `animation-frame-boundary-${shotIndex}-${animationIndex}`,
         type: "move" as const,
         targetIds: [object.id],
-        start: animationIndex / 15,
-        duration: 1 / 15,
+        // Eight-decimal Python serialization rounds this just above one 30fps
+        // frame, so Manim charges two frames for every authored one-frame play.
+        start: animationIndex * (1 / 30 + 2e-9),
+        duration: 1 / 30 + 2e-9,
         easing: "linear" as const,
         properties: { deltaX: animationIndex % 2 === 0 ? 1 : -1 },
       })),
     };
   });
-  expect(project.shots.reduce((total, shot) => total + shot.duration, 0)).toBe(160);
+  expect(project.shots.reduce((total, shot) => total + shot.duration, 0)).toBe(MAX_SELECTED_RENDER_DURATION_SECONDS);
 
   await expect(submitRender({ project, quality: "preview" })).rejects.toEqual(
     expect.objectContaining<Partial<RenderClientError>>({ status: 422, code: "render_duration_exceeded" }),

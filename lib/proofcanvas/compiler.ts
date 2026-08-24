@@ -1,8 +1,14 @@
 import {
+  PROOFCANVAS_SCHEMA_LIMITS,
+  PROOFCANVAS_RENDER_SOURCE_MAX_BYTES,
   PROOFCANVAS_TIME_EPSILON,
   ProjectDocumentSchema,
   RestrictedExpressionSchema,
+  propertyTrackValueValid,
+  objectTypeSupportsStyleProperty,
+  utf8ByteLength,
   type ProjectDocument,
+  type PropertyTrack,
   type RestrictedExpression,
   type SceneAnimation,
   type SceneObject,
@@ -11,6 +17,8 @@ import {
 } from "./schema";
 import { firstVisibilityAnimationByTarget, initiallyHiddenByEntranceIds, previewShotAtAnimationEnd, previewShotAtTime } from "./preview";
 import { styledTransform } from "./styles";
+import { easingProgressBounds, manimRateFunctionName } from "./easing";
+import { objectExistsAtTime, orderedPropertyTracks } from "./timeline";
 
 export interface CompilerDiagnostic {
   severity: "info" | "warning" | "error";
@@ -18,11 +26,37 @@ export interface CompilerDiagnostic {
   message: string;
   objectId?: string;
   animationId?: string;
+  trackId?: string;
 }
 
 export interface CompileResult {
   python: string;
   diagnostics: CompilerDiagnostic[];
+}
+
+const MAX_HIDDEN_TARGET_DIAGNOSTICS = 64;
+
+function boundedCompilerDiagnostics(input: CompilerDiagnostic[]): CompilerDiagnostic[] {
+  const output: CompilerDiagnostic[] = [];
+  const hiddenTargets = new Set<string>();
+  let omittedHiddenTargets = 0;
+  for (const diagnostic of input) {
+    if (diagnostic.code !== "ANIMATION_TARGET_HIDDEN") {
+      output.push(diagnostic);
+      continue;
+    }
+    const key = diagnostic.objectId ?? "unknown";
+    if (hiddenTargets.has(key)) continue;
+    hiddenTargets.add(key);
+    if (hiddenTargets.size <= MAX_HIDDEN_TARGET_DIAGNOSTICS) output.push(diagnostic);
+    else omittedHiddenTargets += 1;
+  }
+  if (omittedHiddenTargets > 0) output.push({
+    severity: "info",
+    code: "ANIMATION_TARGET_HIDDEN_TRUNCATED",
+    message: `${omittedHiddenTargets} additional hidden animation targets were deterministically omitted from diagnostics.`,
+  });
+  return output;
 }
 
 function pyString(value: string): string {
@@ -133,6 +167,9 @@ function variableMaps(project: ProjectDocument): CompilerVariableMaps {
     for (const animation of shot.animations.filter(({ type }) => REFERENCE_ANIMATION_TYPES.has(type))) {
       animation.targetIds.forEach(addReferenceLeaves);
     }
+    for (const track of shot.propertyTracks) {
+      if (track.target.kind === "object") addReferenceLeaves(track.target.objectId);
+    }
     for (const object of shot.objects) {
       if (!referenceTargetIds.has(object.id)) continue;
       references.set(object.id, allocateVariable(`pc_ref_${stableIdentifierHash(object.id)}`, used));
@@ -158,9 +195,9 @@ function restrictedExpression(expression: RestrictedExpression): string {
 }
 
 function coordinate(object: SceneObject, project: ProjectDocument): string {
-  const frameWidth = project.aspectRatio === "16:9" ? 960 : 540;
-  const frameHeight = project.aspectRatio === "16:9" ? 540 : 960;
-  const manimWidth = project.aspectRatio === "16:9" ? 14.222222 : 8;
+  const frameWidth = project.settings.aspectRatio === "16:9" ? 960 : project.settings.aspectRatio === "9:16" ? 540 : 720;
+  const frameHeight = project.settings.aspectRatio === "16:9" ? 540 : project.settings.aspectRatio === "9:16" ? 960 : 720;
+  const manimWidth = project.settings.aspectRatio === "16:9" ? 14.222222 : 8;
   const scale = manimWidth / frameWidth;
   const x = (object.transform.x - frameWidth / 2) * scale;
   const y = (frameHeight / 2 - object.transform.y) * scale;
@@ -168,8 +205,8 @@ function coordinate(object: SceneObject, project: ProjectDocument): string {
 }
 
 function size(value: number | undefined, project: ProjectDocument): number {
-  const frameWidth = project.aspectRatio === "16:9" ? 960 : 540;
-  const manimWidth = project.aspectRatio === "16:9" ? 14.222222 : 8;
+  const frameWidth = project.settings.aspectRatio === "16:9" ? 960 : project.settings.aspectRatio === "9:16" ? 540 : 720;
+  const manimWidth = project.settings.aspectRatio === "16:9" ? 14.222222 : 8;
   return Math.max(0.02, (value ?? 40) * manimWidth / frameWidth);
 }
 
@@ -184,10 +221,21 @@ function styleChain(object: SceneObject, style: StylePack): string {
   );
   const stroke = object.style.stroke ?? color;
   const strokeWidth = object.style.strokeWidth ?? style.strokes.regular;
-  const parts = [`.set_color(${pyString(color)})`];
-  if (fill) parts.push(`.set_fill(${pyString(fill)}, opacity=1.0)`);
-  if (!["text", "math", "image"].includes(object.type)) parts.push(`.set_stroke(${pyString(stroke)}, width=${pyNumber(strokeWidth)})`);
-  if (object.style.opacity !== undefined) parts.push(`.set_opacity(${pyNumber(object.style.opacity)})`);
+  const parts: string[] = [];
+  if (objectTypeSupportsStyleProperty(object.type, "color")) parts.push(`.set_color(${pyString(color)})`);
+  if (fill && objectTypeSupportsStyleProperty(object.type, "fill")) parts.push(`.set_fill(${pyString(fill)}, opacity=1.0)`);
+  if (objectTypeSupportsStyleProperty(object.type, "stroke")) parts.push(`.set_stroke(${pyString(stroke)}, width=${pyNumber(strokeWidth)})`);
+  if (object.style.opacity !== undefined && objectTypeSupportsStyleProperty(object.type, "opacity")) parts.push(`.set_opacity(${pyNumber(object.style.opacity)})`);
+  return parts.join("");
+}
+
+function visualTargetChain(object: SceneObject & { preview?: { opacity: number } }, style: StylePack): string {
+  const parts: string[] = [];
+  if (object.style.fill && objectTypeSupportsStyleProperty(object.type, "fill")) parts.push(`.set_fill(${pyString(object.style.fill)}, opacity=1.0)`);
+  if ((object.style.stroke || object.style.strokeWidth !== undefined) && objectTypeSupportsStyleProperty(object.type, "stroke")) {
+    parts.push(`.set_stroke(${pyString(object.style.stroke ?? object.style.color ?? style.colors.ink)}, width=${pyNumber(object.style.strokeWidth ?? style.strokes.regular)})`);
+  }
+  if (objectTypeSupportsStyleProperty(object.type, "opacity")) parts.push(`.set_opacity(${pyNumber(object.preview?.opacity ?? object.style.opacity ?? 1)})`);
   return parts.join("");
 }
 
@@ -253,11 +301,10 @@ function primitiveExpression(
     case "image":
     case "svg": {
       const source = String(object.properties.source ?? "");
+      diagnostics.push({ severity: "error", code: "ASSET_RENDER_TRANSPORT_UNSUPPORTED", message: "Image and SVG objects remain browser-only until trusted asset transport is implemented.", objectId: object.id });
       if (source.startsWith("data:")) {
-        diagnostics.push({ severity: "warning", code: "INLINE_ASSET_BROWSER_ONLY", message: "Inline image data is represented by a labelled placeholder in Manim export.", objectId: object.id });
         return `VGroup(Rectangle(width=${pyNumber(width)}, height=${pyNumber(height)}), Text(${pyString(object.name)}, font_size=16))`;
       }
-      diagnostics.push({ severity: "info", code: "ASSET_PATH_REQUIRED", message: `Render requires the checked-in asset ${source}.`, objectId: object.id });
       return object.type === "svg" ? `SVGMobject(${pyString(source.replace(/^\//, "public/"))})` : `ImageMobject(${pyString(source.replace(/^\//, "public/"))})`;
     }
     case "group":
@@ -266,14 +313,7 @@ function primitiveExpression(
 }
 
 function easingName(easing: SceneAnimation["easing"]): string {
-  switch (easing) {
-    case "linear": return "linear";
-    case "ease-in": return "rush_into";
-    case "ease-out": return "rush_from";
-    case "ease-in-out": return "smooth";
-    case "editorial": return "rate_functions.ease_out_quart";
-    case "spring-soft": return "rate_functions.ease_out_back";
-  }
+  return manimRateFunctionName(easing);
 }
 
 const ANIMATION_PROPERTIES: Record<SceneAnimation["type"], ReadonlySet<string>> = {
@@ -407,6 +447,7 @@ function absoluteGroupTarget(
   project: ProjectDocument,
   style: StylePack,
   references: ReadonlyMap<string, string>,
+  referenceTransforms: ReadonlyMap<string, SceneObject["transform"]>,
   stateAtEnd: ReturnType<typeof previewShotAtTime>,
   diagnostics: CompilerDiagnostic[],
   animationId: string,
@@ -418,7 +459,8 @@ function absoluteGroupTarget(
       const children = shot.objects.filter((child) => child.parentId === object.id && isRenderableObject(child, shot, objectMap));
       return `${groupClass(object, shot)}(${children.map(expressionFor).join(", ")})`;
     }
-    const authored = safeDerivedTransform(styledTransform(object, style), object.transform, diagnostics, object.id);
+    const authored = referenceTransforms.get(object.id)
+      ?? safeDerivedTransform(styledTransform(object, style), object.transform, diagnostics, object.id);
     const semanticTarget = endMap.get(object.id)?.transform ?? object.transform;
     const styledTarget = safeDerivedTransform(
       styledTransform({ ...object, transform: semanticTarget }, style),
@@ -428,8 +470,8 @@ function absoluteGroupTarget(
       animationId,
       authored,
     );
-    const opacity = endMap.get(object.id)?.preview.opacity ?? object.style.opacity ?? 1;
-    return `${copyTransformTarget(object, authored, styledTarget, references.get(object.id)!, project)}.set_opacity(${pyNumber(opacity)})`;
+    const endObject = endMap.get(object.id) ?? object;
+    return `${copyTransformTarget(object, authored, styledTarget, references.get(object.id)!, project)}${visualTargetChain(endObject, style)}`;
   };
   const children = shot.objects.filter((child) => child.parentId === group.id && isRenderableObject(child, shot, objectMap));
   return `${groupClass(group, shot)}(${children.map(expressionFor).join(", ")})`;
@@ -542,6 +584,7 @@ function animationExpression(
   project: ProjectDocument,
   variables: ReadonlyMap<string, string>,
   references: ReadonlyMap<string, string>,
+  referenceTransforms: ReadonlyMap<string, SceneObject["transform"]>,
   diagnostics: CompilerDiagnostic[],
   firstVisibility: ReturnType<typeof firstVisibilityAnimationByTarget>,
   previewAt: (time: number) => ReturnType<typeof previewShotAtTime>,
@@ -552,17 +595,19 @@ function animationExpression(
   // start. Using that state keeps generated relative Manim operations correct
   // after earlier scale, transform, move, or camera animations.
   const stateAtStart = previewAt(animation.start);
+  const stateAtEnd = previewAtEnd(animation);
+  const compilerOwnedTrack = animation.id.startsWith("compiler-track-");
   if (animation.type === "camera-focus") {
-    const x = finite(animation.properties.x, stateAtStart.camera.x);
-    const y = finite(animation.properties.y, stateAtStart.camera.y);
-    const zoom = finite(animation.properties.zoom, stateAtStart.camera.zoom);
-    const rotation = finite(animation.properties.rotation, stateAtStart.camera.rotation);
+    const authoritative = compilerOwnedTrack ? stateAtEnd.camera : undefined;
+    const x = authoritative?.x ?? finite(animation.properties.x, stateAtStart.camera.x);
+    const y = authoritative?.y ?? finite(animation.properties.y, stateAtStart.camera.y);
+    const zoom = authoritative?.zoom ?? finite(animation.properties.zoom, stateAtStart.camera.zoom);
+    const rotation = authoritative?.rotation ?? finite(animation.properties.rotation, stateAtStart.camera.rotation);
     const proxy: SceneObject = { id: "camera", type: "group", name: "Camera", locked: false, visible: true, transform: { x, y, rotation: 0, scaleX: 1, scaleY: 1 }, style: {}, properties: {} };
     return `Transform(self.camera.frame, Rectangle(width=config.frame_width / ${pyNumber(zoom)}, height=config.frame_height / ${pyNumber(zoom)}).move_to(${coordinate(proxy, project)}).rotate(${pyNumber(rotation)} * DEGREES), run_time=${pyDuration(animation.duration)}, rate_func=${easingName(animation.easing)})`;
   }
   const objectMap = new Map(shot.objects.map((object) => [object.id, object]));
   const previewObjectMap = new Map(stateAtStart.objects.map((object) => [object.id, object]));
-  const stateAtEnd = previewAtEnd(animation);
   const endObjectMap = new Map(stateAtEnd.objects.map((object) => [object.id, object]));
   const activeStyle = project.styles.find(({ id }) => id === project.activeStyleId)!;
   const visibleTargetIds = animation.targetIds.filter((targetId) => {
@@ -583,8 +628,11 @@ function animationExpression(
   const expressions = visibleTargetIds.map((targetId) => {
     const object = objectMap.get(targetId)!;
     const semanticStart = previewObjectMap.get(targetId)?.transform ?? object.transform;
-    const semanticTarget = semanticAnimationTarget(animation, semanticStart);
-    const referenceTransform = safeDerivedTransform(styledTransform(object, activeStyle), object.transform, diagnostics, object.id);
+    const semanticTarget = compilerOwnedTrack
+      ? endObjectMap.get(targetId)?.transform ?? semanticStart
+      : semanticAnimationTarget(animation, semanticStart);
+    const referenceTransform = referenceTransforms.get(object.id)
+      ?? safeDerivedTransform(styledTransform(object, activeStyle), object.transform, diagnostics, object.id);
     const targetTransform = safeDerivedTransform(
       styledTransform({ ...object, transform: semanticTarget }, activeStyle),
       referenceTransform,
@@ -619,11 +667,12 @@ function animationExpression(
           project,
           activeStyle,
           references,
+          referenceTransforms,
           stateAtEnd,
           diagnostics,
           animation.id,
         )
-        : `${copyTransformTarget(object, referenceTransform, targetTransform, references.get(targetId)!, project)}.set_opacity(${pyNumber(endObjectMap.get(targetId)?.preview.opacity ?? object.style.opacity ?? 1)})`;
+        : `${copyTransformTarget(object, referenceTransform, targetTransform, references.get(targetId)!, project)}${visualTargetChain(endObjectMap.get(targetId) ?? object, activeStyle)}`;
     }
     const hiddenAtStart = previewTargetIsHidden(object, shot, objectMap, previewObjectMap);
     return targetAnimation(
@@ -689,6 +738,286 @@ interface AnimationComponent {
   end: number;
 }
 
+function timeRangesOverlap(left: { start: number; end: number }, right: { start: number; end: number }): boolean {
+  return left.start < right.end - PROOFCANVAS_TIME_EPSILON && right.start < left.end - PROOFCANVAS_TIME_EPSILON;
+}
+
+interface CompilerTrackPlan {
+  shot: Shot;
+  animations: SceneAnimation[];
+  diagnostics: CompilerDiagnostic[];
+}
+
+const MAX_TRACK_CONFLICT_DIAGNOSTICS = 64;
+const VISUAL_TRACK_PROPERTIES = new Set<PropertyTrack["property"]>(["fill", "stroke", "strokeWidth", "opacity"]);
+
+function compilerTrackPlan(shot: Shot): CompilerTrackPlan {
+  interface GroupedSegment {
+    key: string;
+    target: PropertyTrack["target"];
+    start: number;
+    end: number;
+    easing: SceneAnimation["easing"];
+    properties: Record<string, number>;
+    trackIds: string[];
+    propertyNames: string[];
+  }
+  interface TrackSegment {
+    key: string;
+    target: PropertyTrack["target"];
+    start: number;
+    end: number;
+    easing: SceneAnimation["easing"];
+    trackId: string;
+    property: PropertyTrack["property"];
+    rightValue: PropertyTrack["keyframes"][number]["value"];
+  }
+  const grouped = new Map<string, GroupedSegment>();
+  const trackSegments: TrackSegment[] = [];
+  const diagnostics: CompilerDiagnostic[] = [];
+  const rejectedTrackIds = new Set<string>();
+  const objects = new Map(shot.objects.map((object) => [object.id, object]));
+  const ancestorCache = new Map<string, ReadonlySet<string>>();
+  const ancestorsOf = (objectId: string): ReadonlySet<string> => {
+    const cached = ancestorCache.get(objectId);
+    if (cached) return cached;
+    const ancestors = new Set<string>();
+    let cursor = objects.get(objectId);
+    while (cursor?.parentId && !ancestors.has(cursor.parentId)) {
+      ancestors.add(cursor.parentId);
+      cursor = objects.get(cursor.parentId);
+    }
+    ancestorCache.set(objectId, ancestors);
+    return ancestors;
+  };
+  const targetsShareHierarchy = (leftId: string, rightId: string) => (
+    leftId === rightId || ancestorsOf(leftId).has(rightId) || ancestorsOf(rightId).has(leftId)
+  );
+  for (const track of orderedPropertyTracks(shot)) {
+    if (track.keyframes[0].time > PROOFCANVAS_TIME_EPSILON) {
+      diagnostics.push({ severity: "error", code: "TRACK_DELAYED_INITIAL_STATE_UNSUPPORTED", message: "Tracks whose first keyframe is after time zero require an exact discontinuous renderer assignment and are rejected until final timeline/compiler support.", trackId: track.id });
+      rejectedTrackIds.add(track.id);
+      continue;
+    }
+    if (track.target.kind === "audio") {
+      diagnostics.push({ severity: "error", code: "AUDIO_TRACK_RENDER_UNSUPPORTED", message: "Audio property tracks cannot be transported or muxed by the current renderer and are rejected until Slice 4.", trackId: track.id });
+      rejectedTrackIds.add(track.id);
+      continue;
+    }
+    for (let index = 0; index + 1 < track.keyframes.length; index += 1) {
+      const left = track.keyframes[index];
+      const right = track.keyframes[index + 1];
+      if (left.interpolation.kind === "hold" || left.interpolation.kind === "custom-bezier") {
+        diagnostics.push({
+          severity: "error",
+          code: "TRACK_INTERPOLATION_UNSUPPORTED",
+          message: `${left.interpolation.kind} interpolation is exact in preview but is outside the current fail-closed Manim rate-function policy.`,
+          trackId: track.id,
+        });
+        rejectedTrackIds.add(track.id);
+        continue;
+      }
+      if (typeof left.value === "number" && typeof right.value === "number") {
+        const easing = left.interpolation.kind === "linear" ? "linear" : left.interpolation.easing;
+        const [minimumProgress, maximumProgress] = easingProgressBounds(easing);
+        const candidates = [minimumProgress, maximumProgress].map((progress) => left.value as number + ((right.value as number) - (left.value as number)) * progress);
+        const isScale = ["scale", "scaleX", "scaleY"].includes(track.property);
+        const endpointSign = left.value > 0 && right.value > 0 ? 1 : left.value < 0 && right.value < 0 ? -1 : 0;
+        const crossesInvalidScale = isScale && (endpointSign === 0 || candidates.some((value) => (
+          value * endpointSign < PROOFCANVAS_SCHEMA_LIMITS.animationScaleMinMagnitude
+          || Math.abs(value) > PROOFCANVAS_SCHEMA_LIMITS.animationScaleMaxMagnitude
+        )));
+        if (crossesInvalidScale || candidates.some((value) => !propertyTrackValueValid(track.property, value))) {
+          diagnostics.push({
+            severity: "error",
+            code: "TRACK_EASING_DOMAIN_UNSAFE",
+            message: `${easing} interpolation would leave the validated ${track.property} domain; preview clamps the unsafe state and Manim export is rejected until an exact bounded renderer rate function is supported.`,
+            trackId: track.id,
+          });
+          rejectedTrackIds.add(track.id);
+          continue;
+        }
+      } else if (typeof left.value === "string" && typeof right.value === "string") {
+        const easing = left.interpolation.kind === "linear" ? "linear" : left.interpolation.easing;
+        const [minimumProgress, maximumProgress] = easingProgressBounds(easing);
+        if (minimumProgress < 0 || maximumProgress > 1) {
+          diagnostics.push({
+            severity: "error",
+            code: "TRACK_EASING_DOMAIN_UNSAFE",
+            message: `${easing} interpolation would leave the validated ${track.property} color interpolation domain; preview clamps the unsafe state and Manim export is rejected until an exact bounded renderer rate function is supported.`,
+            trackId: track.id,
+          });
+          rejectedTrackIds.add(track.id);
+          continue;
+        }
+      }
+      const easing = left.interpolation.kind === "linear" ? "linear" : left.interpolation.easing;
+      const targetKey = track.target.kind === "camera" ? "camera" : `object:${track.target.objectId}`;
+      const key = `${targetKey}:${left.time}:${right.time}:${easing}`;
+      trackSegments.push({ key, target: track.target, start: left.time, end: right.time, easing, trackId: track.id, property: track.property, rightValue: right.value });
+      const segment = grouped.get(key) ?? {
+        key,
+        target: track.target,
+        start: left.time,
+        end: right.time,
+        easing,
+        properties: {},
+        trackIds: [],
+        propertyNames: [],
+      };
+      segment.trackIds.push(track.id);
+      segment.propertyNames.push(track.property);
+      if (typeof right.value === "number") {
+        if (track.property === "scale") {
+          segment.properties.scaleX = right.value;
+          segment.properties.scaleY = right.value;
+        } else if (!["opacity", "strokeWidth"].includes(track.property)) segment.properties[track.property] = right.value;
+      }
+      grouped.set(key, segment);
+    }
+  }
+
+  const result: SceneAnimation[] = [];
+  const buildSurvivingGroups = (): GroupedSegment[] => {
+    const survivingGroups = new Map<string, GroupedSegment>();
+    for (const raw of trackSegments.filter(({ trackId }) => !rejectedTrackIds.has(trackId))) {
+      const segment = survivingGroups.get(raw.key) ?? {
+        key: raw.key,
+        target: raw.target,
+        start: raw.start,
+        end: raw.end,
+        easing: raw.easing,
+        properties: {},
+        trackIds: [],
+        propertyNames: [],
+      };
+      segment.trackIds.push(raw.trackId);
+      segment.propertyNames.push(raw.property);
+      if (typeof raw.rightValue === "number") {
+        if (raw.property === "scale") {
+          segment.properties.scaleX = raw.rightValue;
+          segment.properties.scaleY = raw.rightValue;
+        } else if (!["opacity", "strokeWidth"].includes(raw.property)) segment.properties[raw.property] = raw.rightValue;
+      }
+      survivingGroups.set(raw.key, segment);
+    }
+    return [...survivingGroups.values()].sort((left, right) => left.start - right.start || left.key.localeCompare(right.key));
+  };
+  const allSegments = buildSurvivingGroups();
+  const diagnosedSemanticConflicts = new Set<string>();
+  let omittedConflictDiagnostics = 0;
+  for (const segment of allSegments) {
+    const targetId = segment.target.kind === "object" ? segment.target.objectId : undefined;
+    const collision = shot.animations.find((animation) => {
+      if (segment.target.kind === "camera") {
+        if (animation.type !== "camera-focus") return false;
+      } else {
+        if (animation.type === "camera-focus") return false;
+        if (!animation.targetIds.some((animationTargetId) => targetsShareHierarchy(targetId!, animationTargetId))) return false;
+      }
+      return timeRangesOverlap(segment, { start: animation.start, end: animation.start + animation.duration });
+    });
+    if (!collision) continue;
+    for (const trackId of segment.trackIds) {
+      rejectedTrackIds.add(trackId);
+      const diagnosticKey = `${trackId}:${collision.id}`;
+      if (diagnosedSemanticConflicts.has(diagnosticKey)) continue;
+      diagnosedSemanticConflicts.add(diagnosticKey);
+      if (diagnosedSemanticConflicts.size <= MAX_TRACK_CONFLICT_DIAGNOSTICS) diagnostics.push({
+        severity: "error",
+        code: "TRACK_SEMANTIC_COLLISION",
+        message: `Property track overlaps semantic animation ${collision.id} on the same effective Manim object hierarchy; semantic animation was preserved and the whole conflicting track was omitted.`,
+        trackId,
+        animationId: collision.id,
+      });
+      else omittedConflictDiagnostics += 1;
+    }
+  }
+  // Semantic/renderer-unsupported rejection has precedence: those tracks are
+  // absent before track-track admission so they cannot evict an otherwise
+  // admissible lane merely by being present in the input document.
+  const segments = buildSurvivingGroups();
+  const conflictedKeys = new Set<string>();
+  const conflictedTrackIds = new Set<string>();
+  const diagnosedTrackConflicts = new Set<string>();
+  for (let leftIndex = 0; leftIndex < segments.length; leftIndex += 1) {
+    const left = segments[leftIndex];
+    for (let rightIndex = leftIndex + 1; rightIndex < segments.length; rightIndex += 1) {
+      const right = segments[rightIndex];
+      if (right.start >= left.end - PROOFCANVAS_TIME_EPSILON) break;
+      if (!timeRangesOverlap(left, right)) continue;
+      const sharesMobject = left.target.kind === "camera" && right.target.kind === "camera"
+        || left.target.kind === "object" && right.target.kind === "object"
+          && targetsShareHierarchy(left.target.objectId, right.target.objectId);
+      if (!sharesMobject) continue;
+      const representableVisualHierarchy = left.target.kind === "object" && right.target.kind === "object"
+        && left.start === right.start && left.end === right.end && left.easing === right.easing
+        && left.propertyNames.every((property) => VISUAL_TRACK_PROPERTIES.has(property as PropertyTrack["property"]))
+        && right.propertyNames.every((property) => VISUAL_TRACK_PROPERTIES.has(property as PropertyTrack["property"]));
+      if (representableVisualHierarchy) continue;
+      conflictedKeys.add(left.key);
+      conflictedKeys.add(right.key);
+      const leftTracks = [...new Set(left.trackIds)];
+      const rightTracks = [...new Set(right.trackIds)];
+      for (const trackId of [...leftTracks, ...rightTracks]) {
+        conflictedTrackIds.add(trackId);
+        const counterpartTrackId = leftTracks.includes(trackId) ? rightTracks[0] : leftTracks[0];
+        const diagnosticKey = `${trackId}:${counterpartTrackId}`;
+        if (diagnosedTrackConflicts.has(diagnosticKey)) continue;
+        diagnosedTrackConflicts.add(diagnosticKey);
+        if (diagnosedSemanticConflicts.size + diagnosedTrackConflicts.size <= MAX_TRACK_CONFLICT_DIAGNOSTICS) diagnostics.push({
+          severity: "error",
+          code: "TRACK_TRACK_COLLISION",
+          message: `Property track overlaps ${counterpartTrackId} on the same effective Manim object hierarchy; only same-target segments with identical interval and easing can be merged.`,
+          trackId,
+        });
+        else omittedConflictDiagnostics += 1;
+      }
+    }
+  }
+
+  conflictedTrackIds.forEach((id) => rejectedTrackIds.add(id));
+
+  if (omittedConflictDiagnostics > 0) diagnostics.push({
+    severity: "error",
+    code: "TRACK_CONFLICT_DIAGNOSTICS_TRUNCATED",
+    message: `${omittedConflictDiagnostics} additional track conflict diagnostics were deterministically omitted. All affected tracks remain rejected.`,
+  });
+
+  // Admission is deliberately whole-track. Rebuild from the grouped segments
+  // only after every unsupported interpolation and collision is known, so an
+  // earlier valid segment of a later-rejected track cannot leak into Python.
+  const orderedSurvivingGroups = buildSurvivingGroups();
+  for (const segment of orderedSurvivingGroups) {
+    if (segment.trackIds.some((id) => rejectedTrackIds.has(id))) continue;
+    const isVisual = segment.target.kind === "object" && segment.propertyNames.every((property) => VISUAL_TRACK_PROPERTIES.has(property as PropertyTrack["property"]));
+    const representedByAncestor = isVisual && orderedSurvivingGroups.some((candidate) => (
+      candidate !== segment
+      && candidate.target.kind === "object"
+      && candidate.start === segment.start && candidate.end === segment.end && candidate.easing === segment.easing
+      && candidate.propertyNames.every((property) => VISUAL_TRACK_PROPERTIES.has(property as PropertyTrack["property"]))
+      && ancestorsOf(segment.target.kind === "object" ? segment.target.objectId : "").has(candidate.target.objectId)
+    ));
+    if (representedByAncestor) continue;
+    const targetId = segment.target.kind === "object" ? segment.target.objectId : undefined;
+    result.push({
+      id: `compiler-track-${stableIdentifierHash(segment.key)}`,
+      type: segment.target.kind === "camera" ? "camera-focus" : "transform",
+      targetIds: targetId ? [targetId] : [],
+      start: segment.start,
+      duration: segment.end - segment.start,
+      easing: segment.easing,
+      properties: segment.properties,
+    });
+  }
+  const admittedTrackIds = new Set(shot.propertyTracks.filter((track) => !rejectedTrackIds.has(track.id)).map(({ id }) => id));
+  return {
+    shot: { ...shot, propertyTracks: shot.propertyTracks.filter((track) => admittedTrackIds.has(track.id)) },
+    animations: result,
+    diagnostics,
+  };
+}
+
 function animationComponents(animations: readonly SceneAnimation[]): AnimationComponent[] {
   const ordered = [...animations].sort((a, b) => a.start - b.start || a.id.localeCompare(b.id));
   const components: AnimationComponent[] = [];
@@ -716,8 +1045,10 @@ export function estimateManimTimelineDurationUpperBound(project: ProjectDocument
   const quantizedEmittedRuntime = (duration: number) => Math.max(1, Math.ceil(duration * frameRate)) / frameRate;
   let total = 0;
   for (const shot of project.shots) {
+    const plan = compilerTrackPlan(shot);
     let timelineCursor = 0;
-    for (const component of animationComponents(shot.animations)) {
+    const compiledAnimations = [...shot.animations, ...plan.animations];
+    for (const component of animationComponents(compiledAnimations)) {
       const gap = component.start - timelineCursor;
       if (gap > PROOFCANVAS_TIME_EPSILON) {
         total += quantizedEmittedRuntime(emittedPositiveDuration(gap));
@@ -735,7 +1066,7 @@ export function estimateManimTimelineDurationUpperBound(project: ProjectDocument
       timelineCursor = Math.max(timelineCursor, component.end);
     }
     const finalHold = shot.duration - timelineCursor;
-    if (finalHold > PROOFCANVAS_TIME_EPSILON || (shot.animations.length === 0 && finalHold > 0)) {
+    if (finalHold > PROOFCANVAS_TIME_EPSILON || (compiledAnimations.length === 0 && finalHold > 0)) {
       total += quantizedEmittedRuntime(emittedPositiveDuration(finalHold));
     }
   }
@@ -743,12 +1074,28 @@ export function estimateManimTimelineDurationUpperBound(project: ProjectDocument
 }
 
 export function compileManim(input: ProjectDocument): CompileResult {
-  const project = ProjectDocumentSchema.parse(input);
+  const parsedProject = ProjectDocumentSchema.parse(input);
+  const trackPlans = parsedProject.shots.map(compilerTrackPlan);
+  const project: ProjectDocument = { ...parsedProject, shots: trackPlans.map(({ shot }) => shot) };
   const diagnostics: CompilerDiagnostic[] = [];
+  diagnostics.push({
+    severity: "info",
+    code: "RENDER_SETTINGS_EXTERNAL",
+    message: `Renderer transport must apply ${project.settings.resolution.width}x${project.settings.resolution.height} at ${project.settings.frameRate}fps (${project.settings.renderPreset}); preview quality ${project.settings.previewQuality} is editor-only.`,
+  });
+  for (const shot of project.shots) {
+    for (const clip of shot.audioClips) diagnostics.push({
+      severity: "error",
+      code: "AUDIO_CLIP_RENDER_UNSUPPORTED",
+      message: "Authored audio cannot be transported or muxed by the current renderer and is rejected until Slice 4.",
+      objectId: clip.id,
+    });
+  }
   const { objects: variables, references } = variableMaps(project);
   const lines: string[] = [
     "from manim import *",
     "import math",
+    `# ProofCanvas settings: ${project.settings.aspectRatio}, ${project.settings.resolution.width}x${project.settings.resolution.height}, ${project.settings.frameRate}fps, ${project.settings.renderPreset}, preview=${project.settings.previewQuality}`,
     "",
     "",
     "class GeneratedScene(MovingCameraScene):",
@@ -758,13 +1105,17 @@ export function compileManim(input: ProjectDocument): CompileResult {
   project.shots.forEach((shot, shotIndex) => {
     const style = project.styles.find(({ id }) => id === project.activeStyleId)!;
     const objectMap = new Map(shot.objects.map((object) => [object.id, object]));
+    const trackPlan = trackPlans[shotIndex];
+    diagnostics.push(...trackPlan.diagnostics);
+    const compiledAnimations = [...shot.animations, ...trackPlan.animations];
+    const compiledScheduleShot: Shot = { ...shot, animations: compiledAnimations };
     const entering = new Set(
-      [...initiallyHiddenByEntranceIds(shot)].filter((id) => {
+      [...initiallyHiddenByEntranceIds(compiledScheduleShot)].filter((id) => {
         const object = objectMap.get(id);
         return object ? isRenderableObject(object, shot, objectMap) : false;
       }),
     );
-    const firstVisibility = firstVisibilityAnimationByTarget(shot);
+    const firstVisibility = firstVisibilityAnimationByTarget(compiledScheduleShot);
     const previewCache = new Map<string, ReturnType<typeof previewShotAtTime>>();
     const endPreviewCache = new Map<string, ReturnType<typeof previewShotAtAnimationEnd>>();
     const previewAt = (time: number) => {
@@ -794,7 +1145,7 @@ export function compileManim(input: ProjectDocument): CompileResult {
     for (const animation of shot.animations.filter(({ type }) => ENTRANCE_ANIMATION_TYPES.has(type))) {
       for (const targetId of animation.targetIds) {
         const object = objectMap.get(targetId);
-        if (!object || !isRenderableObject(object, shot, objectMap) || canUseNativeEntrance(animation, object, shot, objectMap, firstVisibility)) continue;
+        if (!object || !isRenderableObject(object, shot, objectMap) || canUseNativeEntrance(animation, object, compiledScheduleShot, objectMap, firstVisibility)) continue;
         for (const familyId of renderableVisibilityFamilyIds(object, shot, objectMap)) {
           const member = objectMap.get(familyId);
           if (member?.type !== "group" && entering.has(familyId) && firstVisibility.get(familyId)?.id === animation.id) {
@@ -804,11 +1155,20 @@ export function compileManim(input: ProjectDocument): CompileResult {
       }
     }
     const emitted = new Set<string>();
+    const referenceTransforms = new Map<string, SceneObject["transform"]>();
     lines.push(`        # Shot ${shotIndex + 1}: ${pyComment(shot.name)}`);
     lines.push(`        self.next_section(${pyString(shot.name)})`);
     lines.push(`        self.camera.background_color = ${pyString(style.colors.background)}`);
-    const shotCamera: SceneObject = { id: "camera", type: "group", name: "Camera", locked: false, visible: true, transform: { x: shot.camera.x, y: shot.camera.y, rotation: 0, scaleX: 1, scaleY: 1 }, style: {}, properties: {} };
-    lines.push(`        self.camera.frame.become(Rectangle(width=config.frame_width / ${pyNumber(shot.camera.zoom)}, height=config.frame_height / ${pyNumber(shot.camera.zoom)}).move_to(${coordinate(shotCamera, project)}).rotate(${pyNumber(shot.camera.rotation)} * DEGREES))`);
+    const initialPreview = previewAt(0);
+    const shotCamera: SceneObject = { id: "camera", type: "group", name: "Camera", locked: false, visible: true, transform: { x: initialPreview.camera.x, y: initialPreview.camera.y, rotation: 0, scaleX: 1, scaleY: 1 }, style: {}, properties: {} };
+    lines.push(`        self.camera.frame.become(Rectangle(width=config.frame_width / ${pyNumber(initialPreview.camera.zoom)}, height=config.frame_height / ${pyNumber(initialPreview.camera.zoom)}).move_to(${coordinate(shotCamera, project)}).rotate(${pyNumber(initialPreview.camera.rotation)} * DEGREES))`);
+
+    for (const object of shot.objects) {
+      const lifetime = object.lifetime ?? { start: 0, end: shot.duration };
+      if (lifetime.start > PROOFCANVAS_TIME_EPSILON || lifetime.end < shot.duration - PROOFCANVAS_TIME_EPSILON) {
+        diagnostics.push({ severity: "error", code: "OBJECT_LIFETIME_RENDER_UNSUPPORTED", message: "Object lifetime boundaries are enforced in preview but require an explicit renderer visibility-event extension.", objectId: object.id });
+      }
+    }
 
     const emit = (object: SceneObject) => {
       if (emitted.has(object.id)) return;
@@ -822,9 +1182,11 @@ export function compileManim(input: ProjectDocument): CompileResult {
       if (object.type === "group") {
         lines.push(`        ${variable} = ${groupClass(object, shot)}(${children.map((child) => variables.get(child.id)).join(", ")})`);
       } else {
+        const previewObject = initialPreview.objects.find(({ id }) => id === object.id);
+        const initialObject = previewObject ?? object;
         const styledObject = {
-          ...object,
-          transform: safeDerivedTransform(styledTransform(object, style), object.transform, diagnostics, object.id),
+          ...initialObject,
+          transform: safeDerivedTransform(styledTransform(initialObject, style), object.transform, diagnostics, object.id),
         };
         lines.push(`        ${variable} = ${primitiveExpression(styledObject, project, style, diagnostics)}${styleChain(styledObject, style)}`);
         const dimensions = dimensionChain(styledObject, variable, project);
@@ -834,6 +1196,7 @@ export function compileManim(input: ProjectDocument): CompileResult {
         if (styledObject.transform.scaleX !== 1 || styledObject.transform.scaleY !== 1) {
           lines.push(`        ${variable}.stretch(${pyNumber(styledObject.transform.scaleX)}, 0).stretch(${pyNumber(styledObject.transform.scaleY)}, 1)`);
         }
+        referenceTransforms.set(object.id, { ...styledObject.transform });
       }
       const reference = references.get(object.id);
       if (reference) lines.push(`        ${reference} = ${variable}.copy()`);
@@ -846,18 +1209,18 @@ export function compileManim(input: ProjectDocument): CompileResult {
     // that descendant's earliest visibility event. An entering ancestor must
     // not hide a child whose own earlier fade-out requires initial presence.
     const initialIds = shot.objects
-      .filter((object) => isEffectivelyVisible(object, objectMap) && object.type !== "group" && !entering.has(object.id))
+      .filter((object) => isEffectivelyVisible(object, objectMap) && objectExistsAtTime(shot, object.id, 0) && object.type !== "group" && !entering.has(object.id))
       .map(({ id }) => id);
     if (initialIds.length) lines.push(`        self.add(${initialIds.map((id) => variables.get(id)).join(", ")})`);
 
-    const components = animationComponents(shot.animations);
+    const components = animationComponents(compiledAnimations);
     let timelineCursor = 0;
     components.forEach((component, componentIndex) => {
       const gap = component.start - timelineCursor;
       lines.push(`        # Animation component ${componentIndex + 1}: ${pyNumber(component.start)}s to ${pyNumber(component.end)}s`);
       if (gap > PROOFCANVAS_TIME_EPSILON) lines.push(`        self.wait(${pyDuration(gap)})`);
       const lanes = component.animations.map((animation) => {
-        const expression = animationExpression(animation, shot, project, variables, references, diagnostics, firstVisibility, previewAt, previewAtEnd);
+        const expression = animationExpression(animation, compiledScheduleShot, project, variables, references, referenceTransforms, diagnostics, firstVisibility, previewAt, previewAtEnd);
         const offset = animation.start - component.start;
         return offset > PROOFCANVAS_TIME_EPSILON ? `Succession(Wait(${pyDuration(offset)}), ${expression}, group=Group())` : expression;
       });
@@ -882,5 +1245,11 @@ export function compileManim(input: ProjectDocument): CompileResult {
     }
   });
 
-  return { python: `${lines.join("\n")}\n`, diagnostics };
+  const python = `${lines.join("\n")}\n`;
+  if (utf8ByteLength(python) > PROOFCANVAS_RENDER_SOURCE_MAX_BYTES) diagnostics.push({
+    severity: "error",
+    code: "GENERATED_SOURCE_TOO_LARGE",
+    message: `Generated UTF-8 source is ${utf8ByteLength(python)} bytes and exceeds the ${PROOFCANVAS_RENDER_SOURCE_MAX_BYTES}-byte renderer limit.`,
+  });
+  return { python, diagnostics: boundedCompilerDiagnostics(diagnostics) };
 }

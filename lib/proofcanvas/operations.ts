@@ -4,6 +4,8 @@ import {
   SceneOperationSchema,
   cloneSerializable,
   type ProjectDocument,
+  type PropertyKeyframe,
+  type PropertyTrack,
   type SceneAnimation,
   type SceneObject,
   type SceneOperation,
@@ -46,6 +48,18 @@ function animationById(shot: Shot, animationId: string): SceneAnimation {
   return animation;
 }
 
+function propertyTrackById(shot: Shot, trackId: string): PropertyTrack {
+  const track = shot.propertyTracks.find(({ id }) => id === trackId);
+  if (!track) throw new OperationValidationError(`Property track not found: ${trackId}`);
+  return track;
+}
+
+function keyframeById(track: PropertyTrack, keyframeId: string): PropertyKeyframe {
+  const keyframe = track.keyframes.find(({ id }) => id === keyframeId);
+  if (!keyframe) throw new OperationValidationError(`Keyframe not found: ${keyframeId}`);
+  return keyframe;
+}
+
 function requireUnique(values: readonly string[], label: string): void {
   if (new Set(values).size !== values.length) throw new OperationValidationError(`${label} contains duplicate IDs`);
 }
@@ -77,6 +91,16 @@ export function effectiveVisibilityOwner(shot: Shot, objectOrId: SceneObject | s
 function requireUnlocked(shot: Shot, objects: readonly SceneObject[], action: string): void {
   const locked = objects.filter((object) => effectiveLockOwner(shot, object)).map(({ id }) => id);
   if (locked.length) throw new OperationValidationError(`${action} targets locked object${locked.length === 1 ? "" : "s"}: ${locked.join(", ")}`);
+}
+
+function requireTrackUnlocked(shot: Shot, track: PropertyTrack, action: string): void {
+  if (track.target.kind === "object") {
+    requireUnlocked(shot, mutationFamily(shot, [objectById(shot, track.target.objectId)]), action);
+  }
+}
+
+function sortKeyframes(track: PropertyTrack): void {
+  track.keyframes.sort((left, right) => left.time - right.time || left.id.localeCompare(right.id));
 }
 
 function requireIndependentHierarchy(shot: Shot, objects: readonly SceneObject[], action: string): void {
@@ -163,6 +187,7 @@ function removeAnimationTargets(shot: Shot, removed: ReadonlySet<string>): void 
     const targetIds = animation.targetIds.filter((id) => !removed.has(id));
     return targetIds.length ? [{ ...animation, targetIds }] : [];
   });
+  shot.propertyTracks = shot.propertyTracks.filter((track) => track.target.kind !== "object" || !removed.has(track.target.objectId));
 }
 
 function mergeObjectPatch(object: SceneObject, patch: Extract<SceneOperation, { type: "update-object" }>["patch"]): SceneObject {
@@ -491,6 +516,66 @@ function applyOne(project: ProjectDocument, shotId: string, operation: SceneOper
       shot.animations = shot.animations.filter(({ id }) => id !== animation.id);
       return `Deleted ${animation.type} animation`;
     }
+    case "set-object-lifetime": {
+      const object = objectById(shot, operation.objectId);
+      requireUnlocked(shot, mutationFamily(shot, [object]), "Set lifetime");
+      object.lifetime = cloneSerializable(operation.lifetime);
+      return `Set ${object.name} lifetime to ${operation.lifetime.start}s–${operation.lifetime.end}s`;
+    }
+    case "add-property-track": {
+      if (projectIds.has(operation.track.id)) throw new OperationValidationError(`ID already exists: ${operation.track.id}`);
+      for (const keyframe of operation.track.keyframes) {
+        if (projectIds.has(keyframe.id)) throw new OperationValidationError(`ID already exists: ${keyframe.id}`);
+      }
+      requireTrackUnlocked(shot, operation.track, "Add property track");
+      shot.propertyTracks.push(cloneSerializable(operation.track));
+      return `Added ${operation.track.property} property track`;
+    }
+    case "delete-property-track": {
+      const track = propertyTrackById(shot, operation.trackId);
+      requireTrackUnlocked(shot, track, "Delete property track");
+      shot.propertyTracks = shot.propertyTracks.filter(({ id }) => id !== track.id);
+      return `Deleted ${track.property} property track`;
+    }
+    case "add-keyframe": {
+      const track = propertyTrackById(shot, operation.trackId);
+      requireTrackUnlocked(shot, track, "Add keyframe");
+      if (projectIds.has(operation.keyframe.id)) throw new OperationValidationError(`ID already exists: ${operation.keyframe.id}`);
+      track.keyframes.push(cloneSerializable(operation.keyframe));
+      sortKeyframes(track);
+      return `Added keyframe at ${operation.keyframe.time}s`;
+    }
+    case "update-keyframe": {
+      const track = propertyTrackById(shot, operation.trackId);
+      requireTrackUnlocked(shot, track, "Update keyframe");
+      const keyframe = keyframeById(track, operation.keyframeId);
+      Object.assign(keyframe, cloneSerializable(operation.patch));
+      return `Updated keyframe ${keyframe.id}`;
+    }
+    case "move-keyframe": {
+      const track = propertyTrackById(shot, operation.trackId);
+      requireTrackUnlocked(shot, track, "Move keyframe");
+      const keyframe = keyframeById(track, operation.keyframeId);
+      keyframe.time = operation.time;
+      sortKeyframes(track);
+      return `Moved keyframe ${keyframe.id} to ${operation.time}s`;
+    }
+    case "delete-keyframe": {
+      const track = propertyTrackById(shot, operation.trackId);
+      requireTrackUnlocked(shot, track, "Delete keyframe");
+      keyframeById(track, operation.keyframeId);
+      track.keyframes = track.keyframes.filter(({ id }) => id !== operation.keyframeId);
+      return `Deleted keyframe ${operation.keyframeId}`;
+    }
+    case "duplicate-keyframe": {
+      const track = propertyTrackById(shot, operation.trackId);
+      requireTrackUnlocked(shot, track, "Duplicate keyframe");
+      if (projectIds.has(operation.duplicateId)) throw new OperationValidationError(`ID already exists: ${operation.duplicateId}`);
+      const source = keyframeById(track, operation.keyframeId);
+      track.keyframes.push({ ...cloneSerializable(source), id: operation.duplicateId, time: operation.time });
+      sortKeyframes(track);
+      return `Duplicated keyframe ${source.id} at ${operation.time}s`;
+    }
     case "set-camera":
       shot.camera = cloneSerializable(operation.camera);
       return "Updated camera";
@@ -575,6 +660,14 @@ export function describeOperations(operations: readonly SceneOperation[]): strin
       case "add-animation": return `Add ${operation.animation.type} at ${operation.animation.start}s`;
       case "update-animation": return `Update animation ${operation.animationId}`;
       case "delete-animation": return `Delete animation ${operation.animationId}`;
+      case "set-object-lifetime": return `Set ${operation.objectId} lifetime to ${operation.lifetime.start}s–${operation.lifetime.end}s`;
+      case "add-property-track": return `Add ${operation.track.property} track ${operation.track.id}`;
+      case "delete-property-track": return `Delete property track ${operation.trackId}`;
+      case "add-keyframe": return `Add keyframe to ${operation.trackId} at ${operation.keyframe.time}s`;
+      case "update-keyframe": return `Update keyframe ${operation.keyframeId}`;
+      case "move-keyframe": return `Move keyframe ${operation.keyframeId} to ${operation.time}s`;
+      case "delete-keyframe": return `Delete keyframe ${operation.keyframeId}`;
+      case "duplicate-keyframe": return `Duplicate keyframe ${operation.keyframeId} at ${operation.time}s`;
       case "set-camera": return "Update camera framing";
       case "set-style": return `Use style ${operation.styleId}`;
     }

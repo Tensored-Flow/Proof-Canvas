@@ -6,6 +6,7 @@ export const RAW_MANIM_STYLE_ID = "style-raw-manim";
 export const EDITORIAL_INK_STYLE: StylePack = Object.freeze({
   id: EDITORIAL_INK_STYLE_ID,
   name: "Editorial Ink",
+  origin: "preset",
   colors: {
     background: "#f3eedf",
     ink: "#252722",
@@ -41,6 +42,7 @@ export const EDITORIAL_INK_STYLE: StylePack = Object.freeze({
 export const RAW_MANIM_STYLE: StylePack = Object.freeze({
   id: RAW_MANIM_STYLE_ID,
   name: "Raw Manim",
+  origin: "preset",
   colors: {
     background: "#ffffff",
     ink: "#000000",

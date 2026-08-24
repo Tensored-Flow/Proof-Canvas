@@ -1,6 +1,8 @@
-import { PROOFCANVAS_TIME_EPSILON, cloneSerializable, type CameraStateSchema } from "./schema";
+import { PROOFCANVAS_TIME_EPSILON, cloneSerializable, objectTypeSupportsStyleProperty, type CameraStateSchema, type VisualStyleProperty } from "./schema";
 import type { Easing, SceneAnimation, SceneObject, Shot } from "./schema";
 import type { z } from "zod";
+import { easingProgress } from "./easing";
+import { objectExistsAtTime, orderedPropertyTracks, samplePropertyTrack } from "./timeline";
 
 export interface PreviewObject extends SceneObject {
   preview: {
@@ -20,17 +22,7 @@ function clamp(value: number, min = 0, max = 1): number {
   return Math.min(max, Math.max(min, value));
 }
 
-export function easingProgress(easing: Easing, progress: number): number {
-  const t = clamp(progress);
-  switch (easing) {
-    case "linear": return t;
-    case "ease-in": return t * t;
-    case "ease-out": return 1 - (1 - t) ** 2;
-    case "ease-in-out": return t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) ** 2) / 2;
-    case "editorial": return 1 - (1 - t) ** 4;
-    case "spring-soft": return clamp(1 - Math.exp(-6 * t) * Math.cos(8 * t));
-  }
-}
+export { easingProgress } from "./easing";
 
 function animationProgress(animation: SceneAnimation, time: number): number {
   return easingProgress(animation.easing, (time - animation.start) / animation.duration);
@@ -140,10 +132,24 @@ function reduceShotPreview(
   const animations = orderedAnimations(shot).filter(includeAnimation);
   const enteringTargets = initiallyHiddenByEntranceIds(shot);
   const visibleIds = effectivelyVisibleIds(shot);
+  const authoredObjects = new Map(shot.objects.map((object) => [object.id, object]));
+  const cascadedStyle = new Map<string, SceneObject["style"]>();
+  const styleFor = (id: string): SceneObject["style"] => {
+    const cached = cascadedStyle.get(id);
+    if (cached) return cached;
+    const source = authoredObjects.get(id);
+    const inherited = source?.parentId ? styleFor(source.parentId) : {};
+    const supports = (property: string) => !["color", "fill", "stroke", "strokeWidth", "opacity"].includes(property)
+      || objectTypeSupportsStyleProperty(source?.type ?? "group", property as VisualStyleProperty);
+    const style = Object.fromEntries([...Object.entries(inherited), ...Object.entries(source?.style ?? {})].filter(([property]) => supports(property)));
+    cascadedStyle.set(id, style);
+    return style;
+  };
   const objects: PreviewObject[] = shot.objects.map((source) => ({
     ...cloneSerializable(source),
+    style: cloneSerializable(styleFor(source.id)),
     preview: {
-      opacity: visibleIds.has(source.id) && !enteringTargets.has(source.id) ? source.style.opacity ?? 1 : 0,
+      opacity: visibleIds.has(source.id) && objectExistsAtTime(shot, source.id, time) && !enteringTargets.has(source.id) ? styleFor(source.id).opacity ?? 1 : 0,
       revealProgress: enteringTargets.has(source.id) ? 0 : 1,
       emphasis: 0,
     },
@@ -151,8 +157,41 @@ function reduceShotPreview(
   const byId = new Map(objects.map((object) => [object.id, object]));
   let camera = cloneSerializable(shot.camera);
 
-  for (const animation of animations) {
-    if (time < animation.start) continue;
+  const applyTrack = (track: Shot["propertyTracks"][number]) => {
+    const sample = { target: track.target, property: track.property, value: samplePropertyTrack(track, time) };
+    if (sample.target.kind === "camera" && typeof sample.value === "number") {
+      camera = { ...camera, [sample.property]: sample.value };
+      return;
+    }
+    if (sample.target.kind !== "object") return;
+    const object = byId.get(sample.target.objectId);
+    if (!object) return;
+    const oldGroupTransform = object.type === "group" ? { ...object.transform } : null;
+    if (["x", "y", "width", "height", "rotation", "scaleX", "scaleY"].includes(sample.property) && typeof sample.value === "number") {
+      object.transform = { ...object.transform, [sample.property]: sample.value };
+    } else if (sample.property === "scale" && typeof sample.value === "number") {
+      object.transform = { ...object.transform, scaleX: sample.value, scaleY: sample.value };
+    } else if (["opacity", "strokeWidth", "fill", "stroke"].includes(sample.property)) {
+      const styledIds = object.type === "group" ? [object.id, ...descendantIds(shot, object.id)] : [object.id];
+      for (const styledId of styledIds) {
+        const styledObject = byId.get(styledId);
+        if (!styledObject) continue;
+        if (!objectTypeSupportsStyleProperty(styledObject.type, sample.property as VisualStyleProperty)) continue;
+        if (styledId !== object.id && (!visibleIds.has(styledId) || !objectExistsAtTime(shot, styledId, time))) continue;
+        if ((sample.property === "opacity" || sample.property === "strokeWidth") && typeof sample.value === "number") {
+          styledObject.style = { ...styledObject.style, [sample.property]: sample.value };
+          if (sample.property === "opacity" && visibleIds.has(styledId) && !enteringTargets.has(styledId)) {
+            styledObject.preview.opacity = sample.value;
+          }
+        } else if ((sample.property === "fill" || sample.property === "stroke") && typeof sample.value === "string") {
+          styledObject.style = { ...styledObject.style, [sample.property]: sample.value };
+        }
+      }
+    }
+    if (oldGroupTransform) bakePreviewGroupDelta(objects, object.id, oldGroupTransform, object.transform);
+  };
+
+  const applyAnimation = (animation: SceneAnimation) => {
     const progress = animationProgress(animation, time);
     if (animation.type === "camera-focus") {
       camera = {
@@ -161,14 +200,14 @@ function reduceShotPreview(
         zoom: camera.zoom + (numberProperty(animation.properties, "zoom", camera.zoom) - camera.zoom) * progress,
         rotation: camera.rotation + (numberProperty(animation.properties, "rotation", camera.rotation) - camera.rotation) * progress,
       };
-      continue;
+      return;
     }
     const targetIds = VISIBILITY_ANIMATION_TYPES.has(animation.type)
       ? expandedVisibilityTargetIds(shot, animation)
       : animation.targetIds;
     for (const targetId of [...new Set(targetIds)]) {
       const object = byId.get(targetId);
-      if (!object || !visibleIds.has(targetId)) continue;
+      if (!object || !visibleIds.has(targetId) || !objectExistsAtTime(shot, targetId, time)) continue;
       const baseOpacity = object.style.opacity ?? 1;
       const oldGroupTransform = object.type === "group" ? { ...object.transform } : null;
       switch (animation.type) {
@@ -220,6 +259,35 @@ function reduceShotPreview(
         bakePreviewGroupDelta(objects, object.id, oldGroupTransform, object.transform);
       }
     }
+  };
+
+  const canonicalTracks = orderedPropertyTracks(shot);
+  const trackOrder = new Map(canonicalTracks.map((track, index) => [track.id, index]));
+  const events = [
+    ...animations.filter((animation) => time >= animation.start - PROOFCANVAS_TIME_EPSILON).map((animation) => ({
+      kind: "animation" as const,
+      authority: Math.min(time, animation.start + animation.duration),
+      start: animation.start,
+      id: animation.id,
+      animation,
+      order: 0,
+    })),
+    ...canonicalTracks.filter((track) => time >= track.keyframes[0].time - PROOFCANVAS_TIME_EPSILON).map((track) => ({
+      kind: "track" as const,
+      authority: Math.min(time, track.keyframes.at(-1)!.time),
+      start: track.keyframes[0].time,
+      id: track.id,
+      track,
+      order: trackOrder.get(track.id) ?? 0,
+    })),
+  ].sort((left, right) => left.authority - right.authority
+    || left.start - right.start
+    || (left.kind === right.kind ? 0 : left.kind === "animation" ? -1 : 1)
+    || left.order - right.order
+    || left.id.localeCompare(right.id));
+  for (const event of events) {
+    if (event.kind === "track") applyTrack(event.track);
+    else applyAnimation(event.animation);
   }
   return { time, objects, camera };
 }

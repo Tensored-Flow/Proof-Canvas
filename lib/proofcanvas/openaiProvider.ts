@@ -357,6 +357,15 @@ function protectedTargets(operation: SceneOperation, shot: Shot): string[] {
       if (!animation) throw new ProofCanvasProviderOutputError(`Generated operation targets missing animation ${operation.animationId}`);
       return animation.targetIds;
     }
+    case "set-object-lifetime":
+    case "add-property-track":
+    case "delete-property-track":
+    case "add-keyframe":
+    case "update-keyframe":
+    case "move-keyframe":
+    case "delete-keyframe":
+    case "duplicate-keyframe":
+      throw new ProofCanvasProviderOutputError(`AI proposals may not use manual-only operation ${operation.type}`);
     case "set-camera":
     case "set-style": return [];
   }
@@ -408,7 +417,7 @@ function promptContext(request: AiCommandRequest): string {
     project: {
       schemaVersion: project.schemaVersion,
       metadata: { id: project.metadata.id, title: project.metadata.title },
-      aspectRatio: project.aspectRatio,
+      settings: project.settings,
       activeStyleId: project.activeStyleId,
     },
     currentShot: shot,

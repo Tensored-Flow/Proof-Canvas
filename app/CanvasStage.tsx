@@ -4,7 +4,7 @@ import katex from 'katex'
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { previewShotAtTime } from '@/lib/proofcanvas/preview'
 import { applyOperations, effectiveLockOwner } from '@/lib/proofcanvas/operations'
-import type { ProjectDocument, SceneObject, Shot, StylePack } from '@/lib/proofcanvas/schema'
+import { objectTypeSupportsStyleProperty, type ProjectDocument, type SceneObject, type Shot, type StylePack } from '@/lib/proofcanvas/schema'
 import { styledDisplayTransform, styledTransform } from '@/lib/proofcanvas/styles'
 
 type Gesture = {
@@ -94,15 +94,15 @@ function RenderObject({ object, style, selected, effectivelyLocked, temporallyTr
     'aria-label': object.name,
     style: { cursor: effectivelyLocked || temporallyTransformed ? 'not-allowed' : 'move' },
   }
-  const fill = object.style.fill ?? (object.type === 'rectangle' ? style.colors.ink : object.type === 'circle' ? style.colors.background : 'none')
-  const stroke = object.style.stroke ?? style.colors.ink
-  const strokeWidth = object.style.strokeWidth ?? style.strokes.regular
+  const fill = objectTypeSupportsStyleProperty(object.type, 'fill') ? object.style.fill ?? (object.type === 'rectangle' ? style.colors.ink : object.type === 'circle' ? style.colors.background : 'none') : 'none'
+  const stroke = objectTypeSupportsStyleProperty(object.type, 'stroke') ? object.style.stroke ?? style.colors.ink : 'none'
+  const strokeWidth = objectTypeSupportsStyleProperty(object.type, 'strokeWidth') ? object.style.strokeWidth ?? style.strokes.regular : 0
   switch (object.type) {
     case 'text':
     case 'math':
       return (
         <foreignObject {...common} x={-width / 2} y={-height / 2} width={width} height={height}>
-          <div className={`pc-canvas-text pc-${object.type}`} style={{ color: object.style.color ?? style.colors.ink, fontSize: object.style.fontSize ?? 22, fontWeight: object.style.fontWeight, textAlign: object.style.textAlign ?? 'left', fontFamily: object.type === 'math' ? style.typography.math : style.typography.statement }}>
+          <div className={`pc-canvas-text pc-${object.type}`} style={{ color: objectTypeSupportsStyleProperty(object.type, 'fill') ? object.style.fill ?? object.style.color ?? style.colors.ink : object.style.color ?? style.colors.ink, fontSize: object.style.fontSize ?? 22, fontWeight: object.style.fontWeight, textAlign: object.style.textAlign ?? 'left', fontFamily: object.type === 'math' ? style.typography.math : style.typography.statement }}>
             {object.type === 'math' ? <MathHtml content={String(object.properties.content ?? '')} /> : String(object.properties.content ?? '')}
           </div>
         </foreignObject>
@@ -119,7 +119,7 @@ function RenderObject({ object, style, selected, effectivelyLocked, temporallyTr
         const y = -Math.min(height / 2, (x / Math.max(1, width / 4)) ** 2 * height / 5)
         return `${x},${y}`
       }).join(' ')
-      return <polyline {...common} points={points} fill="none" stroke={object.style.stroke ?? style.colors.coolAccent} strokeWidth={style.graph.curveWeight}/>
+      return <polyline {...common} points={points} fill="none" stroke={object.style.stroke ?? style.colors.coolAccent} strokeWidth={object.style.strokeWidth ?? style.graph.curveWeight}/>
     }
     case 'image':
     case 'svg': return <image {...common} href={String(object.properties.source ?? '')} x={-width / 2} y={-height / 2} width={width} height={height} preserveAspectRatio="xMidYMid meet"/>

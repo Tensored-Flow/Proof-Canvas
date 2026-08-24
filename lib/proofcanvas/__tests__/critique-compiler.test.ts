@@ -811,8 +811,8 @@ describe("Manim compiler", () => {
     const valid = ProjectDocumentSchema.parse(project);
     const result = compileManim(valid);
     expect(result.python).toContain("Circle(radius=1.0).stretch_to_fit_width(1.18518517).stretch_to_fit_height(0.59259258)");
-    expect(result.python).toContain("pc_circle_mark = Circle(radius=1.0).stretch_to_fit_width(1.18518517).stretch_to_fit_height(0.59259258).set_color(\"#252722\").set_fill(\"#f3eedf\", opacity=1.0)");
-    expect(result.python).toContain("pc_default_rectangle = Rectangle(width=1.18518517, height=0.59259258).set_color(\"#252722\").set_fill(\"#252722\", opacity=1.0)");
+    expect(result.python).toContain("pc_circle_mark = Circle(radius=1.0).stretch_to_fit_width(1.18518517).stretch_to_fit_height(0.59259258).set_fill(\"#f3eedf\", opacity=1.0).set_stroke(\"#252722\", width=1.75)");
+    expect(result.python).toContain("pc_default_rectangle = Rectangle(width=1.18518517, height=0.59259258).set_fill(\"#252722\", opacity=1.0).set_stroke(\"#252722\", width=1.75)");
     expect(result.python).toContain("Line([");
     expect(result.python).toContain("Arrow([");
     expect(result.python).toContain("BraceBetweenPoints");
@@ -820,7 +820,7 @@ describe("Manim compiler", () => {
     expect(result.python).toContain("Axes(x_range=");
     expect(result.python).toContain("FunctionGraph(lambda x: (x ** 2)");
     expect(result.python).toContain("SVGMobject(\"public/proofcanvas/assets/example.svg\")");
-    expect(result.diagnostics.map(({ code }) => code)).toEqual(expect.arrayContaining(["ASSET_PATH_REQUIRED", "INLINE_ASSET_BROWSER_ONLY"]));
+    expect(result.diagnostics.map(({ code }) => code)).toEqual(expect.arrayContaining(["ASSET_RENDER_TRANSPORT_UNSUPPORTED"]));
   });
 
   test("preserves world-space groups, safe identifiers, transforms, opacity, camera resets, and diagnostics", () => {

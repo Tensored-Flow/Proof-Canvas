@@ -5,16 +5,33 @@ export type IdKind = "project" | "shot" | "object" | "animation" | "style" | "gr
 export function collectProjectIds(project: ProjectDocument): Set<string> {
   const ids = new Set<string>([project.metadata.id]);
   for (const style of project.styles) ids.add(style.id);
+  for (const easing of project.customEasings) ids.add(easing.id);
+  for (const asset of project.assets) ids.add(asset.id);
   for (const shot of project.shots) {
     ids.add(shot.id);
     for (const object of shot.objects) ids.add(object.id);
     for (const animation of shot.animations) ids.add(animation.id);
+    for (const clip of shot.audioClips) ids.add(clip.id);
+    for (const clip of shot.captionClips) ids.add(clip.id);
+    for (const marker of shot.markers) ids.add(marker.id);
+    for (const track of shot.propertyTracks) {
+      ids.add(track.id);
+      for (const keyframe of track.keyframes) ids.add(keyframe.id);
+    }
   }
   return ids;
 }
 
 export function collectShotIds(shot: Shot): Set<string> {
-  return new Set([shot.id, ...shot.objects.map(({ id }) => id), ...shot.animations.map(({ id }) => id)]);
+  return new Set([
+    shot.id,
+    ...shot.objects.map(({ id }) => id),
+    ...shot.animations.map(({ id }) => id),
+    ...shot.audioClips.map(({ id }) => id),
+    ...shot.captionClips.map(({ id }) => id),
+    ...shot.markers.map(({ id }) => id),
+    ...shot.propertyTracks.flatMap((track) => [track.id, ...track.keyframes.map(({ id }) => id)]),
+  ]);
 }
 
 function slug(value: string): string {

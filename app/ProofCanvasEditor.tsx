@@ -695,7 +695,7 @@ export default function ProofCanvasEditor({ aiConfigured = false }: { aiConfigur
   const addShot = () => {
     const id = allocateId('shot', collectProjectIds(project), `scene-${project.shots.length + 1}`)
     const next = cloneSerializable(project)
-    next.shots.push({ id, name: `Scene ${project.shots.length + 1}`, duration: 6, objects: [], animations: [], camera: { x: 480, y: 270, zoom: 1, rotation: 0 } })
+    next.shots.push({ id, name: `Scene ${project.shots.length + 1}`, duration: 6, objects: [], animations: [], propertyTracks: [], audioClips: [], captionClips: [], markers: [], camera: { x: 480, y: 270, zoom: 1, rotation: 0 } })
     if (commitDocument(next, 'Add shot')) { setActiveShotId(id); setSelectedIds([]); setPlayhead(0) }
   }
 
@@ -956,7 +956,7 @@ export default function ProofCanvasEditor({ aiConfigured = false }: { aiConfigur
     const result = compileManim(project)
     const diagnostics = result.diagnostics.map((diagnostic) => `${diagnostic.severity.toUpperCase()} ${diagnostic.code}: ${diagnostic.message}${diagnostic.objectId ? ` · object ${diagnostic.objectId}` : ''}${diagnostic.animationId ? ` · animation ${diagnostic.animationId}` : ''}`)
     showExportPreview(`Manim Python${diagnostics.length ? ` · ${diagnostics.length} diagnostics` : ''}`, result.python, diagnostics)
-    download('uncountable_yet_zero_length.py', 'text/x-python', result.python)
+    if (!result.diagnostics.some(({ severity }) => severity === 'error')) download('uncountable_yet_zero_length.py', 'text/x-python', result.python)
   }
 
   return (

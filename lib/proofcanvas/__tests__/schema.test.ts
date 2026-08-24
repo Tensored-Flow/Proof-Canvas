@@ -5,6 +5,7 @@ import {
   PROJECT_SCHEMA_VERSION,
   PROOFCANVAS_BRACE_LABEL_MAX_CHARS,
   PROOFCANVAS_PROJECT_MAX_BYTES,
+  PROOFCANVAS_RENDER_SOURCE_MAX_BYTES,
   PROOFCANVAS_SCHEMA_LIMITS,
   PROOFCANVAS_TEXT_MAX_CHARS,
   ProjectDocumentSchema,
@@ -100,7 +101,7 @@ describe("ProofCanvas project schema", () => {
     legacy.schemaVersion = 0;
     const FROZEN_V0_FIXTURE = Object.freeze(legacy);
     const migrated = parseProjectDocument(FROZEN_V0_FIXTURE);
-    expect(migrated.schemaVersion).toBe(1);
+    expect(migrated.schemaVersion).toBe(PROJECT_SCHEMA_VERSION);
     expect(migrated.metadata.id).toBe("project-uncountable-zero-length");
     expect(FROZEN_V0_FIXTURE.schemaVersion).toBe(0);
   });
@@ -365,7 +366,7 @@ describe("ProofCanvas project schema", () => {
       style: {},
       properties: {},
     };
-    const leaves: SceneObject[] = Array.from({ length: 17 }, (_, index) => ({
+    const leaves: SceneObject[] = Array.from({ length: 5 }, (_, index) => ({
       id: `object-expansion-${index}`,
       parentId: group.id,
       type: "rectangle",
@@ -394,15 +395,73 @@ describe("ProofCanvas project schema", () => {
     if (!result.success) {
       expect(result.error.issues).toEqual(expect.arrayContaining([
         expect.objectContaining({
-          path: ["shots", 0, "animations", 240, "targetIds", 0],
-          message: `Expanded animation targets exceed the project limit of ${PROOFCANVAS_SCHEMA_LIMITS.animationLeafExpansionsPerProject} leaf operations`,
+          path: ["shots", 0, "animations", 204, "targetIds", 0],
+          message: `Expanded compiler targets exceed the project limit of ${PROOFCANVAS_SCHEMA_LIMITS.compilerExpandedTargetsPerProject} operations`,
         }),
       ]));
     }
-    expect(() => compileManim(project)).toThrow(/Expanded animation targets exceed the project limit/);
+    expect(() => compileManim(project)).toThrow(/Expanded compiler targets exceed the project limit/);
 
-    shot.objects = [group, ...leaves.slice(0, 16)];
+    shot.objects = [group, ...leaves.slice(0, 4)];
     expect(ProjectDocumentSchema.safeParse(project).success).toBe(true);
+  });
+
+  test("budgets property-track compiler expansion before a compact project amplifies past renderer limits", () => {
+    const project = cloneSerializable(createCantorDemoProject());
+    const shot = project.shots[1];
+    project.shots = [shot];
+    shot.duration = 300;
+    shot.animations = [];
+    const group: SceneObject = {
+      id: "group-track-expansion-budget",
+      type: "group",
+      name: "Track expansion budget",
+      locked: false,
+      visible: true,
+      transform: { x: 480, y: 270, width: 300, height: 200, rotation: 0, scaleX: 1, scaleY: 1 },
+      style: {},
+      properties: {},
+    };
+    const leaves: SceneObject[] = Array.from({ length: 3 }, (_, index) => ({
+      id: `object-track-expansion-${index}`,
+      parentId: group.id,
+      type: "rectangle",
+      name: `Track expansion ${index}`,
+      locked: false,
+      visible: true,
+      transform: { x: 180 + index * 120, y: 270, width: 40, height: 30, rotation: 0, scaleX: 1, scaleY: 1 },
+      style: {},
+      properties: {},
+    }));
+    shot.objects = [group, ...leaves.slice(0, 2)];
+    shot.propertyTracks = [{
+      id: "track-group-expansion-x",
+      target: { kind: "object", objectId: group.id },
+      property: "x",
+      keyframes: Array.from({ length: 512 }, (_, index) => ({
+        id: `keyframe-group-expansion-${index}`,
+        time: index / 2,
+        value: 480 + index % 2,
+        interpolation: { kind: "linear" as const },
+      })),
+    }];
+
+    const nearLimit = ProjectDocumentSchema.parse(project);
+    expect(utf8ByteLength(canonicalProjectJson(nearLimit))).toBeLessThan(PROOFCANVAS_RENDER_SOURCE_MAX_BYTES);
+    const compiled = compileManim(nearLimit);
+    expect(utf8ByteLength(compiled.python)).toBeLessThanOrEqual(PROOFCANVAS_RENDER_SOURCE_MAX_BYTES);
+
+    shot.objects = [group, ...leaves];
+    const overLimit = ProjectDocumentSchema.safeParse(project);
+    expect(overLimit.success).toBe(false);
+    if (!overLimit.success) {
+      expect(overLimit.error.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          path: ["shots", 0, "propertyTracks", 0, "keyframes", 341],
+          message: `Expanded compiler targets exceed the project limit of ${PROOFCANVAS_SCHEMA_LIMITS.compilerExpandedTargetsPerProject} operations`,
+        }),
+      ]));
+    }
   });
 
   test("validates animation properties by type with finite, non-collapsing bounds", () => {
@@ -509,7 +568,7 @@ describe("ProofCanvas project schema", () => {
     expectInvalid((project) => { project.shots[0].objects[0].transform.scaleX = 0; });
     expectInvalid((project) => { project.shots[0].objects[0].transform.scaleY = PROOFCANVAS_SCHEMA_LIMITS.animationScaleMaxMagnitude + 1; });
     expectInvalid((project) => { project.shots[0].camera.zoom = PROOFCANVAS_SCHEMA_LIMITS.cameraZoomMax + 1; });
-    expectInvalid((project) => { project.shots[0].objects[0].style.strokeWidth = PROOFCANVAS_SCHEMA_LIMITS.strokeWidthMax + 1; });
+    expectInvalid((project) => { project.shots[0].objects.find(({ type }) => type === "rectangle")!.style.strokeWidth = PROOFCANVAS_SCHEMA_LIMITS.strokeWidthMax + 1; });
     expectInvalid((project) => { project.shots[0].objects[0].style.fontSize = PROOFCANVAS_SCHEMA_LIMITS.fontSizeMax + 1; });
     expectInvalid((project) => { project.styles[0].typography.titleScale = PROOFCANVAS_SCHEMA_LIMITS.typographyScaleMax + 1; });
     expectInvalid((project) => { project.styles[0].spacing.margin = PROOFCANVAS_SCHEMA_LIMITS.spacingMax + 1; });
@@ -529,7 +588,7 @@ describe("ProofCanvas project schema", () => {
       scaleX: -PROOFCANVAS_SCHEMA_LIMITS.animationScaleMinMagnitude,
       scaleY: PROOFCANVAS_SCHEMA_LIMITS.animationScaleMaxMagnitude,
     };
-    object.style.strokeWidth = PROOFCANVAS_SCHEMA_LIMITS.strokeWidthMax;
+    valid.shots[0].objects.find(({ type }) => type === "rectangle")!.style.strokeWidth = PROOFCANVAS_SCHEMA_LIMITS.strokeWidthMax;
     object.style.fontSize = PROOFCANVAS_SCHEMA_LIMITS.fontSizeMax;
     valid.shots[0].camera = {
       x: PROOFCANVAS_SCHEMA_LIMITS.animationCoordinateMagnitude,

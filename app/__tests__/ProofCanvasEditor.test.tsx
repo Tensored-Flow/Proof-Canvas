@@ -30,6 +30,7 @@ beforeEach(() => {
   window.localStorage.clear()
   createObjectURL.mockClear()
   revokeObjectURL.mockClear()
+  anchorClick.mockClear()
   fetchMock.mockReset()
   fetchMock.mockImplementation(async (input: RequestInfo | URL) => String(input).includes('/api/proofcanvas/ai')
     ? jsonResponse(503, { ok: false, code: 'provider_unavailable', message: 'OpenAI editing is not configured.' })
@@ -48,7 +49,7 @@ describe('ProofCanvas editor client', () => {
     const { container } = render(<ProofCanvasEditor />)
 
     expect(editor()).toHaveAttribute('data-project-id', 'project-uncountable-zero-length')
-    expect(editor()).toHaveAttribute('data-schema-version', '1')
+    expect(editor()).toHaveAttribute('data-schema-version', '2')
     expect(editor()).toHaveAttribute('data-active-shot-id', 'shot-cantor-construction')
     expect(screen.getByRole('tree', { name: 'Objects' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Scene canvas' })).toHaveAttribute('data-preview-style-id', 'style-editorial-ink')
@@ -559,8 +560,26 @@ describe('ProofCanvas editor client', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Export Manim Python' }))
     const dialog = screen.getByRole('dialog', { name: /Manim Python/ })
     const diagnostics = within(dialog).getByRole('region', { name: 'Compiler diagnostics' })
-    expect(diagnostics).toHaveTextContent('INLINE_ASSET_BROWSER_ONLY')
+    expect(diagnostics).toHaveTextContent('ASSET_RENDER_TRANSPORT_UNSUPPORTED')
     expect(diagnostics).toHaveTextContent(/object object-image/)
+  })
+
+  it('keeps rejected Python inspectable without downloading it', async () => {
+    const rejected = cloneSerializable(createCantorDemoProject())
+    rejected.metadata.id = 'project-rejected-export'
+    rejected.metadata.title = 'Rejected export fixture'
+    rejected.shots[1].animations = []
+    rejected.shots[1].objects[0].lifetime = { start: 0, end: 1 }
+    render(<ProofCanvasEditor />)
+    const file = new File([canonicalProjectJson(rejected)], 'rejected.proofcanvas.json', { type: 'application/json' })
+    Object.defineProperty(file, 'text', { configurable: true, value: jest.fn().mockResolvedValue(canonicalProjectJson(rejected)) })
+    fireEvent.change(screen.getByLabelText('Import project JSON'), { target: { files: [file] } })
+    await waitFor(() => expect(editor()).toHaveAttribute('data-project-id', rejected.metadata.id))
+    fireEvent.click(screen.getByRole('button', { name: 'Export Manim Python' }))
+    expect(screen.getByRole('dialog', { name: /Manim Python/ })).toHaveTextContent('from manim import')
+    expect(screen.getByRole('region', { name: 'Compiler diagnostics' })).toHaveTextContent('OBJECT_LIFETIME_RENDER_UNSUPPORTED')
+    expect(createObjectURL).not.toHaveBeenCalled()
+    expect(anchorClick).not.toHaveBeenCalled()
   })
 
   it('exposes a genuine completed render as an inspectable video and download', async () => {

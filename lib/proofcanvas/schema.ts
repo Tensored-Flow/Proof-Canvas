@@ -1,8 +1,9 @@
 import { z } from "zod";
 
-export const PROJECT_SCHEMA_VERSION = 1 as const;
+export const PROJECT_SCHEMA_VERSION = 2 as const;
 export const PROOFCANVAS_TIME_EPSILON = 1e-9;
 export const PROOFCANVAS_PROJECT_MAX_BYTES = 2 * 1024 * 1024;
+export const PROOFCANVAS_RENDER_SOURCE_MAX_BYTES = 512 * 1024;
 export const PROOFCANVAS_TEXT_MAX_CHARS = 4_096;
 export const PROOFCANVAS_LATEX_MAX_CHARS = 500;
 export const PROOFCANVAS_BRACE_LABEL_MAX_CHARS = 500;
@@ -17,6 +18,13 @@ export const PROOFCANVAS_SCHEMA_LIMITS = Object.freeze({
   shots: 24,
   objectsPerShot: 256,
   animationsPerShot: 256,
+  assets: 256,
+  propertyTracksPerShot: 512,
+  keyframesPerTrack: 512,
+  audioClipsPerShot: 64,
+  captionClipsPerShot: 256,
+  markersPerShot: 256,
+  customEasings: 64,
   animationTargets: 64,
   animationProperties: 8,
   operationObjectIds: 64,
@@ -25,6 +33,7 @@ export const PROOFCANVAS_SCHEMA_LIMITS = Object.freeze({
   hierarchyDepth: 16,
   graphsPerProject: 8,
   animationLeafExpansionsPerProject: 4_096,
+  compilerExpandedTargetsPerProject: 1_024,
   hierarchyTargetIssuesPerShot: 16,
   overlapIssuesPerShot: 16,
   animationCoordinateMagnitude: 4_096,
@@ -112,6 +121,36 @@ export const EasingSchema = z.enum([
   "ease-in-out",
   "editorial",
   "spring-soft",
+]);
+
+export const AspectRatioSchema = z.enum(["16:9", "9:16", "1:1"]);
+export const FrameRateSchema = z.union([z.literal(15), z.literal(24), z.literal(30), z.literal(60)]);
+export const ResolutionPresetSchema = z.enum(["draft", "720p", "1080p"]);
+export const PreviewQualitySchema = z.enum(["draft", "standard", "high"]);
+
+export const ProjectSettingsSchema = z.object({
+  aspectRatio: AspectRatioSchema,
+  frameRate: FrameRateSchema,
+  resolution: z.object({
+    width: z.number().int().min(240).max(3840),
+    height: z.number().int().min(240).max(3840),
+  }).strict(),
+  renderPreset: ResolutionPresetSchema,
+  previewQuality: PreviewQualitySchema,
+}).strict();
+
+export const CubicBezierSchema = z.object({
+  x1: z.number().finite().min(0).max(1),
+  y1: z.number().finite().min(-4).max(4),
+  x2: z.number().finite().min(0).max(1),
+  y2: z.number().finite().min(-4).max(4),
+}).strict();
+
+export const KeyframeInterpolationSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("hold") }).strict(),
+  z.object({ kind: z.literal("linear") }).strict(),
+  z.object({ kind: z.literal("eased"), easing: EasingSchema }).strict(),
+  z.object({ kind: z.literal("custom-bezier"), curve: CubicBezierSchema }).strict(),
 ]);
 
 export const ObjectTypeSchema = z.enum([
@@ -321,6 +360,110 @@ export const ObjectStyleSchema = z.object({
   roughEmphasis: z.boolean().optional(),
 }).strict();
 
+export const ObjectLifetimeSchema = z.object({
+  start: z.number().finite().nonnegative(),
+  end: z.number().finite().positive(),
+}).strict().refine(({ start, end }) => end > start + PROOFCANVAS_TIME_EPSILON, {
+  message: "Object lifetime end must be after its start",
+  path: ["end"],
+});
+
+export const AssetMetadataSchema = z.object({
+  id: IdSchema,
+  filename: z.string().min(1).max(240).refine((value) => !/[\\/\u0000]/.test(value), "Asset filename must not contain a path"),
+  mimeType: z.enum(["image/png", "image/jpeg", "image/webp", "image/svg+xml", "audio/wav", "audio/mpeg", "audio/mp4"]),
+  size: z.number().int().positive().max(512 * 1024 * 1024),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  width: z.number().int().positive().max(16_384).optional(),
+  height: z.number().int().positive().max(16_384).optional(),
+  duration: z.number().finite().positive().max(7_200).optional(),
+  provenance: z.enum(["uploaded", "generated", "bundled", "legacy-import"]),
+}).strict();
+
+export const CustomEasingPresetSchema = z.object({
+  id: IdSchema,
+  name: z.string().trim().min(1).max(80),
+  curve: CubicBezierSchema,
+}).strict();
+
+export const ObjectAnimatablePropertySchema = z.enum([
+  "x", "y", "width", "height", "scale", "scaleX", "scaleY", "rotation",
+  "opacity", "fill", "stroke", "strokeWidth",
+]);
+export const CameraAnimatablePropertySchema = z.enum(["x", "y", "zoom", "rotation"]);
+export const AudioAnimatablePropertySchema = z.literal("volume");
+
+export type VisualStyleProperty = "color" | "fill" | "stroke" | "strokeWidth" | "opacity";
+
+/** Shared browser/compiler capability contract for visual style application. */
+export function objectTypeSupportsStyleProperty(objectType: string, property: VisualStyleProperty): boolean {
+  if (property === "opacity") return true;
+  if (objectType === "group") return true;
+  if (objectType === "image" || objectType === "svg") return false;
+  if (property === "fill") return ["text", "math", "circle", "rectangle"].includes(objectType);
+  if (property === "stroke" || property === "strokeWidth") return ["circle", "rectangle", "line", "arrow", "brace", "axes", "graph"].includes(objectType);
+  return objectType === "text" || objectType === "math";
+}
+
+export const PropertyTrackTargetSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("object"), objectId: IdSchema }).strict(),
+  z.object({ kind: z.literal("camera") }).strict(),
+  z.object({ kind: z.literal("audio"), audioClipId: IdSchema }).strict(),
+]);
+
+export const PropertyKeyframeSchema = z.object({
+  id: IdSchema,
+  time: z.number().finite().nonnegative(),
+  value: z.union([z.number().finite(), HexColorSchema]),
+  interpolation: KeyframeInterpolationSchema,
+}).strict();
+
+export const PropertyTrackSchema = z.object({
+  id: IdSchema,
+  target: PropertyTrackTargetSchema,
+  property: z.union([ObjectAnimatablePropertySchema, CameraAnimatablePropertySchema, AudioAnimatablePropertySchema]),
+  keyframes: z.array(PropertyKeyframeSchema).min(1).max(PROOFCANVAS_SCHEMA_LIMITS.keyframesPerTrack),
+}).strict();
+
+export const AudioClipSchema = z.object({
+  id: IdSchema,
+  assetId: IdSchema,
+  name: z.string().trim().min(1).max(120),
+  start: z.number().finite().nonnegative(),
+  duration: z.number().finite().positive().max(7_200),
+  sourceStart: z.number().finite().nonnegative(),
+  sourceEnd: z.number().finite().positive().max(7_200),
+  volume: z.number().finite().min(0).max(4),
+  muted: z.boolean(),
+  solo: z.boolean(),
+}).strict().refine(({ sourceStart, sourceEnd }) => sourceEnd > sourceStart + PROOFCANVAS_TIME_EPSILON, {
+  message: "Audio source end must be after its start",
+  path: ["sourceEnd"],
+});
+
+export const CaptionClipSchema = z.object({
+  id: IdSchema,
+  start: z.number().finite().nonnegative(),
+  end: z.number().finite().positive(),
+  text: z.string().min(1).max(PROOFCANVAS_TEXT_MAX_CHARS),
+  style: z.object({
+    color: HexColorSchema.optional(),
+    background: HexColorSchema.optional(),
+    fontSize: z.number().finite().min(8).max(144).optional(),
+    position: z.enum(["top", "center", "bottom"]).optional(),
+  }).strict(),
+}).strict().refine(({ start, end }) => end > start + PROOFCANVAS_TIME_EPSILON, {
+  message: "Caption end must be after its start",
+  path: ["end"],
+});
+
+export const TimelineMarkerSchema = z.object({
+  id: IdSchema,
+  time: z.number().finite().nonnegative(),
+  name: z.string().trim().min(1).max(120),
+  color: HexColorSchema,
+}).strict();
+
 const GraphRangeSchema = z.number().finite()
   .min(-PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude)
   .max(PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude);
@@ -366,6 +509,7 @@ export const SceneObjectSchema = z.object({
   parentId: IdSchema.optional(),
   locked: z.boolean(),
   visible: z.boolean(),
+  lifetime: ObjectLifetimeSchema.optional(),
   transform: TransformSchema,
   style: ObjectStyleSchema,
   semanticRole: z.string().min(1).max(120).optional(),
@@ -422,8 +566,9 @@ export const SceneObjectSchema = z.object({
   }
   if (object.type === "image" || object.type === "svg") {
     const source = object.properties.source;
-    if (typeof source !== "string" || !isSafeAssetSource(source)) {
-      context.addIssue({ code: "custom", path: ["properties", "source"], message: "Asset source must be a local ProofCanvas path or safe inline image" });
+    const assetId = object.properties.assetId;
+    if ((typeof assetId !== "string" || !IdSchema.safeParse(assetId).success) && (typeof source !== "string" || !isSafeAssetSource(source))) {
+      context.addIssue({ code: "custom", path: ["properties"], message: "Asset object requires a valid assetId or a legacy local ProofCanvas source" });
     }
   }
 });
@@ -471,12 +616,17 @@ export const ShotSchema = z.object({
   duration: z.number().finite().positive().max(300),
   objects: z.array(SceneObjectSchema).max(PROOFCANVAS_SCHEMA_LIMITS.objectsPerShot),
   animations: z.array(SceneAnimationSchema).max(PROOFCANVAS_SCHEMA_LIMITS.animationsPerShot),
+  propertyTracks: z.array(PropertyTrackSchema).max(PROOFCANVAS_SCHEMA_LIMITS.propertyTracksPerShot).default([]),
+  audioClips: z.array(AudioClipSchema).max(PROOFCANVAS_SCHEMA_LIMITS.audioClipsPerShot).default([]),
+  captionClips: z.array(CaptionClipSchema).max(PROOFCANVAS_SCHEMA_LIMITS.captionClipsPerShot).default([]),
+  markers: z.array(TimelineMarkerSchema).max(PROOFCANVAS_SCHEMA_LIMITS.markersPerShot).default([]),
   camera: CameraStateSchema,
 }).strict();
 
 export const StylePackSchema = z.object({
   id: IdSchema,
   name: z.string().min(1).max(80),
+  origin: z.enum(["preset", "custom"]).default("custom"),
   colors: z.object({
     background: HexColorSchema,
     ink: HexColorSchema,
@@ -532,6 +682,39 @@ export const StylePackSchema = z.object({
   }).strict(),
 }).strict();
 
+function trackTargetKey(target: z.infer<typeof PropertyTrackTargetSchema>): string {
+  if (target.kind === "object") return `object:${target.objectId}`;
+  if (target.kind === "audio") return `audio:${target.audioClipId}`;
+  return "camera";
+}
+
+export function propertyTrackValueValid(property: string, value: number | string): boolean {
+  if (property === "fill" || property === "stroke") return typeof value === "string" && HexColorSchema.safeParse(value).success;
+  if (typeof value !== "number" || !Number.isFinite(value)) return false;
+  if (property === "opacity") return value >= 0 && value <= 1;
+  if (property === "volume") return value >= 0 && value <= 4;
+  if (property === "strokeWidth") return value >= 0 && value <= PROOFCANVAS_SCHEMA_LIMITS.strokeWidthMax;
+  if (property === "width" || property === "height") return AnimationDimensionSchema.safeParse(value).success;
+  if (property === "scale" || property === "scaleX" || property === "scaleY") return AnimationSignedScaleSchema.safeParse(value).success;
+  if (property === "zoom") return CameraZoomSchema.safeParse(value).success;
+  if (property === "rotation") return AnimationRotationSchema.safeParse(value).success;
+  return AnimationCoordinateSchema.safeParse(value).success;
+}
+
+function propertyAllowedForTarget(track: z.infer<typeof PropertyTrackSchema>): boolean {
+  if (track.target.kind === "camera") return CameraAnimatablePropertySchema.safeParse(track.property).success;
+  if (track.target.kind === "audio") return track.property === "volume";
+  return ObjectAnimatablePropertySchema.safeParse(track.property).success;
+}
+
+function resolutionFor(aspectRatio: z.infer<typeof AspectRatioSchema>, preset: z.infer<typeof ResolutionPresetSchema>) {
+  const longEdge = preset === "draft" ? 854 : preset === "720p" ? 1280 : 1920;
+  const shortEdge = preset === "draft" ? 480 : preset === "720p" ? 720 : 1080;
+  if (aspectRatio === "16:9") return { width: longEdge, height: shortEdge };
+  if (aspectRatio === "9:16") return { width: shortEdge, height: longEdge };
+  return { width: shortEdge, height: shortEdge };
+}
+
 export const ProjectDocumentSchema = z.object({
   schemaVersion: z.literal(PROJECT_SCHEMA_VERSION),
   metadata: z.object({
@@ -540,9 +723,11 @@ export const ProjectDocumentSchema = z.object({
     createdAt: z.string().datetime({ offset: true }),
     updatedAt: z.string().datetime({ offset: true }),
   }).strict(),
-  aspectRatio: z.enum(["16:9", "9:16"]),
+  settings: ProjectSettingsSchema,
   activeStyleId: IdSchema,
   styles: z.array(StylePackSchema).min(1).max(PROOFCANVAS_SCHEMA_LIMITS.styles),
+  customEasings: z.array(CustomEasingPresetSchema).max(PROOFCANVAS_SCHEMA_LIMITS.customEasings).default([]),
+  assets: z.array(AssetMetadataSchema).max(PROOFCANVAS_SCHEMA_LIMITS.assets).default([]),
   shots: z.array(ShotSchema).min(1).max(PROOFCANVAS_SCHEMA_LIMITS.shots),
 }).strict().superRefine((project, context) => {
   const canonicalBytes = utf8ByteLength(`${JSON.stringify(project, null, 2)}\n`);
@@ -558,23 +743,52 @@ export const ProjectDocumentSchema = z.object({
   // already oversized document, especially the animation overlap scan.
   if (
     project.styles.length > PROOFCANVAS_SCHEMA_LIMITS.styles
+    || project.assets.length > PROOFCANVAS_SCHEMA_LIMITS.assets
+    || project.customEasings.length > PROOFCANVAS_SCHEMA_LIMITS.customEasings
     || project.shots.length > PROOFCANVAS_SCHEMA_LIMITS.shots
     || project.shots.some((shot) => (
       shot.objects.length > PROOFCANVAS_SCHEMA_LIMITS.objectsPerShot
       || shot.animations.length > PROOFCANVAS_SCHEMA_LIMITS.animationsPerShot
+      || shot.propertyTracks.length > PROOFCANVAS_SCHEMA_LIMITS.propertyTracksPerShot
+      || shot.audioClips.length > PROOFCANVAS_SCHEMA_LIMITS.audioClipsPerShot
+      || shot.captionClips.length > PROOFCANVAS_SCHEMA_LIMITS.captionClipsPerShot
+      || shot.markers.length > PROOFCANVAS_SCHEMA_LIMITS.markersPerShot
       || shot.animations.some((animation) => animation.targetIds.length > PROOFCANVAS_SCHEMA_LIMITS.animationTargets)
+      || shot.propertyTracks.some((track) => track.keyframes.length > PROOFCANVAS_SCHEMA_LIMITS.keyframesPerTrack)
     ))
   ) return;
+
+  const expectedResolution = resolutionFor(project.settings.aspectRatio, project.settings.renderPreset);
+  if (
+    project.settings.resolution.width !== expectedResolution.width
+    || project.settings.resolution.height !== expectedResolution.height
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["settings", "resolution"],
+      message: `Resolution must be ${expectedResolution.width}x${expectedResolution.height} for ${project.settings.aspectRatio} ${project.settings.renderPreset}`,
+    });
+  }
+
+  const registerNamespacedId = (namespace: Set<string>, id: string, path: (string | number)[], label = "ID") => {
+    if (namespace.has(id)) context.addIssue({ code: "custom", path, message: `Duplicate ${label} ${id}` });
+    namespace.add(id);
+  };
 
   const styleIds = new Set<string>();
   for (let index = 0; index < project.styles.length; index += 1) {
     const id = project.styles[index].id;
-    if (styleIds.has(id)) context.addIssue({ code: "custom", path: ["styles", index, "id"], message: `Duplicate style ID ${id}` });
-    styleIds.add(id);
+    registerNamespacedId(styleIds, id, ["styles", index, "id"], "style ID");
   }
   if (!styleIds.has(project.activeStyleId)) {
     context.addIssue({ code: "custom", path: ["activeStyleId"], message: "Active style does not exist" });
   }
+
+  const customEasingIds = new Set<string>();
+  project.customEasings.forEach((preset, index) => registerNamespacedId(customEasingIds, preset.id, ["customEasings", index, "id"], "custom easing ID"));
+  const assetIds = new Set<string>();
+  const assets = new Map(project.assets.map((asset) => [asset.id, asset]));
+  project.assets.forEach((asset, index) => registerNamespacedId(assetIds, asset.id, ["assets", index, "id"], "asset ID"));
 
   const graphLocations = project.shots.flatMap((shot, shotIndex) => shot.objects
     .map((object, objectIndex) => ({ object, shotIndex, objectIndex }))
@@ -588,20 +802,41 @@ export const ProjectDocumentSchema = z.object({
     });
   }
 
-  const allIds = new Set<string>();
-  let animationLeafExpansions = 0;
-  let animationExpansionIssueAdded = false;
+  let compilerExpandedTargets = 0;
+  let compilerExpansionIssueAdded = false;
+  const timelineIds = new Set<string>();
   project.shots.forEach((shot, shotIndex) => {
-    if (allIds.has(shot.id)) context.addIssue({ code: "custom", path: ["shots", shotIndex, "id"], message: `Duplicate ID ${shot.id}` });
-    allIds.add(shot.id);
+    registerNamespacedId(timelineIds, shot.id, ["shots", shotIndex, "id"]);
     const objects = new Map(shot.objects.map((object) => [object.id, object]));
     shot.objects.forEach((object, objectIndex) => {
-      if (allIds.has(object.id)) context.addIssue({ code: "custom", path: ["shots", shotIndex, "objects", objectIndex, "id"], message: `Duplicate ID ${object.id}` });
-      allIds.add(object.id);
+      registerNamespacedId(timelineIds, object.id, ["shots", shotIndex, "objects", objectIndex, "id"]);
+      for (const property of ["fill", "stroke", "strokeWidth"] as const) {
+        if (object.style[property] !== undefined && !objectTypeSupportsStyleProperty(object.type, property)) {
+          context.addIssue({ code: "custom", path: ["shots", shotIndex, "objects", objectIndex, "style", property], message: `${object.type} objects do not support ${property} styling` });
+        }
+      }
+      const lifetime = object.lifetime ?? { start: 0, end: shot.duration };
+      if (lifetime.end > shot.duration + PROOFCANVAS_TIME_EPSILON) {
+        context.addIssue({ code: "custom", path: ["shots", shotIndex, "objects", objectIndex, "lifetime"], message: "Object lifetime exceeds shot duration" });
+      }
+      if (object.type === "image" || object.type === "svg") {
+        const assetId = object.properties.assetId;
+        if (typeof assetId === "string") {
+          const asset = assets.get(assetId);
+          if (!asset) context.addIssue({ code: "custom", path: ["shots", shotIndex, "objects", objectIndex, "properties", "assetId"], message: `Missing asset ${assetId}` });
+          else if (!asset.mimeType.startsWith("image/")) context.addIssue({ code: "custom", path: ["shots", shotIndex, "objects", objectIndex, "properties", "assetId"], message: `Asset ${assetId} is not an image` });
+        }
+      }
       if (object.parentId) {
         const parent = objects.get(object.parentId);
         if (!parent) context.addIssue({ code: "custom", path: ["shots", shotIndex, "objects", objectIndex, "parentId"], message: `Missing parent ${object.parentId}` });
         else if (parent.type !== "group") context.addIssue({ code: "custom", path: ["shots", shotIndex, "objects", objectIndex, "parentId"], message: "Parent must be a group" });
+        else {
+          const parentLifetime = parent.lifetime ?? { start: 0, end: shot.duration };
+          if (object.lifetime && (lifetime.start < parentLifetime.start - PROOFCANVAS_TIME_EPSILON || lifetime.end > parentLifetime.end + PROOFCANVAS_TIME_EPSILON)) {
+            context.addIssue({ code: "custom", path: ["shots", shotIndex, "objects", objectIndex, "lifetime"], message: "Child lifetime must be contained by its parent lifetime" });
+          }
+        }
         const seen = new Set([object.id]);
         let cursor = parent;
         let depth = 0;
@@ -624,14 +859,36 @@ export const ProjectDocumentSchema = z.object({
         }
       }
     });
+    const effectiveLifetime = (object: z.infer<typeof SceneObjectSchema>) => {
+      let start = 0;
+      let end = shot.duration;
+      let cursor: z.infer<typeof SceneObjectSchema> | undefined = object;
+      const visited = new Set<string>();
+      for (let depth = 0; cursor && depth <= PROOFCANVAS_SCHEMA_LIMITS.hierarchyDepth; depth += 1) {
+        if (visited.has(cursor.id)) break;
+        visited.add(cursor.id);
+        if (cursor.lifetime) {
+          start = Math.max(start, cursor.lifetime.start);
+          end = Math.min(end, cursor.lifetime.end);
+        }
+        cursor = cursor.parentId ? objects.get(cursor.parentId) : undefined;
+      }
+      return { start, end };
+    };
     shot.animations.forEach((animation, animationIndex) => {
-      if (allIds.has(animation.id)) context.addIssue({ code: "custom", path: ["shots", shotIndex, "animations", animationIndex, "id"], message: `Duplicate ID ${animation.id}` });
-      allIds.add(animation.id);
+      registerNamespacedId(timelineIds, animation.id, ["shots", shotIndex, "animations", animationIndex, "id"]);
       if (animation.start + animation.duration > shot.duration + PROOFCANVAS_TIME_EPSILON) {
         context.addIssue({ code: "custom", path: ["shots", shotIndex, "animations", animationIndex], message: "Animation exceeds shot duration" });
       }
       animation.targetIds.forEach((targetId, targetIndex) => {
-        if (!objects.has(targetId)) context.addIssue({ code: "custom", path: ["shots", shotIndex, "animations", animationIndex, "targetIds", targetIndex], message: `Missing animation target ${targetId}` });
+        const target = objects.get(targetId);
+        if (!target) context.addIssue({ code: "custom", path: ["shots", shotIndex, "animations", animationIndex, "targetIds", targetIndex], message: `Missing animation target ${targetId}` });
+        else {
+          const lifetime = effectiveLifetime(target);
+          if (animation.start < lifetime.start - PROOFCANVAS_TIME_EPSILON || animation.start + animation.duration > lifetime.end + PROOFCANVAS_TIME_EPSILON) {
+            context.addIssue({ code: "custom", path: ["shots", shotIndex, "animations", animationIndex, "targetIds", targetIndex], message: `Animation must be contained by target ${targetId}'s lifetime` });
+          }
+        }
       });
       if (animation.type === "transform") {
         for (const dimension of ["width", "height"] as const) {
@@ -646,6 +903,81 @@ export const ProjectDocumentSchema = z.object({
           }
         }
       }
+    });
+
+    const audioClips = new Map(shot.audioClips.map((clip) => [clip.id, clip]));
+    shot.audioClips.forEach((clip, clipIndex) => {
+      registerNamespacedId(timelineIds, clip.id, ["shots", shotIndex, "audioClips", clipIndex, "id"]);
+      const asset = assets.get(clip.assetId);
+      if (!asset) context.addIssue({ code: "custom", path: ["shots", shotIndex, "audioClips", clipIndex, "assetId"], message: `Missing asset ${clip.assetId}` });
+      else if (!asset.mimeType.startsWith("audio/")) context.addIssue({ code: "custom", path: ["shots", shotIndex, "audioClips", clipIndex, "assetId"], message: `Asset ${clip.assetId} is not audio` });
+      else if (asset.duration !== undefined && clip.sourceEnd > asset.duration + PROOFCANVAS_TIME_EPSILON) {
+        context.addIssue({ code: "custom", path: ["shots", shotIndex, "audioClips", clipIndex, "sourceEnd"], message: "Audio source range exceeds asset duration" });
+      }
+      if (clip.start + clip.duration > shot.duration + PROOFCANVAS_TIME_EPSILON) {
+        context.addIssue({ code: "custom", path: ["shots", shotIndex, "audioClips", clipIndex], message: "Audio clip exceeds shot duration" });
+      }
+    });
+    shot.captionClips.forEach((clip, clipIndex) => {
+      registerNamespacedId(timelineIds, clip.id, ["shots", shotIndex, "captionClips", clipIndex, "id"]);
+      if (clip.end > shot.duration + PROOFCANVAS_TIME_EPSILON) {
+        context.addIssue({ code: "custom", path: ["shots", shotIndex, "captionClips", clipIndex, "end"], message: "Caption exceeds shot duration" });
+      }
+    });
+    shot.markers.forEach((marker, markerIndex) => {
+      registerNamespacedId(timelineIds, marker.id, ["shots", shotIndex, "markers", markerIndex, "id"]);
+      if (marker.time > shot.duration + PROOFCANVAS_TIME_EPSILON) {
+        context.addIssue({ code: "custom", path: ["shots", shotIndex, "markers", markerIndex, "time"], message: "Marker exceeds shot duration" });
+      }
+    });
+
+    const targetPropertyTracks = new Map<string, number>();
+    shot.propertyTracks.forEach((track, trackIndex) => {
+      registerNamespacedId(timelineIds, track.id, ["shots", shotIndex, "propertyTracks", trackIndex, "id"]);
+      const targetPropertyKey = `${trackTargetKey(track.target)}:${track.property}`;
+      const priorTrackIndex = targetPropertyTracks.get(targetPropertyKey);
+      if (priorTrackIndex !== undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["shots", shotIndex, "propertyTracks", trackIndex],
+          message: `Property track conflicts with propertyTracks[${priorTrackIndex}]; only one track per target/property is allowed`,
+        });
+      } else targetPropertyTracks.set(targetPropertyKey, trackIndex);
+
+      if (!propertyAllowedForTarget(track)) {
+        context.addIssue({ code: "custom", path: ["shots", shotIndex, "propertyTracks", trackIndex, "property"], message: `Property ${track.property} is not valid for ${track.target.kind} tracks` });
+      }
+
+      let range = { start: 0, end: shot.duration };
+      if (track.target.kind === "object") {
+        const target = objects.get(track.target.objectId);
+        if (!target) context.addIssue({ code: "custom", path: ["shots", shotIndex, "propertyTracks", trackIndex, "target", "objectId"], message: `Missing track target ${track.target.objectId}` });
+        else {
+          range = effectiveLifetime(target);
+          if (["fill", "stroke", "strokeWidth", "opacity"].includes(track.property) && !objectTypeSupportsStyleProperty(target.type, track.property as VisualStyleProperty)) {
+            context.addIssue({ code: "custom", path: ["shots", shotIndex, "propertyTracks", trackIndex, "property"], message: `${target.type} objects do not support ${track.property} tracks` });
+          }
+        }
+      } else if (track.target.kind === "audio") {
+        const target = audioClips.get(track.target.audioClipId);
+        if (!target) context.addIssue({ code: "custom", path: ["shots", shotIndex, "propertyTracks", trackIndex, "target", "audioClipId"], message: `Missing audio track target ${track.target.audioClipId}` });
+        else range = { start: target.start, end: target.start + target.duration };
+      }
+
+      let priorTime: number | undefined;
+      track.keyframes.forEach((keyframe, keyframeIndex) => {
+        registerNamespacedId(timelineIds, keyframe.id, ["shots", shotIndex, "propertyTracks", trackIndex, "keyframes", keyframeIndex, "id"]);
+        if (!propertyTrackValueValid(track.property, keyframe.value)) {
+          context.addIssue({ code: "custom", path: ["shots", shotIndex, "propertyTracks", trackIndex, "keyframes", keyframeIndex, "value"], message: `Keyframe value is invalid for ${track.property}` });
+        }
+        if (priorTime !== undefined && keyframe.time <= priorTime + PROOFCANVAS_TIME_EPSILON) {
+          context.addIssue({ code: "custom", path: ["shots", shotIndex, "propertyTracks", trackIndex, "keyframes", keyframeIndex, "time"], message: "Keyframes must be strictly ordered with one keyframe per time" });
+        }
+        priorTime = keyframe.time;
+        if (keyframe.time < range.start - PROOFCANVAS_TIME_EPSILON || keyframe.time > range.end + PROOFCANVAS_TIME_EPSILON) {
+          context.addIssue({ code: "custom", path: ["shots", shotIndex, "propertyTracks", trackIndex, "keyframes", keyframeIndex, "time"], message: "Keyframe time must be inside its target lifetime" });
+        }
+      });
     });
 
     const childrenByParent = new Map<string, string[]>();
@@ -670,22 +1002,42 @@ export const ProjectDocumentSchema = z.object({
       leafCountCache.set(objectId, count);
       return count;
     };
-    if (!animationExpansionIssueAdded) {
+    const addCompilerWork = (amount: number, path: (string | number)[]) => {
+      if (compilerExpansionIssueAdded) return;
+      compilerExpandedTargets += amount;
+      if (compilerExpandedTargets > PROOFCANVAS_SCHEMA_LIMITS.compilerExpandedTargetsPerProject) {
+        context.addIssue({
+          code: "custom",
+          path,
+          message: `Expanded compiler targets exceed the project limit of ${PROOFCANVAS_SCHEMA_LIMITS.compilerExpandedTargetsPerProject} operations`,
+        });
+        compilerExpansionIssueAdded = true;
+      }
+    };
+    if (!compilerExpansionIssueAdded) {
       expansionScan:
       for (let animationIndex = 0; animationIndex < shot.animations.length; animationIndex += 1) {
         const animation = shot.animations[animationIndex];
-        if (animation.type === "camera-focus") continue;
+        if (animation.type === "camera-focus") {
+          addCompilerWork(1, ["shots", shotIndex, "animations", animationIndex]);
+          continue;
+        }
         for (let targetIndex = 0; targetIndex < animation.targetIds.length; targetIndex += 1) {
-          animationLeafExpansions += expandedLeafCount(animation.targetIds[targetIndex]);
-          if (animationLeafExpansions > PROOFCANVAS_SCHEMA_LIMITS.animationLeafExpansionsPerProject) {
-            context.addIssue({
-              code: "custom",
-              path: ["shots", shotIndex, "animations", animationIndex, "targetIds", targetIndex],
-              message: `Expanded animation targets exceed the project limit of ${PROOFCANVAS_SCHEMA_LIMITS.animationLeafExpansionsPerProject} leaf operations`,
-            });
-            animationExpansionIssueAdded = true;
-            break expansionScan;
-          }
+          const expandedTargets = Math.max(1, expandedLeafCount(animation.targetIds[targetIndex]));
+          addCompilerWork(expandedTargets, ["shots", shotIndex, "animations", animationIndex, "targetIds", targetIndex]);
+          if (compilerExpansionIssueAdded) break expansionScan;
+        }
+      }
+    }
+    if (!compilerExpansionIssueAdded) {
+      trackCompilerWorkScan:
+      for (let trackIndex = 0; trackIndex < shot.propertyTracks.length; trackIndex += 1) {
+        const track = shot.propertyTracks[trackIndex];
+        if (track.target.kind === "audio") continue;
+        const targetExpansion = track.target.kind === "camera" ? 1 : Math.max(1, expandedLeafCount(track.target.objectId));
+        for (let segmentIndex = 0; segmentIndex + 1 < track.keyframes.length; segmentIndex += 1) {
+          addCompilerWork(targetExpansion, ["shots", shotIndex, "propertyTracks", trackIndex, "keyframes", segmentIndex]);
+          if (compilerExpansionIssueAdded) break trackCompilerWorkScan;
         }
       }
     }
@@ -817,6 +1169,13 @@ export type SceneAnimation = z.infer<typeof SceneAnimationSchema>;
 export type Shot = z.infer<typeof ShotSchema>;
 export type StylePack = z.infer<typeof StylePackSchema>;
 export type ProjectDocument = z.infer<typeof ProjectDocumentSchema>;
+export type ProjectSettings = z.infer<typeof ProjectSettingsSchema>;
+export type AssetMetadata = z.infer<typeof AssetMetadataSchema>;
+export type ObjectLifetime = z.infer<typeof ObjectLifetimeSchema>;
+export type PropertyTrack = z.infer<typeof PropertyTrackSchema>;
+export type PropertyKeyframe = z.infer<typeof PropertyKeyframeSchema>;
+export type KeyframeInterpolation = z.infer<typeof KeyframeInterpolationSchema>;
+export type PropertyTrackTarget = z.infer<typeof PropertyTrackTargetSchema>;
 export type ObjectType = z.infer<typeof ObjectTypeSchema>;
 export type AnimationType = z.infer<typeof AnimationTypeSchema>;
 export type Easing = z.infer<typeof EasingSchema>;
@@ -847,6 +1206,11 @@ const AnimationPatchSchema = z.object({
   properties: AnimationPropertyPatchSchema.optional(),
 }).strict();
 
+const KeyframePatchSchema = z.object({
+  value: PropertyKeyframeSchema.shape.value.optional(),
+  interpolation: KeyframeInterpolationSchema.optional(),
+}).strict();
+
 export const SceneOperationSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("add-object"), object: SceneObjectSchema }).strict(),
   z.object({ type: z.literal("update-object"), objectId: IdSchema, patch: ObjectPatchSchema }).strict(),
@@ -861,6 +1225,14 @@ export const SceneOperationSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("add-animation"), animation: SceneAnimationSchema }).strict(),
   z.object({ type: z.literal("update-animation"), animationId: IdSchema, patch: AnimationPatchSchema }).strict(),
   z.object({ type: z.literal("delete-animation"), animationId: IdSchema }).strict(),
+  z.object({ type: z.literal("set-object-lifetime"), objectId: IdSchema, lifetime: ObjectLifetimeSchema }).strict(),
+  z.object({ type: z.literal("add-property-track"), track: PropertyTrackSchema }).strict(),
+  z.object({ type: z.literal("delete-property-track"), trackId: IdSchema }).strict(),
+  z.object({ type: z.literal("add-keyframe"), trackId: IdSchema, keyframe: PropertyKeyframeSchema }).strict(),
+  z.object({ type: z.literal("update-keyframe"), trackId: IdSchema, keyframeId: IdSchema, patch: KeyframePatchSchema }).strict(),
+  z.object({ type: z.literal("move-keyframe"), trackId: IdSchema, keyframeId: IdSchema, time: z.number().finite().nonnegative() }).strict(),
+  z.object({ type: z.literal("delete-keyframe"), trackId: IdSchema, keyframeId: IdSchema }).strict(),
+  z.object({ type: z.literal("duplicate-keyframe"), trackId: IdSchema, keyframeId: IdSchema, duplicateId: IdSchema, time: z.number().finite().nonnegative() }).strict(),
   z.object({ type: z.literal("set-camera"), camera: CameraStateSchema }).strict(),
   z.object({ type: z.literal("set-style"), styleId: IdSchema }).strict(),
 ]);
@@ -872,6 +1244,49 @@ export type ProjectMigration = (candidate: Readonly<Record<string, unknown>>) =>
 /** Stepwise migrations keyed by the source schema version. */
 export const PROJECT_MIGRATIONS: Readonly<Record<number, ProjectMigration>> = Object.freeze({
   0: (candidate) => ({ ...cloneSerializable(candidate), schemaVersion: 1 }),
+  1: (candidate) => {
+    const migrated = cloneSerializable(candidate) as Record<string, unknown>;
+    const legacyAspect = migrated.aspectRatio;
+    const aspectRatio: z.infer<typeof AspectRatioSchema> = legacyAspect === "9:16" ? "9:16" : "16:9";
+    migrated.schemaVersion = PROJECT_SCHEMA_VERSION;
+    migrated.settings = {
+      aspectRatio,
+      frameRate: 30,
+      resolution: resolutionFor(aspectRatio, "720p"),
+      renderPreset: "720p",
+      previewQuality: "standard",
+    };
+    delete migrated.aspectRatio;
+    migrated.assets = [];
+    migrated.customEasings = [];
+    if (Array.isArray(migrated.styles)) {
+      migrated.styles = migrated.styles.map((style) => (
+        style && typeof style === "object" ? { ...style, origin: "preset" } : style
+      ));
+    }
+    if (Array.isArray(migrated.shots)) {
+      migrated.shots = migrated.shots.map((shot) => {
+        if (!shot || typeof shot !== "object") return shot;
+        const shotRecord = shot as Record<string, unknown>;
+        const duration = typeof shotRecord.duration === "number" ? shotRecord.duration : 0;
+        return {
+          ...shotRecord,
+          objects: Array.isArray(shotRecord.objects)
+            ? shotRecord.objects.map((object) => (
+              object && typeof object === "object"
+                ? { ...object, lifetime: { start: 0, end: duration } }
+                : object
+            ))
+            : shotRecord.objects,
+          propertyTracks: [],
+          audioClips: [],
+          captionClips: [],
+          markers: [],
+        };
+      });
+    }
+    return migrated;
+  },
 });
 
 export function parseProjectDocument(input: unknown): ProjectDocument {
