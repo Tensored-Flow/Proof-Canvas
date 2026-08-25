@@ -1,15 +1,44 @@
-import { fireEvent, render } from '@testing-library/react'
+import { act, fireEvent, render } from '@testing-library/react'
 import katex from 'katex'
-import CanvasStage, { resolveCanvasKeyboardTransformIntent, temporallyTransformsObject } from '../CanvasStage'
+import CanvasStage, { canvasGestureAuthorityInvalidated, resolveCanvasKeyboardTransformIntent, serializeGraphPreviewCoordinate, temporallyTransformsObject } from '../CanvasStage'
 import { compileManim } from '@/lib/proofcanvas/compiler'
 import { createCantorDemoProject } from '@/lib/proofcanvas/demo'
 import { logicalFrameFor, resolutionFor, type ProofCanvasAspectRatio } from '@/lib/proofcanvas/frame'
 import * as latexAuthority from '@/lib/proofcanvas/latex'
+import * as graphAuthority from '@/lib/proofcanvas/graphExpression'
 import { ProjectDocumentSchema, cloneSerializable, type SceneObject } from '@/lib/proofcanvas/schema'
 
 jest.mock('@/lib/proofcanvas/latex', () => {
   const actual = jest.requireActual('@/lib/proofcanvas/latex') as typeof import('@/lib/proofcanvas/latex')
   return { ...actual, analyzeMathProperties: jest.fn(actual.analyzeMathProperties) }
+})
+
+jest.mock('@/lib/proofcanvas/graphExpression', () => {
+  const actual = jest.requireActual('@/lib/proofcanvas/graphExpression') as typeof import('@/lib/proofcanvas/graphExpression')
+  return { ...actual, analyzeGraphExpression: jest.fn(actual.analyzeGraphExpression) }
+})
+
+function installTestPointerEvent() {
+  class TestPointerEvent extends MouseEvent {
+    readonly pointerId: number
+    readonly isPrimary: boolean
+
+    constructor(type: string, init: PointerEventInit = {}) {
+      super(type, init)
+      this.pointerId = init.pointerId ?? 0
+      this.isPrimary = init.isPrimary ?? true
+    }
+  }
+  Object.defineProperty(window, 'PointerEvent', { configurable: true, value: TestPointerEvent })
+}
+
+test('invalidates only canvas drafts whose recorded authority is stale', () => {
+  const current = { baseRevision: 'revision-b', baseShotId: 'shot-b' }
+  expect(canvasGestureAuthorityInvalidated(null, { authoringEnabled: true, projectRevision: 'revision-b', shotId: 'shot-b' })).toBe(false)
+  expect(canvasGestureAuthorityInvalidated(current, { authoringEnabled: true, projectRevision: 'revision-b', shotId: 'shot-b' })).toBe(false)
+  expect(canvasGestureAuthorityInvalidated(current, { authoringEnabled: true, projectRevision: 'revision-c', shotId: 'shot-b' })).toBe(true)
+  expect(canvasGestureAuthorityInvalidated(current, { authoringEnabled: true, projectRevision: 'revision-b', shotId: 'shot-c' })).toBe(true)
+  expect(canvasGestureAuthorityInvalidated(current, { authoringEnabled: false, projectRevision: 'revision-b', shotId: 'shot-b' })).toBe(true)
 })
 
 test('text and math glyph color follows nested/keyframed fill with fill over color precedence', () => {
@@ -93,6 +122,259 @@ test('graph stroke width uses the object override', () => {
     onNotice={jest.fn()}
   />)
   expect(view.container.querySelector('polyline')).toHaveAttribute('stroke-width', '11')
+})
+
+test('shares style-pack graph stroke defaults across preview and compiled animation targets', () => {
+  const project = cloneSerializable(createCantorDemoProject())
+  const shot = project.shots[1]
+  project.shots = [shot]
+  const graph: SceneObject = {
+    id: 'object-graph-style-default', type: 'graph', name: 'Default-style graph', locked: false, visible: true,
+    transform: { x: 480, y: 270, width: 320, height: 180, rotation: 0, scaleX: 1, scaleY: 1 },
+    style: {}, properties: { expression: { kind: 'variable' }, xMin: -3, xMax: 3 },
+  }
+  shot.objects = [graph]
+  shot.animations = []
+  shot.propertyTracks = [{
+    id: 'track-graph-style-default-x',
+    target: { kind: 'object', objectId: graph.id },
+    property: 'x',
+    keyframes: [
+      { id: 'keyframe-graph-style-default-x-a', time: 0, value: 480, interpolation: { kind: 'linear' } },
+      { id: 'keyframe-graph-style-default-x-b', time: 1, value: 560, interpolation: { kind: 'linear' } },
+    ],
+  }]
+  const parsed = ProjectDocumentSchema.parse(project)
+  const previewStyle = parsed.styles.find(({ id }) => id === parsed.activeStyleId)!
+  const view = render(<CanvasStage
+    project={parsed}
+    shot={parsed.shots[0]}
+    playhead={0}
+    previewStyle={previewStyle}
+    projectRevision="revision-style-default"
+    previewQuality={parsed.settings.previewQuality}
+    selectedIds={[]}
+    onSelect={jest.fn()}
+    onCommitTransforms={jest.fn()}
+    onCommitKeyboardTransform={jest.fn()}
+    onNotice={jest.fn()}
+  />)
+  expect(view.container.querySelector('polyline')).toHaveAttribute('stroke', previewStyle.colors.coolAccent)
+  expect(view.container.querySelector('polyline')).toHaveAttribute('stroke-width', String(previewStyle.graph.curveWeight))
+
+  const source = compileManim(parsed).python
+  const effectiveStroke = `.set_stroke("${previewStyle.colors.coolAccent}", width=${previewStyle.graph.curveWeight})`
+  expect(source.split(effectiveStroke).length - 1).toBeGreaterThanOrEqual(2)
+})
+
+test('quantizes graph SVG coordinates across observed server/browser tail-bit variance', () => {
+  expect(serializeGraphPreviewCoordinate(44.885171733810694)).toBe('44.885172')
+  expect(serializeGraphPreviewCoordinate(44.8851717338107)).toBe('44.885172')
+  expect(serializeGraphPreviewCoordinate(-0)).toBe('0.000000')
+  expect(() => serializeGraphPreviewCoordinate(Number.NaN)).toThrow('Graph preview coordinates must be finite.')
+})
+
+test('graph preview uses exact expression/domain segments, stable evidence, and no playhead resampling', () => {
+  const analyzer = graphAuthority.analyzeGraphExpression as jest.MockedFunction<typeof graphAuthority.analyzeGraphExpression>
+  analyzer.mockClear()
+  const project = cloneSerializable(createCantorDemoProject())
+  const shot = project.shots[0]
+  const graph: SceneObject = {
+    id: 'object-graph-shared-geometry', type: 'graph', name: 'Reciprocal graph', locked: false, visible: true,
+    transform: { x: 480, y: 270, width: 320, height: 180, rotation: 0, scaleX: 1, scaleY: 1 },
+    style: { stroke: '#315866' }, properties: {
+      expression: { kind: 'divide', left: { kind: 'constant', value: 1 }, right: { kind: 'variable' } },
+      xMin: -2,
+      xMax: 2,
+    },
+  }
+  shot.objects = [graph]
+  shot.animations = []
+  shot.propertyTracks = []
+  project.shots = [shot]
+  const parsed = ProjectDocumentSchema.parse(project)
+  const expected = graphAuthority.analyzeGraphExpression(graph.properties.expression, -2, 2)
+  analyzer.mockClear()
+  const props = {
+    project: parsed,
+    shot: parsed.shots[0],
+    previewStyle: parsed.styles.find(({ id }) => id === parsed.activeStyleId)!,
+    projectRevision: 'graph-preview-a',
+    previewQuality: parsed.settings.previewQuality,
+    selectedIds: [] as string[],
+    onSelect: jest.fn(),
+    onCommitTransforms: jest.fn(),
+    onCommitKeyboardTransform: jest.fn(),
+    onNotice: jest.fn(),
+  }
+  const view = render(<CanvasStage {...props} playhead={0}/>)
+  const geometry = view.container.querySelector('[data-graph-status="valid"]')
+  expect(geometry).toHaveAttribute('data-graph-analysis-hash', expected.analysisHash)
+  expect(geometry).toHaveAttribute('data-graph-diagnostic-codes', 'GRAPH_DISCONTINUITIES_SEGMENTED')
+  expect(geometry).toHaveAttribute('data-graph-segment-count', '2')
+  expect(geometry?.querySelectorAll('polyline')).toHaveLength(2)
+  const serializedPoints = Array.from(geometry!.querySelectorAll('polyline'))
+    .flatMap((polyline) => (polyline.getAttribute('points') ?? '').split(' '))
+  expect(serializedPoints.length).toBeGreaterThan(0)
+  expect(serializedPoints.every((point) => /^-?\d+\.\d{6},-?\d+\.\d{6}$/.test(point))).toBe(true)
+  expect(analyzer).toHaveBeenCalledTimes(1)
+
+  view.rerender(<CanvasStage {...props} playhead={1}/>)
+  view.rerender(<CanvasStage {...props} playhead={2}/>)
+  expect(analyzer).toHaveBeenCalledTimes(1)
+})
+
+test('subnormal graph geometry uses the full authored height without escaping it', () => {
+  const project = cloneSerializable(createCantorDemoProject())
+  const shot = project.shots[0]
+  const graph: SceneObject = {
+    id: 'object-graph-subnormal', type: 'graph', name: 'Subnormal graph', locked: false, visible: true,
+    transform: { x: 480, y: 270, width: 240, height: 150, rotation: 0, scaleX: 1, scaleY: 1 },
+    style: {}, properties: {
+      expression: { kind: 'multiply', left: { kind: 'constant', value: Number.MIN_VALUE }, right: { kind: 'variable' } },
+      xMin: 1,
+      xMax: 2,
+    },
+  }
+  shot.objects = [graph]
+  shot.animations = []
+  shot.propertyTracks = []
+  project.shots = [shot]
+  const parsed = ProjectDocumentSchema.parse(project)
+  const view = render(<CanvasStage
+    project={parsed}
+    shot={parsed.shots[0]}
+    playhead={0}
+    previewStyle={parsed.styles.find(({ id }) => id === parsed.activeStyleId)!}
+    projectRevision="graph-subnormal-a"
+    previewQuality={parsed.settings.previewQuality}
+    selectedIds={[]}
+    onSelect={jest.fn()}
+    onCommitTransforms={jest.fn()}
+    onCommitKeyboardTransform={jest.fn()}
+    onNotice={jest.fn()}
+  />)
+  const points = view.container.querySelector('polyline')?.getAttribute('points') ?? ''
+  expect(points).toContain(',75.000000')
+  expect(points).toContain(',-75.000000')
+  for (const point of points.split(' ')) {
+    const y = Number(point.split(',')[1])
+    expect(Math.abs(y)).toBeLessThanOrEqual(75)
+  }
+})
+
+test('legacy-invalid graph preview is diagnostic and never draws fabricated geometry', () => {
+  const project = cloneSerializable(createCantorDemoProject())
+  const shot = project.shots[0]
+  const graph: SceneObject = {
+    id: 'object-graph-invalid-preview', type: 'graph', name: 'Invalid graph', locked: false, visible: true,
+    transform: { x: 480, y: 270, width: 260, height: 140, rotation: 0, scaleX: 1, scaleY: 1 },
+    style: {}, properties: {
+      expression: { kind: 'divide', left: { kind: 'constant', value: 1 }, right: { kind: 'constant', value: 0 } },
+      xMin: -2,
+      xMax: 2,
+    },
+  }
+  shot.objects = [graph]
+  shot.animations = []
+  shot.propertyTracks = []
+  project.shots = [shot]
+  const parsed = ProjectDocumentSchema.parse(project)
+  const view = render(<CanvasStage
+    project={parsed}
+    shot={parsed.shots[0]}
+    playhead={0}
+    previewStyle={parsed.styles.find(({ id }) => id === parsed.activeStyleId)!}
+    projectRevision="graph-invalid-a"
+    previewQuality={parsed.settings.previewQuality}
+    selectedIds={[]}
+    onSelect={jest.fn()}
+    onCommitTransforms={jest.fn()}
+    onCommitKeyboardTransform={jest.fn()}
+    onNotice={jest.fn()}
+  />)
+  expect(view.container.querySelector('[data-graph-status="invalid"]')).toHaveAttribute('data-graph-segment-count', '0')
+  expect(view.container.querySelector('[aria-label^="Graph error:"]')).toBeInTheDocument()
+  expect(view.container.querySelector('polyline')).not.toBeInTheDocument()
+})
+
+test('uncertified oscillation preview is diagnostic and draws no aliased line', () => {
+  const project = cloneSerializable(createCantorDemoProject())
+  const shot = project.shots[0]
+  const graph: SceneObject = {
+    id: 'object-graph-aliased-preview', type: 'graph', name: 'Uncertified oscillation', locked: false, visible: true,
+    transform: { x: 480, y: 270, width: 320, height: 180, rotation: 0, scaleX: 1, scaleY: 1 },
+    style: {}, properties: {
+      expression: {
+        kind: 'sin',
+        value: { kind: 'multiply', left: { kind: 'constant', value: 804.247719319 }, right: { kind: 'variable' } },
+      },
+      xMin: -1,
+      xMax: 1,
+    },
+  }
+  shot.objects = [graph]
+  shot.animations = []
+  shot.propertyTracks = []
+  project.shots = [shot]
+  const parsed = ProjectDocumentSchema.parse(project)
+  const view = render(<CanvasStage
+    project={parsed}
+    shot={parsed.shots[0]}
+    playhead={0}
+    previewStyle={parsed.styles.find(({ id }) => id === parsed.activeStyleId)!}
+    projectRevision="graph-alias-a"
+    previewQuality={parsed.settings.previewQuality}
+    selectedIds={[]}
+    onSelect={jest.fn()}
+    onCommitTransforms={jest.fn()}
+    onCommitKeyboardTransform={jest.fn()}
+    onNotice={jest.fn()}
+  />)
+  expect(view.container.querySelector('[data-graph-status="invalid"]')).toHaveAttribute('data-graph-segment-count', '0')
+  expect(view.getByRole('img', { name: /could not be certified within its deterministic sampling budget/i })).toBeInTheDocument()
+  expect(view.container.querySelector('polyline')).not.toBeInTheDocument()
+})
+
+test('equal-quotient preview draws one safe segment or two branches around zero', () => {
+  const project = cloneSerializable(createCantorDemoProject())
+  const shot = project.shots[0]
+  const graph: SceneObject = {
+    id: 'object-graph-equal-quotient', type: 'graph', name: 'Equal quotient', locked: false, visible: true,
+    transform: { x: 480, y: 270, width: 320, height: 180, rotation: 0, scaleX: 1, scaleY: 1 },
+    style: {}, properties: {
+      expression: { kind: 'divide', left: { kind: 'variable' }, right: { kind: 'variable' } },
+      xMin: 1,
+      xMax: 2,
+    },
+  }
+  shot.objects = [graph]
+  shot.animations = []
+  shot.propertyTracks = []
+  project.shots = [shot]
+  const safe = ProjectDocumentSchema.parse(project)
+  const shared = {
+    playhead: 0,
+    previewStyle: safe.styles.find(({ id }) => id === safe.activeStyleId)!,
+    previewQuality: safe.settings.previewQuality,
+    selectedIds: [] as string[],
+    onSelect: jest.fn(),
+    onCommitTransforms: jest.fn(),
+    onCommitKeyboardTransform: jest.fn(),
+    onNotice: jest.fn(),
+  }
+  const view = render(<CanvasStage {...shared} project={safe} shot={safe.shots[0]} projectRevision="graph-quotient-safe"/>)
+  expect(view.container.querySelector('[data-graph-status="valid"]')).toHaveAttribute('data-graph-segment-count', '1')
+  expect(view.container.querySelectorAll('polyline')).toHaveLength(1)
+
+  const crossingProject = cloneSerializable(safe)
+  crossingProject.shots[0].objects[0].properties.xMin = -1
+  crossingProject.shots[0].objects[0].properties.xMax = 1
+  const crossing = ProjectDocumentSchema.parse(crossingProject)
+  view.rerender(<CanvasStage {...shared} project={crossing} shot={crossing.shots[0]} projectRevision="graph-quotient-crossing"/>)
+  expect(view.container.querySelector('[data-graph-status="valid"]')).toHaveAttribute('data-graph-segment-count', '2')
+  expect(view.container.querySelector('[data-graph-diagnostic-codes]')).toHaveAttribute('data-graph-diagnostic-codes', 'GRAPH_DISCONTINUITIES_SEGMENTED')
+  expect(view.container.querySelectorAll('polyline')).toHaveLength(2)
 })
 
 test('previews MathTex/Tex mode truth and uses a diagnostic placeholder for invalid defense input', () => {
@@ -314,6 +596,118 @@ test('cancels an absolute transform draft when its canonical project revision ch
   view.rerender(<CanvasStage {...shared} projectRevision="revision-b" />)
   fireEvent.pointerUp(svg, { pointerId: 1, clientX: 130, clientY: 120 })
   expect(onCommitTransforms).not.toHaveBeenCalled()
+})
+
+test('commits the latest canvas draft when pointer down, move, and release share one React batch', () => {
+  installTestPointerEvent()
+  const project = cloneSerializable(createCantorDemoProject())
+  const shot = project.shots[1]
+  project.shots = [shot]
+  shot.animations = []
+  shot.propertyTracks = []
+  shot.objects = [shot.objects[0]]
+  const parsed = ProjectDocumentSchema.parse(project)
+  const object = parsed.shots[0].objects[0]
+  const onCommitTransforms = jest.fn()
+  const view = render(<CanvasStage
+    project={parsed}
+    shot={parsed.shots[0]}
+    playhead={0}
+    previewStyle={parsed.styles.find(({ id }) => id === parsed.activeStyleId)!}
+    projectRevision="revision-a"
+    previewQuality={parsed.settings.previewQuality}
+    selectedIds={[object.id]}
+    onSelect={jest.fn()}
+    onCommitTransforms={onCommitTransforms}
+    onCommitKeyboardTransform={jest.fn()}
+    onNotice={jest.fn()}
+  />)
+  const svg = view.container.querySelector('svg.pc-stage') as SVGSVGElement
+  Object.defineProperty(svg, 'createSVGPoint', { configurable: true, value: () => {
+    const point = { x: 0, y: 0, matrixTransform: () => ({ x: point.x, y: point.y }) }
+    return point
+  } })
+  Object.defineProperty(svg, 'getScreenCTM', { configurable: true, value: () => ({ inverse: () => ({}) }) })
+  const target = view.container.querySelector(`[data-object-id="${object.id}"]`)!
+
+  act(() => {
+    target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 7, isPrimary: true, clientX: 100, clientY: 100 }))
+    svg.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, button: 0, pointerId: 7, isPrimary: true, clientX: 130, clientY: 120 }))
+    svg.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 7, isPrimary: true, clientX: 130, clientY: 120 }))
+  })
+
+  expect(onCommitTransforms).toHaveBeenCalledTimes(1)
+  expect(onCommitTransforms).toHaveBeenCalledWith([
+    expect.objectContaining({
+      objectId: object.id,
+      transform: expect.objectContaining({ x: object.transform.x + 30, y: object.transform.y + 20 }),
+    }),
+  ], 'Move objects')
+})
+
+test('admits one primary canvas pointer and ignores every foreign event while it owns the draft', () => {
+  installTestPointerEvent()
+  const project = cloneSerializable(createCantorDemoProject())
+  const shot = project.shots[1]
+  project.shots = [shot]
+  shot.animations = []
+  shot.propertyTracks = []
+  shot.objects = [shot.objects[0]]
+  const parsed = ProjectDocumentSchema.parse(project)
+  const object = parsed.shots[0].objects[0]
+  const onSelect = jest.fn()
+  const onCommitTransforms = jest.fn()
+  const view = render(<CanvasStage
+    project={parsed}
+    shot={parsed.shots[0]}
+    playhead={0}
+    previewStyle={parsed.styles.find(({ id }) => id === parsed.activeStyleId)!}
+    projectRevision="revision-a"
+    previewQuality={parsed.settings.previewQuality}
+    selectedIds={[object.id]}
+    onSelect={onSelect}
+    onCommitTransforms={onCommitTransforms}
+    onCommitKeyboardTransform={jest.fn()}
+    onNotice={jest.fn()}
+  />)
+  const svg = view.container.querySelector('svg.pc-stage') as SVGSVGElement
+  Object.defineProperty(svg, 'createSVGPoint', { configurable: true, value: () => {
+    const point = { x: 0, y: 0, matrixTransform: () => ({ x: point.x, y: point.y }) }
+    return point
+  } })
+  Object.defineProperty(svg, 'getScreenCTM', { configurable: true, value: () => ({ inverse: () => ({}) }) })
+  const target = view.container.querySelector(`[data-object-id="${object.id}"]`)!
+
+  fireEvent.pointerDown(target, { button: 2, pointerId: 2, isPrimary: true, clientX: 100, clientY: 100 })
+  fireEvent.pointerMove(svg, { pointerId: 2, isPrimary: true, clientX: 300, clientY: 300 })
+  fireEvent.pointerUp(svg, { pointerId: 2, isPrimary: true, clientX: 300, clientY: 300 })
+  fireEvent.pointerDown(target, { button: 0, pointerId: 3, isPrimary: false, clientX: 100, clientY: 100 })
+  fireEvent.pointerMove(svg, { pointerId: 3, isPrimary: false, clientX: 300, clientY: 300 })
+  fireEvent.pointerUp(svg, { pointerId: 3, isPrimary: false, clientX: 300, clientY: 300 })
+  expect(onSelect).not.toHaveBeenCalled()
+  expect(onCommitTransforms).not.toHaveBeenCalled()
+
+  fireEvent.pointerDown(target, { button: 0, pointerId: 10, isPrimary: true, clientX: 100, clientY: 100 })
+  fireEvent.pointerDown(target, { button: 0, pointerId: 11, isPrimary: false, clientX: 100, clientY: 100 })
+  fireEvent.pointerMove(svg, { pointerId: 11, isPrimary: false, clientX: 500, clientY: 500 })
+  fireEvent.pointerUp(svg, { pointerId: 11, isPrimary: false, clientX: 500, clientY: 500 })
+  fireEvent.pointerCancel(svg, { pointerId: 11, isPrimary: false, clientX: 500, clientY: 500 })
+  fireEvent.pointerMove(svg, { pointerId: 10, isPrimary: true, clientX: 130, clientY: 120 })
+  fireEvent.pointerUp(svg, { pointerId: 10, isPrimary: true, clientX: 130, clientY: 120 })
+  expect(onSelect).toHaveBeenCalledTimes(1)
+  expect(onCommitTransforms).toHaveBeenCalledTimes(1)
+  expect(onCommitTransforms).toHaveBeenLastCalledWith([
+    expect.objectContaining({
+      objectId: object.id,
+      transform: expect.objectContaining({ x: object.transform.x + 30, y: object.transform.y + 20 }),
+    }),
+  ], 'Move objects')
+
+  fireEvent.pointerDown(target, { button: 0, pointerId: 20, isPrimary: true, clientX: 100, clientY: 100 })
+  fireEvent.pointerMove(svg, { pointerId: 20, isPrimary: true, clientX: 160, clientY: 160 })
+  fireEvent.pointerCancel(svg, { pointerId: 20, isPrimary: true, clientX: 160, clientY: 160 })
+  fireEvent.pointerUp(svg, { pointerId: 20, isPrimary: true, clientX: 160, clientY: 160 })
+  expect(onCommitTransforms).toHaveBeenCalledTimes(1)
 })
 
 test('cancels canvas authoring and any live gesture while sequence playback is active', () => {

@@ -11,27 +11,27 @@
       "file": "proofcanvas-editorial-1440x900.png",
       "width": 1440,
       "height": 900,
-      "bytes": 149882,
-      "sha256": "654ab354edcec886bcb8f5ada568fe3b7d0b6946da79c3d7ef174bee0823885c",
+      "bytes": 155095,
+      "sha256": "34747d985157796cba37a37e26e1eaef13ae7e5d9add68eab9b4567e7075f4ce",
       "status": "passed",
-      "durationMs": 18079
+      "durationMs": 28065
     },
     {
       "project": "proofcanvas-chromium-1280",
       "file": "proofcanvas-editorial-1280x800.png",
       "width": 1280,
       "height": 800,
-      "bytes": 131016,
-      "sha256": "b84e06d35d034d6efec9334af2400bb390ff9c05cc7e340aa92e5a5f11038031",
+      "bytes": 136951,
+      "sha256": "dfcecef82cda15154661679e45fa55a7617df84647811f74ee69315110eb643b",
       "status": "passed",
-      "durationMs": 9153
+      "durationMs": 16355
     }
   ],
   "render": {
     "project": "proofcanvas-chromium-1440",
     "fileValidatedInTemporaryRun": true,
-    "bytes": 571542,
-    "sha256": "5aae4f3537e2defb9a60c3c1cd1a4dff6e8dc5a9f8b187f7bb2489d57577160d",
+    "bytes": 540138,
+    "sha256": "87281a5c09b7747edb16a415f2852946afe09cad644c2a9458fa1d17eddd2d69",
     "container": "mp4/ftyp"
   }
 }

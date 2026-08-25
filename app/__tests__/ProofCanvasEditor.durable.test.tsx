@@ -197,6 +197,204 @@ test('halts autosave after a revision conflict and preserves explicit recovery s
   expect(latestRecovery.shots[0].objects.some(({ name }) => name === 'Plain text')).toBe(true)
 });
 
+test('blocks deterministic 4xx tuples, queues a newer document, and expires the block only after revision advance', async () => {
+  fetchMock
+    .mockResolvedValueOnce(jsonResponse(400, { ok: false, code: 'invalid_project', message: 'Rejected document' }))
+    .mockResolvedValueOnce(jsonResponse(200, { ok: true, project: { projectId: PROJECT_ID, revision: 2 } }))
+    .mockResolvedValueOnce(jsonResponse(200, { ok: true, project: { projectId: PROJECT_ID, revision: 3 } }))
+  renderDurable()
+
+  addText()
+  await advance(800)
+  await settle()
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(screen.getByRole('application', { name: 'ProofCanvas editor' })).toHaveAttribute('data-save-state', 'blocked')
+  expect(screen.getByRole('alert')).toHaveTextContent('will not retry automatically')
+  expect(screen.queryByRole('button', { name: 'Retry autosave' })).not.toBeInTheDocument()
+  expect(window.localStorage.getItem(`proofcanvas_recovery_${PROJECT_ID}`)).not.toBeNull()
+
+  addMath()
+  fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+  await advance(5_000)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+
+  fireEvent.click(screen.getByRole('button', { name: 'Redo' }))
+  await advance(800)
+  await settle()
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(screen.getByRole('application', { name: 'ProofCanvas editor' })).toHaveAttribute('data-server-revision', '2')
+
+  fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+  await advance(800)
+  await settle()
+  expect(fetchMock).toHaveBeenCalledTimes(3)
+  expect(screen.getByRole('application', { name: 'ProofCanvas editor' })).toHaveAttribute('data-server-revision', '3')
+})
+
+test.each([
+  [401, 'unauthorized', /refresh owner authentication/i],
+  [401, 'invalid_project', /refresh owner authentication/i],
+  [403, 'invalid_csrf', /refresh owner authentication/i],
+  [403, 'request_too_large', /refresh owner authentication/i],
+  [404, 'project_not_found', /confirm whether this project was deleted/i],
+  [404, 'invalid_project', /confirm whether this project was deleted/i],
+] as const)('offers explicit reload recovery for durable PUT %i %s', async (status, code, guidance) => {
+  fetchMock.mockResolvedValue(jsonResponse(status, { ok: false, code, message: `Rejected with ${code}` }))
+  renderDurable()
+
+  addText()
+  await advance(800)
+  await settle()
+
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(screen.getByRole('application', { name: 'ProofCanvas editor' })).toHaveAttribute('data-save-state', 'reconcile')
+  expect(screen.getByRole('alert')).toHaveTextContent(guidance)
+  expect(screen.getByRole('button', { name: 'Reload project' })).toBeInTheDocument()
+  expect(window.localStorage.getItem(`proofcanvas_recovery_${PROJECT_ID}`)).not.toBeNull()
+
+  addMath()
+  await advance(5_000)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  fireEvent.click(screen.getByRole('link', { name: 'Back to projects' }))
+  await settle()
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(screen.getByText(/stayed on this project/i)).toBeInTheDocument()
+})
+
+test('keeps an unknown 4xx save recoverable with the same pending mutation', async () => {
+  fetchMock
+    .mockResolvedValueOnce(jsonResponse(418, { ok: false, code: 'unknown_client_failure', message: 'Unrecognized rejection' }))
+    .mockResolvedValueOnce(jsonResponse(200, { ok: true, project: { projectId: PROJECT_ID, revision: 2 } }))
+  renderDurable()
+
+  addText()
+  await advance(800)
+  await settle()
+  const firstRequest = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+
+  expect(screen.getByRole('application', { name: 'ProofCanvas editor' })).toHaveAttribute('data-save-state', 'offline')
+  fireEvent.click(screen.getByRole('button', { name: 'Retry autosave' }))
+  await settle()
+
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string)).toEqual(firstRequest)
+  expect(screen.getByRole('status', { name: 'Autosave status' })).toHaveTextContent('Saved · r2')
+})
+
+test('queues the latest document when an older in-flight tuple is deterministically rejected', async () => {
+  const rejected = deferred<ReturnType<typeof jsonResponse>>()
+  fetchMock
+    .mockImplementationOnce(() => rejected.promise)
+    .mockResolvedValueOnce(jsonResponse(200, { ok: true, project: { projectId: PROJECT_ID, revision: 2 } }))
+  const initial = durableDocument()
+  renderDurable(initial)
+
+  addText()
+  await advance(800)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  addMath()
+
+  rejected.resolve(jsonResponse(400, { ok: false, code: 'invalid_project', message: 'Rejected older document' }))
+  await settle()
+  await advance(0)
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  const latest = JSON.parse((fetchMock.mock.calls[1][1] as RequestInit).body as string)
+  expect(latest).toMatchObject({ expectedRevision: 1 })
+  expect(latest.document.shots[0].objects).toHaveLength(initial.shots[0].objects.length + 2)
+  expect(screen.getByRole('application', { name: 'ProofCanvas editor' })).toHaveAttribute('data-server-revision', '2')
+})
+
+test('does not expire a rejected tuple on a non-advancing success receipt', async () => {
+  fetchMock
+    .mockResolvedValueOnce(jsonResponse(400, { ok: false, code: 'invalid_project', message: 'Rejected document' }))
+    .mockResolvedValueOnce(jsonResponse(200, { ok: true, project: { projectId: PROJECT_ID, revision: 1 } }))
+  renderDurable()
+
+  addText()
+  await advance(800)
+  await settle()
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+
+  addMath()
+  await advance(800)
+  await settle()
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(screen.getByRole('application', { name: 'ProofCanvas editor' })).toHaveAttribute('data-server-revision', '1')
+  expect(screen.getByRole('application', { name: 'ProofCanvas editor' })).toHaveAttribute('data-save-state', 'offline')
+
+  fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+  await advance(5_000)
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(screen.getByRole('application', { name: 'ProofCanvas editor' })).toHaveAttribute('data-save-state', 'blocked')
+})
+
+test('keeps a rejected invalid browser recovery visible and stored until a commit succeeds', async () => {
+  const recovery = cloneSerializable(durableDocument('Rejected browser recovery'))
+  recovery.shots[0].objects.push({
+    id: 'object-invalid-recovery-graph',
+    type: 'graph',
+    name: 'Invalid recovery graph',
+    locked: false,
+    visible: true,
+    transform: { x: 480, y: 270, width: 240, height: 140, rotation: 0, scaleX: 1, scaleY: 1 },
+    style: {},
+    properties: {
+      expression: { kind: 'divide', left: { kind: 'constant', value: 1 }, right: { kind: 'constant', value: 0 } },
+      xMin: -2,
+      xMax: 2,
+    },
+  })
+  const stored = canonicalProjectJson(ProjectDocumentSchema.parse(recovery))
+  window.localStorage.setItem(`proofcanvas_recovery_${PROJECT_ID}`, stored)
+  renderDurable(durableDocument('Server project'))
+  await settle()
+
+  fireEvent.click(screen.getByRole('button', { name: 'Apply browser recovery' }))
+
+  expect(screen.getByRole('region', { name: 'Browser recovery available' })).toBeInTheDocument()
+  expect(screen.getByRole('textbox', { name: 'Project title' })).toHaveValue('Server project')
+  expect(screen.getByText(/browser recovery was not applied/i)).toBeInTheDocument()
+  expect(window.localStorage.getItem(`proofcanvas_recovery_${PROJECT_ID}`)).toBe(stored)
+  expect(fetchMock).not.toHaveBeenCalled()
+})
+
+test('blocks durable undo from republishing repaired legacy-invalid graph authority', async () => {
+  const legacy = cloneSerializable(durableDocument())
+  legacy.shots[0].objects = [{
+    id: 'object-durable-legacy-graph',
+    type: 'graph',
+    name: 'Durable legacy graph',
+    locked: false,
+    visible: true,
+    transform: { x: 480, y: 270, width: 240, height: 140, rotation: 0, scaleX: 1, scaleY: 1 },
+    style: {},
+    properties: {
+      expression: { kind: 'divide', left: { kind: 'constant', value: 1 }, right: { kind: 'constant', value: 0 } },
+      xMin: -2,
+      xMax: 2,
+    },
+  }]
+  legacy.shots[0].animations = []
+  legacy.shots[0].propertyTracks = []
+  fetchMock.mockResolvedValue(jsonResponse(200, { ok: true, project: { projectId: PROJECT_ID, revision: 2 } }))
+  renderDurable(ProjectDocumentSchema.parse(legacy))
+
+  fireEvent.click(screen.getByRole('treeitem', { name: /Durable legacy graph/ }))
+  fireEvent.change(screen.getByRole('textbox', { name: 'Graph expression' }), { target: { value: 'x' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Apply graph draft' }))
+  await advance(800)
+  await settle()
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(screen.getByRole('status', { name: 'Autosave status' })).toHaveTextContent('Saved · r2')
+
+  fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+  expect(screen.getByRole('application', { name: 'ProofCanvas editor' })).toHaveAttribute('data-history-past-count', '1')
+  expect(screen.getByRole('textbox', { name: 'Graph expression' })).toHaveValue('x')
+  expect(screen.getByText(/undo blocked: authoring would introduce renderer-rejected graph_constant_division_by_zero/i)).toBeInTheDocument()
+  await advance(5_000)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+})
+
 test('binds configured AI and render requests to the durable project revision without sending a document', async () => {
   fetchMock.mockImplementation(async (input: RequestInfo | URL) => String(input).endsWith('/ai')
     ? jsonResponse(503, { ok: false, code: 'provider_unavailable', message: 'Provider unavailable' })
@@ -305,13 +503,102 @@ test('drains edits that arrive during a save before checkpointing and queues lat
   await advance(800)
   expect(saveRequests).toHaveLength(2)
 
-  checkpoint.resolve(jsonResponse(200, { ok: true, checkpoint: { revision: 4 } }))
+  checkpoint.resolve(jsonResponse(200, { ok: true, checkpoint: {
+    projectId: PROJECT_ID,
+    revision: 4,
+    checkpointId: `checkpoint-${'a'.repeat(24)}`,
+  } }))
   await settle()
   expect(saveRequests).toHaveLength(3)
   expect(saveRequests[2]).toMatchObject({ expectedRevision: 4 })
   expect(saveRequests[2].document.shots[0].objects).toHaveLength(initial.shots[0].objects.length + 3)
   saveC.resolve(jsonResponse(200, { ok: true, project: { projectId: PROJECT_ID, revision: 5 } }))
   await settle()
+});
+
+test.each([
+  ['negative revision', { projectId: PROJECT_ID, revision: -1, checkpointId: `checkpoint-${'a'.repeat(24)}` }],
+  ['fractional revision', { projectId: PROJECT_ID, revision: 2.5, checkpointId: `checkpoint-${'a'.repeat(24)}` }],
+  ['non-advancing revision', { projectId: PROJECT_ID, revision: 1, checkpointId: `checkpoint-${'a'.repeat(24)}` }],
+  ['wrong project', { projectId: OTHER_PROJECT_ID, revision: 2, checkpointId: `checkpoint-${'a'.repeat(24)}` }],
+  ['invalid checkpoint identity', { projectId: PROJECT_ID, revision: 2, checkpointId: 'checkpoint-not-authoritative' }],
+])('forces reload reconciliation for a successful checkpoint with %s', async (_label, checkpointReceipt) => {
+  fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).endsWith('/checkpoints') && init?.method === 'POST') {
+      return Promise.resolve(jsonResponse(201, { ok: true, checkpoint: checkpointReceipt }))
+    }
+    throw new Error(`Unexpected request: ${String(input)}`)
+  })
+  renderDurable()
+
+  fireEvent.click(screen.getByLabelText('Owner menu'))
+  fireEvent.click(screen.getByRole('button', { name: 'Create checkpoint' }))
+  await settle()
+
+  expect(screen.getByRole('application', { name: 'ProofCanvas editor' })).toHaveAttribute('data-save-state', 'conflict')
+  expect(screen.getByText(/checkpoint returned an uncertain revision receipt/i)).toBeInTheDocument()
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+
+  addText()
+  await advance(800)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(window.localStorage.getItem(`proofcanvas_recovery_${PROJECT_ID}`)).not.toBeNull()
+});
+
+test.each([
+  ['null payload', null],
+  ['empty payload', {}],
+  ['negative acknowledgement', { ok: false }],
+])('forces reload reconciliation for a successful checkpoint with %s', async (_label, payload) => {
+  fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).endsWith('/checkpoints') && init?.method === 'POST') {
+      return Promise.resolve(jsonResponse(201, payload))
+    }
+    throw new Error(`Unexpected request: ${String(input)}`)
+  })
+  renderDurable()
+
+  fireEvent.click(screen.getByLabelText('Owner menu'))
+  fireEvent.click(screen.getByRole('button', { name: 'Create checkpoint' }))
+  await settle()
+
+  expect(screen.getByRole('application', { name: 'ProofCanvas editor' })).toHaveAttribute('data-save-state', 'conflict')
+  expect(screen.getByRole('button', { name: 'Reload durable project' })).toBeInTheDocument()
+  addText()
+  await advance(800)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(window.localStorage.getItem(`proofcanvas_recovery_${PROJECT_ID}`)).not.toBeNull()
+});
+
+test('preserves an edit queued behind a checkpoint whose successful response has malformed JSON', async () => {
+  const checkpoint = deferred<{ ok: boolean; status: number; json: jest.Mock }>()
+  fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).endsWith('/checkpoints') && init?.method === 'POST') return checkpoint.promise
+    throw new Error(`Unexpected request: ${String(input)}`)
+  })
+  const initial = durableDocument()
+  renderDurable(initial)
+
+  fireEvent.click(screen.getByLabelText('Owner menu'))
+  fireEvent.click(screen.getByRole('button', { name: 'Create checkpoint' }))
+  await settle()
+  addText()
+  await advance(800)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+
+  checkpoint.resolve({
+    ok: true,
+    status: 201,
+    json: jest.fn().mockRejectedValue(new SyntaxError('malformed response JSON')),
+  })
+  await settle()
+  await advance(0)
+
+  expect(screen.getByRole('application', { name: 'ProofCanvas editor' })).toHaveAttribute('data-save-state', 'conflict')
+  expect(screen.getByRole('button', { name: 'Reload durable project' })).toBeInTheDocument()
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  const recovered = parseProjectDocument(window.localStorage.getItem(`proofcanvas_recovery_${PROJECT_ID}`)!)
+  expect(recovered.shots[0].objects).toHaveLength(initial.shots[0].objects.length + 1)
 });
 
 test('captures the post-drain canonical revision for render and marks it stale after a later edit', async () => {

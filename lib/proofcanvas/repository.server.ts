@@ -10,7 +10,7 @@ import {
   projectDurationSeconds,
   type ProjectDocument,
 } from "./schema";
-import { projectAuthoringTransitionIssue } from "./authoringPolicy";
+import { projectAuthoringIssue, projectAuthoringTransitionIssue } from "./authoringPolicy";
 import { createProjectTemplate, type ProjectTemplateKind } from "./templates";
 import { canonicalTimelineTime } from "./frame";
 
@@ -467,9 +467,10 @@ export class SqliteProjectRepository implements ProjectRepository {
       const source = this.readyActiveRow(projectId);
       this.checkRevision(source, expectedRevision);
       const sourceDocument = durableFromRow(source).document;
-      // Duplication is an exact preservation/copy boundary, not new timeline
-      // authoring. Legacy renderer-rejected authority is retained byte-for-byte
-      // under new project metadata, just as checkpoint recovery may restore it.
+      const sourceIssue = projectAuthoringIssue(sourceDocument);
+      if (sourceIssue) {
+        throw new ProjectRepositoryError(400, "invalid_project", `Repair renderer-rejected authority before duplicating this project. ${sourceIssue}`);
+      }
       const now = this.isoNow();
       const duplicateId = parseProjectId(this.randomId("project"));
       const title = requestedTitle ?? `${source.title} copy`.slice(0, 160);
@@ -601,13 +602,15 @@ export class SqliteProjectRepository implements ProjectRepository {
         throw new ProjectRepositoryError(500, "repository_corrupt", "Stored checkpoint document is invalid");
       }
       const now = this.isoNow();
-      const preRestoreCheckpointId = this.randomId("checkpoint");
-      this.database.prepare("INSERT INTO checkpoints(id, project_id, revision, label, document_json, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(preRestoreCheckpointId, projectId, row.revision, "Before checkpoint recovery", canonicalProjectJson(current), now);
       const document = ProjectDocumentSchema.parse({
         ...cloneSerializable(restored),
         metadata: { ...restored.metadata, id: projectId, createdAt: row.created_at, updatedAt: now },
       });
+      const authoringIssue = projectAuthoringTransitionIssue(current, document);
+      if (authoringIssue) throw new ProjectRepositoryError(400, "invalid_project", authoringIssue);
+      const preRestoreCheckpointId = this.randomId("checkpoint");
+      this.database.prepare("INSERT INTO checkpoints(id, project_id, revision, label, document_json, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(preRestoreCheckpointId, projectId, row.revision, "Before checkpoint recovery", canonicalProjectJson(current), now);
       const receipt = {
         projectId,
         revision: row.revision + 1,

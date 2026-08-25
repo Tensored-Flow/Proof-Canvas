@@ -96,7 +96,8 @@ for candidate in container.decode(video=0):
         break
 if frame is None:
     raise SystemExit("video contained no decodable frame")
-frame.to_image().save("/output/proofcanvas-manim-frame-12s.png")
+frame_path = Path("/output/proofcanvas-manim-frame-12s.png")
+frame.to_image().save(frame_path)
 digest = hashlib.sha256(video_path.read_bytes()).hexdigest()
 metadata = {
     "genuineManimRender": True,
@@ -109,6 +110,7 @@ metadata = {
     "durationSeconds": duration,
     "frames": stream.frames,
     "evidenceFrameSeconds": timestamp,
+    "evidenceFrameSha256": hashlib.sha256(frame_path.read_bytes()).hexdigest(),
     "bytes": video_path.stat().st_size,
     "sha256": digest,
     "sourceSha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),

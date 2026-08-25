@@ -2,12 +2,10 @@ import {
   PROOFCANVAS_SCHEMA_LIMITS,
   PROOFCANVAS_RENDER_SOURCE_MAX_BYTES,
   ProjectDocumentSchema,
-  RestrictedExpressionSchema,
   mathPropertiesFor,
   objectTypeSupportsStyleProperty,
   utf8ByteLength,
   type ProjectDocument,
-  type RestrictedExpression,
   type SceneAnimation,
   type SceneObject,
   type Shot,
@@ -15,7 +13,7 @@ import {
 } from "./schema";
 import { analyzeMathProperties, normalizeLegacyMathProperties } from "./latex";
 import { firstVisibilityAnimationByTarget, initiallyHiddenByEntranceIds, previewShotAtAnimationEnd, previewShotAtAnimationPeak, previewShotAtTime, previewShotBeforePointEventsAtTime } from "./preview";
-import { styledTransform } from "./styles";
+import { resolvedGraphStroke, styledTransform } from "./styles";
 import { manimRateFunctionName } from "./easing";
 import { effectiveObjectLifetime, objectExistsAtTime } from "./timeline";
 import {
@@ -36,6 +34,7 @@ import {
   type CompilerRateFunction,
   type CompilerSchedule,
 } from "./compilerSchedule";
+import { analyzeGraphExpression } from "./graphExpression";
 
 export interface CompilerDiagnostic {
   severity: "info" | "warning" | "error";
@@ -46,6 +45,8 @@ export interface CompilerDiagnostic {
   trackId?: string;
   conflictingTrackId?: string;
   lifetimeBoundary?: "enter" | "exit";
+  analysisHash?: string;
+  segmentCount?: number;
 }
 
 export interface CompileResult {
@@ -229,22 +230,6 @@ function variableMaps(project: ProjectDocument): CompilerVariableMaps {
   return { objects, references };
 }
 
-function restrictedExpression(expression: RestrictedExpression): string {
-  switch (expression.kind) {
-    case "constant": return pyNumber(expression.value);
-    case "variable": return "x";
-    case "add": return `(${restrictedExpression(expression.left)} + ${restrictedExpression(expression.right)})`;
-    case "subtract": return `(${restrictedExpression(expression.left)} - ${restrictedExpression(expression.right)})`;
-    case "multiply": return `(${restrictedExpression(expression.left)} * ${restrictedExpression(expression.right)})`;
-    case "divide": return `(${restrictedExpression(expression.left)} / ${restrictedExpression(expression.right)})`;
-    case "power": return `(${restrictedExpression(expression.base)} ** ${expression.exponent})`;
-    case "sin": return `math.sin(${restrictedExpression(expression.value)})`;
-    case "cos": return `math.cos(${restrictedExpression(expression.value)})`;
-    case "abs": return `abs(${restrictedExpression(expression.value)})`;
-    case "negate": return `(-${restrictedExpression(expression.value)})`;
-  }
-}
-
 function coordinate(object: SceneObject, project: ProjectDocument): string {
   const { x, y } = editorPointToManim(project.settings.aspectRatio, object.transform);
   return `[${pyNumber(x)}, ${pyNumber(y)}, 0]`;
@@ -263,8 +248,9 @@ function styleChain(object: SceneObject, style: StylePack): string {
         ? style.colors.ink
         : undefined
   );
-  const stroke = object.style.stroke ?? color;
-  const strokeWidth = object.style.strokeWidth ?? style.strokes.regular;
+  const graphStroke = object.type === "graph" ? resolvedGraphStroke(object, style) : null;
+  const stroke = graphStroke?.stroke ?? object.style.stroke ?? color;
+  const strokeWidth = graphStroke?.strokeWidth ?? object.style.strokeWidth ?? style.strokes.regular;
   const parts: string[] = [];
   if (objectTypeSupportsStyleProperty(object.type, "color")) parts.push(`.set_color(${pyString(color)})`);
   if (fill && objectTypeSupportsStyleProperty(object.type, "fill")) parts.push(`.set_fill(${pyString(fill)}, opacity=1.0)`);
@@ -276,8 +262,9 @@ function styleChain(object: SceneObject, style: StylePack): string {
 function visualTargetChain(object: SceneObject & { preview?: { opacity: number } }, style: StylePack): string {
   const parts: string[] = [];
   if (object.style.fill && objectTypeSupportsStyleProperty(object.type, "fill")) parts.push(`.set_fill(${pyString(object.style.fill)}, opacity=1.0)`);
-  if ((object.style.stroke || object.style.strokeWidth !== undefined) && objectTypeSupportsStyleProperty(object.type, "stroke")) {
-    parts.push(`.set_stroke(${pyString(object.style.stroke ?? object.style.color ?? style.colors.ink)}, width=${pyNumber(object.style.strokeWidth ?? style.strokes.regular)})`);
+  if ((object.type === "graph" || object.style.stroke || object.style.strokeWidth !== undefined) && objectTypeSupportsStyleProperty(object.type, "stroke")) {
+    const graphStroke = object.type === "graph" ? resolvedGraphStroke(object, style) : null;
+    parts.push(`.set_stroke(${pyString(graphStroke?.stroke ?? object.style.stroke ?? object.style.color ?? style.colors.ink)}, width=${pyNumber(graphStroke?.strokeWidth ?? object.style.strokeWidth ?? style.strokes.regular)})`);
   }
   if (objectTypeSupportsStyleProperty(object.type, "opacity")) parts.push(`.set_opacity(${pyNumber(object.preview?.opacity ?? object.style.opacity ?? 1)})`);
   return parts.join("");
@@ -292,7 +279,7 @@ function dimensionChain(object: SceneObject, variable: string, project: ProjectD
       parts.push(`.scale(min(${pyNumber(width)} / max(${variable}.width, 0.001), ${pyNumber(height)} / max(${variable}.height, 0.001)))`);
     } else if (width !== null) parts.push(`.scale_to_fit_width(${pyNumber(width)})`);
     else if (height !== null) parts.push(`.scale_to_fit_height(${pyNumber(height)})`);
-  } else if (["graph", "image", "svg"].includes(object.type)) {
+  } else if (["image", "svg"].includes(object.type)) {
     if (object.transform.width !== undefined) parts.push(`.stretch_to_fit_width(${pyNumber(size(object.transform.width, project))})`);
     if (object.transform.height !== undefined) parts.push(`.stretch_to_fit_height(${pyNumber(size(object.transform.height, project))})`);
   }
@@ -346,14 +333,42 @@ function primitiveExpression(
       return `Axes(x_range=[${pyNumber(xMin)}, ${pyNumber(xMax)}, 1], y_range=[${pyNumber(yMin)}, ${pyNumber(yMax)}, 1], x_length=${pyNumber(width)}, y_length=${pyNumber(height)}, tips=False)`;
     }
     case "graph": {
-      const parsed = RestrictedExpressionSchema.safeParse(object.properties.expression);
-      if (!parsed.success) {
-        diagnostics.push({ severity: "error", code: "GRAPH_EXPRESSION_INVALID", message: "Restricted graph expression could not be compiled.", objectId: object.id });
-        return `VMobject()`;
-      }
       const xMin = finite(object.properties.xMin, -5);
       const xMax = finite(object.properties.xMax, 5);
-      return `FunctionGraph(lambda x: ${restrictedExpression(parsed.data)}, x_range=[${pyNumber(xMin)}, ${pyNumber(xMax)}], color=${pyString(object.style.stroke ?? style.colors.coolAccent)})`;
+      const analysis = analyzeGraphExpression(object.properties.expression, xMin, xMax);
+      if (!analysis.ok) {
+        const fatal = analysis.diagnostics[0];
+        diagnostics.push({
+          severity: "error",
+          code: fatal?.code ?? "GRAPH_EXPRESSION_INVALID",
+          message: fatal?.message ?? "Restricted graph geometry could not be derived.",
+          objectId: object.id,
+          analysisHash: analysis.analysisHash,
+          segmentCount: 0,
+        });
+        return "VMobject()";
+      }
+      for (const graphDiagnostic of analysis.diagnostics) diagnostics.push({
+        severity: graphDiagnostic.severity,
+        code: graphDiagnostic.code,
+        message: graphDiagnostic.message,
+        objectId: object.id,
+        analysisHash: analysis.analysisHash,
+        segmentCount: analysis.normalizedSegments.length,
+      });
+      diagnostics.push({
+        severity: "info",
+        code: "GRAPH_GEOMETRY_DERIVED",
+        message: `Graph geometry ${analysis.analysisHash} compiled from ${analysis.normalizedSegments.length} literal segment${analysis.normalizedSegments.length === 1 ? "" : "s"}.`,
+        objectId: object.id,
+        analysisHash: analysis.analysisHash,
+        segmentCount: analysis.normalizedSegments.length,
+      });
+      const segmentPrimitives = analysis.normalizedSegments.map((segment) => {
+        const points = segment.map(({ x, y }) => `[${pyNumber(x * width)}, ${pyNumber(y * height)}, 0.0]`).join(", ");
+        return `VMobject().set_points_as_corners([${points}])`;
+      });
+      return `VGroup(${segmentPrimitives.join(", ")})`;
     }
     case "image":
     case "svg": {

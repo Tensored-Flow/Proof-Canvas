@@ -682,7 +682,7 @@ test("physically rewrites canonical duration counters on every existing-row muta
   database.close();
 });
 
-test("checkpoints and recovers previously valid V2 easing without silently rewriting it", () => {
+test("preserves legacy V2 easing in checkpoints but blocks copying or reintroducing it after repair", () => {
   const source = harness();
   const created = source.repository.createProject({ kind: "sample", title: "Legacy V2 easing", mutationId: "mutation-create-legacy-v2-easing" });
   const initialV3 = source.repository.getProject(created.value.projectId);
@@ -700,12 +700,11 @@ test("checkpoints and recovers previously valid V2 easing without silently rewri
   const repository = new SqliteProjectRepository(database);
   const initial = repository.getProject(initialV3.id);
   expect(initial.document.shots[0].animations.find(({ id }) => id === emphasisId)?.easing).toBe("editorial");
-  const duplicatedLegacy = repository.duplicateProject({
+  expect(() => repository.duplicateProject({
     projectId: initial.id,
     expectedRevision: initial.revision,
     mutationId: "mutation-preserve-legacy-duplicate",
-  });
-  expect(repository.getProject(duplicatedLegacy.value.projectId).document.shots[0].animations.find(({ id }) => id === emphasisId)?.easing).toBe("editorial");
+  })).toThrow(expect.objectContaining({ status: 400, code: "invalid_project", message: expect.stringContaining("Repair renderer-rejected authority") }));
   const checkpoint = repository.createCheckpoint({
     projectId: initial.id,
     expectedRevision: initial.revision,
@@ -748,13 +747,13 @@ test("checkpoints and recovers previously valid V2 easing without silently rewri
     mutationId: "mutation-repair-legacy-v2-easing",
     document: repaired,
   });
-  repository.recoverCheckpoint({
+  expect(() => repository.recoverCheckpoint({
     projectId: initial.id,
     checkpointId: checkpoint.value.checkpointId,
     expectedRevision: repairedSave.value.revision,
     mutationId: "mutation-recover-legacy-v2-easing",
-  });
-  expect(repository.getProject(initial.id).document.shots[0].animations.find(({ id }) => id === emphasisId)?.easing).toBe("editorial");
+  })).toThrow(expect.objectContaining({ status: 400, code: "invalid_project" }));
+  expect(repository.getProject(initial.id).document.shots[0].animations.find(({ id }) => id === emphasisId)?.easing).toBe("there-and-back");
 
   const removed = cloneSerializable(repository.getProject(initial.id).document);
   removed.shots[0].animations = removed.shots[0].animations.filter(({ id }) => id !== emphasisId);
@@ -768,7 +767,7 @@ test("checkpoints and recovers previously valid V2 easing without silently rewri
   database.close();
 });
 
-test("full-document save guards compiler-invalid timeline authority while exact copy remains preservative", () => {
+test("full-document save and duplicate ingress guard compiler-invalid timeline authority", () => {
   const source = harness();
   const created = source.repository.createProject({ kind: "sample", title: "Timeline transition", mutationId: "mutation-create-timeline-policy" });
   const initial = source.repository.getProject(created.value.projectId);
@@ -798,12 +797,11 @@ test("full-document save guards compiler-invalid timeline authority while exact 
     .run(canonicalProjectJson(legacy), 1, 1, 8, initial.id);
 
   const durableLegacy = source.repository.getProject(initial.id);
-  const copied = source.repository.duplicateProject({
+  expect(() => source.repository.duplicateProject({
     projectId: initial.id,
     expectedRevision: durableLegacy.revision,
     mutationId: "mutation-copy-timeline-policy",
-  });
-  expect(source.repository.getProject(copied.value.projectId).document.shots[0].propertyTracks[0]).toEqual(durableLegacy.document.shots[0].propertyTracks[0]);
+  })).toThrow(expect.objectContaining({ status: 400, code: "invalid_project", message: expect.stringContaining("TRACK_SEMANTIC_COLLISION") }));
 
   const unrelated = cloneSerializable(durableLegacy.document);
   unrelated.shots[0].objects[0].name = "Unrelated repository edit";
@@ -946,6 +944,88 @@ test("checkpoints advance revision and recovery snapshots current state before r
   expect(preRestore.revision).toBe(4);
   expect(JSON.parse(preRestore.document_json).metadata.title).toBe("Third");
   expect(() => assertProofCanvasPersistenceIntegrity(database)).not.toThrow();
+  database.close();
+});
+
+test("durable whole-document commits reject new invalid graphs while preserving legacy repairability", () => {
+  const { database, repository } = harness();
+  const created = repository.createProject({ kind: "blank", title: "Graph authority", mutationId: "mutation-create-graph-authority" });
+  const first = repository.getProject(created.value.projectId);
+  const withGraph = cloneSerializable(first.document);
+  withGraph.shots[0].objects.push({
+    id: "object-durable-graph",
+    type: "graph",
+    name: "Durable graph",
+    locked: false,
+    visible: true,
+    transform: { x: 480, y: 270, width: 240, height: 140, rotation: 0, scaleX: 1, scaleY: 1 },
+    style: {},
+    properties: { expression: { kind: "variable" }, xMin: -2, xMax: 2 },
+  });
+  const valid = repository.saveProject({
+    projectId: first.id,
+    expectedRevision: first.revision,
+    mutationId: "mutation-save-valid-graph-authority",
+    document: withGraph,
+  });
+
+  const invalid = cloneSerializable(repository.getProject(first.id).document);
+  invalid.shots[0].objects[0].properties.expression = {
+    kind: "divide",
+    left: { kind: "constant", value: 1 },
+    right: { kind: "constant", value: 0 },
+  };
+  expect(() => repository.saveProject({
+    projectId: first.id,
+    expectedRevision: valid.value.revision,
+    mutationId: "mutation-save-invalid-graph-authority",
+    document: invalid,
+  })).toThrow(expect.objectContaining({ code: "invalid_project" }));
+
+  // Simulate a schema-v3 graph document stored before semantic graph truth was
+  // introduced. Parsing stays lossless; only monotonic authoring is enforced.
+  database.prepare("UPDATE projects SET document_json = ? WHERE id = ?").run(canonicalProjectJson(invalid), first.id);
+  const legacy = repository.getProject(first.id);
+  expect(() => repository.duplicateProject({
+    projectId: first.id,
+    expectedRevision: legacy.revision,
+    mutationId: "mutation-duplicate-invalid-graph",
+  })).toThrow(expect.objectContaining({ status: 400, code: "invalid_project", message: expect.stringContaining("GRAPH_CONSTANT_DIVISION_BY_ZERO") }));
+  const checkpoint = repository.createCheckpoint({
+    projectId: first.id,
+    expectedRevision: legacy.revision,
+    mutationId: "mutation-checkpoint-invalid-graph",
+    label: "Legacy invalid graph",
+  });
+  const unrelated = cloneSerializable(legacy.document);
+  unrelated.metadata.title = "Legacy graph renamed";
+  const renamed = repository.saveProject({
+    projectId: first.id,
+    expectedRevision: checkpoint.value.revision,
+    mutationId: "mutation-save-legacy-graph-rename",
+    document: unrelated,
+  });
+  expect(renamed.value.revision).toBe(checkpoint.value.revision + 1);
+
+  const repaired = cloneSerializable(repository.getProject(first.id).document);
+  repaired.shots[0].objects[0].properties.expression = { kind: "variable" };
+  const repairedSave = repository.saveProject({
+    projectId: first.id,
+    expectedRevision: renamed.value.revision,
+    mutationId: "mutation-save-legacy-graph-repair",
+    document: repaired,
+  });
+  expect(() => repository.recoverCheckpoint({
+    projectId: first.id,
+    checkpointId: checkpoint.value.checkpointId,
+    expectedRevision: repairedSave.value.revision,
+    mutationId: "mutation-recover-invalid-graph",
+  })).toThrow(expect.objectContaining({
+    status: 400,
+    code: "invalid_project",
+    message: expect.stringContaining("introduce renderer-rejected GRAPH_CONSTANT_DIVISION_BY_ZERO"),
+  }));
+  expect(repository.getProject(first.id).document.shots[0].objects[0].properties.expression).toEqual({ kind: "variable" });
   database.close();
 });
 

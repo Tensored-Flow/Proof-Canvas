@@ -6,8 +6,10 @@ import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import evidencePaths from './evidence-paths.cjs'
+import evidenceSet from './evidence-set.cjs'
 
 const { requireManagedEvidenceDirectory } = evidencePaths
+const { requireExactTemporaryEvidenceEntries } = evidenceSet
 
 const EXPECTED_PROJECTS = new Map([
   ['proofcanvas-chromium-1440', { screenshot: 'proofcanvas-editorial-1440x900.png', width: 1440, height: 900 }],
@@ -68,16 +70,16 @@ function collectTests(suites, destination = []) {
   return destination
 }
 
-async function collectFiles(directory, prefix = '') {
-  const files = []
+async function collectEntries(directory, prefix = '') {
+  const entries = []
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const relative = path.posix.join(prefix, entry.name)
     if (entry.isSymbolicLink()) fail(`temporary run contains a symbolic link at ${relative}`)
-    if (entry.isDirectory()) files.push(...await collectFiles(path.join(directory, entry.name), relative))
-    else if (entry.isFile()) files.push(relative)
+    if (entry.isDirectory()) entries.push(`${relative}/`, ...await collectEntries(path.join(directory, entry.name), relative))
+    else if (entry.isFile()) entries.push(relative)
     else fail(`temporary run contains an unsupported entry at ${relative}`)
   }
-  return files
+  return entries
 }
 
 function validatedReport(report) {
@@ -149,20 +151,8 @@ async function validate(runDirectory, outputDirectory) {
   const videoHeader = videoBytes.subarray(0, 12)
   if (videoHeader.length < 12 || videoHeader.toString('ascii', 4, 8) !== 'ftyp') fail('UI download is not an MP4 container')
 
-  const temporaryFiles = await collectFiles(run)
-  const topLevelEntries = (await readdir(run)).sort()
-  const expectedTopLevelEntries = [
-    'proofcanvas-editorial-1440x900.png',
-    'proofcanvas-editorial-1280x800.png',
-    'report.json',
-    'ui-download',
-  ].sort()
-  if (JSON.stringify(topLevelEntries) !== JSON.stringify(expectedTopLevelEntries)) fail('temporary run contains unexpected top-level evidence')
-  const pngFiles = temporaryFiles.filter((file) => file.endsWith('.png')).sort()
-  const expectedPngFiles = [...EXPECTED_PROJECTS.values()].map(({ screenshot }) => screenshot).sort()
-  if (JSON.stringify(pngFiles) !== JSON.stringify(expectedPngFiles)) fail('temporary run must contain exactly the two named screenshots')
-  const mp4Files = temporaryFiles.filter((file) => file.endsWith('.mp4'))
-  if (mp4Files.length !== 1 || mp4Files[0] !== 'ui-download/proofcanvas-render.mp4') fail('temporary run must contain exactly one UI-downloaded MP4')
+  const temporaryEntries = await collectEntries(run)
+  requireExactTemporaryEvidenceEntries(temporaryEntries)
 
   const summary = {
     schemaVersion: 1,

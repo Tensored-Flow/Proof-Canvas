@@ -89,7 +89,7 @@ test.each(["write", "create"] as const)("a saved V2 %s there-and-back pulse stay
   expect(policy.stderr).toBe("");
 });
 
-test("a project at direct numeric schema bounds compiles through the renderer policy", () => {
+test("a project at direct numeric schema bounds exercises the compiler method matrix through renderer policy", () => {
   const project = cloneSerializable(createCantorDemoProject());
   const title = project.shots[0].objects.find(({ id }) => id === "object-title")!;
   title.transform = {
@@ -164,11 +164,151 @@ test("a project at direct numeric schema bounds compiles through the renderer po
   const policy = validateWithRendererPolicy(compiled.python);
 
   expect(compiled.diagnostics.some(({ severity }) => severity === "error")).toBe(false);
+  expect(compiled.python).toContain("self.camera.frame.become(Rectangle(width=config.frame_width");
+  expect(compiled.python).toContain("pc_uncountable_yet_zero_length.scale(min(");
+  expect(compiled.python).toContain("pc_uncountable_yet_zero_length.move_to(");
+  expect(compiled.python).toContain("pc_uncountable_yet_zero_length.rotate(3600.0 * DEGREES)");
+  expect(compiled.python).toContain("pc_uncountable_yet_zero_length.stretch(-0.01, 0).stretch(100.0, 1)");
+  expect(compiled.python).toMatch(/pc_ref_[a-f0-9_]+ = pc_[a-z0-9_]+\.copy\(\)/);
+  expect(compiled.python).toMatch(/pc_ref_[a-f0-9_]+\.copy\(\).*\.set_opacity\((?:0|1)\.0\)/);
+  expect(compiled.python).toContain("Transform(self.camera.frame, Rectangle(width=config.frame_width");
+  expect(compiled.python).toContain("self.clear()");
   expect(policy.status).toBe(0);
   expect(policy.stderr).toBe("");
 });
 
-test("caps graph objects at the renderer's total restricted-lambda budget", () => {
+test("actual two-shot compiler output preserves shot-local renderer provenance", () => {
+  const compiled = compileManim(ProjectDocumentSchema.parse(createCantorDemoProject()));
+  const policy = validateWithRendererPolicy(compiled.python);
+
+  expect(compiled.diagnostics.some(({ severity }) => severity === "error")).toBe(false);
+  expect(compiled.python.match(/self\.next_section\(/g)).toHaveLength(2);
+  expect(compiled.python.match(/self\.clear\(\)/g)).toHaveLength(1);
+  expect(policy.status).toBe(0);
+  expect(policy.stderr).toBe("");
+});
+
+test("an actual nested heterogeneous group transform preserves exact recursive provenance", () => {
+  const project = cloneSerializable(createCantorDemoProject());
+  const shot = project.shots[0];
+  const root: SceneObject = {
+    id: "group-policy-nested-root",
+    type: "group",
+    name: "Nested root",
+    locked: false,
+    visible: true,
+    transform: { x: 480, y: 270, rotation: 0, scaleX: 1, scaleY: 1 },
+    style: {},
+    properties: {},
+  };
+  const inner: SceneObject = {
+    id: "group-policy-nested-inner",
+    parentId: root.id,
+    type: "group",
+    name: "Nested inner",
+    locked: false,
+    visible: true,
+    transform: { x: 420, y: 270, rotation: 0, scaleX: 1, scaleY: 1 },
+    style: {},
+    properties: {},
+  };
+  const rectangle: SceneObject = {
+    id: "object-policy-nested-rectangle",
+    parentId: inner.id,
+    type: "rectangle",
+    name: "Nested rectangle",
+    locked: false,
+    visible: true,
+    transform: { x: 420, y: 270, width: 100, height: 60, rotation: 0, scaleX: 1, scaleY: 1 },
+    style: {},
+    properties: {},
+  };
+  const label: SceneObject = {
+    id: "object-policy-nested-label",
+    parentId: root.id,
+    type: "text",
+    name: "Nested label",
+    locked: false,
+    visible: true,
+    transform: { x: 560, y: 270, width: 120, height: 50, rotation: 0, scaleX: 1, scaleY: 1 },
+    style: { fontSize: 28 },
+    properties: { content: "Nested" },
+  };
+  project.shots = [shot];
+  shot.duration = 2;
+  shot.objects = [root, inner, rectangle, label];
+  shot.animations = [{
+    id: "animation-policy-nested-root-move",
+    type: "move",
+    targetIds: [root.id],
+    start: 0,
+    duration: 1,
+    easing: "linear",
+    properties: { deltaX: 40 },
+  }];
+  shot.propertyTracks = [];
+  shot.audioClips = [];
+  shot.captionClips = [];
+  shot.markers = [];
+
+  const compiled = compileManim(ProjectDocumentSchema.parse(project));
+  const policy = validateWithRendererPolicy(compiled.python);
+
+  expect(compiled.diagnostics.some(({ severity }) => severity === "error")).toBe(false);
+  expect(compiled.python).toContain("pc_nested_inner = VGroup(pc_nested_rectangle)");
+  expect(compiled.python).toContain("pc_nested_root = Group(pc_nested_inner, pc_nested_label)");
+  expect(compiled.python).toMatch(/Transform\(pc_nested_root, Group\(VGroup\(pc_ref_/);
+  expect(policy.status).toBe(0);
+  expect(policy.stderr).toBe("");
+});
+
+test("an actual discontinuous graph with opacity preserves the exact renderer assignment dialect", () => {
+  const project = cloneSerializable(createCantorDemoProject());
+  const shot = project.shots[1];
+  const graph: SceneObject = {
+    id: "object-policy-reciprocal-graph",
+    type: "graph",
+    name: "Policy reciprocal graph",
+    locked: false,
+    visible: true,
+    transform: { x: 480, y: 270, width: 240, height: 150, rotation: 0, scaleX: 1, scaleY: 1 },
+    style: { stroke: "#315866", strokeWidth: 2, opacity: 0.5 },
+    properties: {
+      expression: {
+        kind: "divide",
+        left: { kind: "constant", value: 1 },
+        right: { kind: "variable" },
+      },
+      xMin: -2,
+      xMax: 2,
+    },
+  };
+  project.shots = [shot];
+  shot.objects = [graph];
+  shot.animations = [];
+  shot.propertyTracks = [];
+  shot.audioClips = [];
+  shot.captionClips = [];
+  shot.markers = [];
+
+  const compiled = compileManim(ProjectDocumentSchema.parse(project));
+  const graphLine = compiled.python.split("\n").find((line) => line.includes("set_points_as_corners"));
+  const policy = validateWithRendererPolicy(compiled.python);
+
+  expect(compiled.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ code: "GRAPH_DISCONTINUITIES_SEGMENTED", segmentCount: 2 }),
+    expect.objectContaining({ code: "GRAPH_GEOMETRY_DERIVED", segmentCount: 2 }),
+  ]));
+  expect(compiled.diagnostics.some(({ severity }) => severity === "error")).toBe(false);
+  expect(graphLine?.match(/set_points_as_corners/g)).toHaveLength(2);
+  expect(graphLine).toContain(').set_stroke("#315866", width=2.0).set_opacity(0.5)');
+  expect(compiled.python).not.toContain("FunctionGraph");
+  expect(compiled.python).not.toContain("lambda x:");
+  expect(policy.status).toBe(0);
+  expect(policy.stderr).toBe("");
+});
+
+test("caps graph objects at the renderer's total literal-geometry budget", () => {
   const project = cloneSerializable(createCantorDemoProject());
   const shot = project.shots[1];
   project.shots = [shot];

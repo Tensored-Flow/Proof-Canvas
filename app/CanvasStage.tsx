@@ -6,8 +6,9 @@ import { previewShotAtTime } from '@/lib/proofcanvas/preview'
 import { addTimelineTimes, compareTimelineTimes, logicalFrameFor, type LogicalFrame } from '@/lib/proofcanvas/frame'
 import { analyzeMathProperties, texContentSegments, type MathMode } from '@/lib/proofcanvas/latex'
 import { applyOperations, effectiveLockOwner } from '@/lib/proofcanvas/operations'
+import { analyzeGraphExpression } from '@/lib/proofcanvas/graphExpression'
 import { objectTypeSupportsStyleProperty, type ProjectDocument, type SceneObject, type Shot, type StylePack } from '@/lib/proofcanvas/schema'
-import { styledDisplayTransform, styledTransform } from '@/lib/proofcanvas/styles'
+import { resolvedGraphStroke, styledDisplayTransform, styledTransform } from '@/lib/proofcanvas/styles'
 
 type Gesture = {
   kind: 'move' | 'resize' | 'rotate'
@@ -18,6 +19,15 @@ type Gesture = {
   originals: Map<string, SceneObject['transform']>
   commitIds: Set<string>
   baseRevision: string
+  baseShotId: string
+}
+
+export function canvasGestureAuthorityInvalidated(
+  gesture: Pick<Gesture, 'baseRevision' | 'baseShotId'> | null,
+  authority: { authoringEnabled: boolean; projectRevision: string; shotId: string },
+): boolean {
+  if (!authority.authoringEnabled) return true
+  return Boolean(gesture && (gesture.baseRevision !== authority.projectRevision || gesture.baseShotId !== authority.shotId))
 }
 
 export interface CanvasStageProps {
@@ -135,6 +145,69 @@ const MathHtml = memo(function MathHtml({ content, renderer, mode }: { content: 
       ? <KatexMath content={properties.content} mode={properties.mode}/>
       : <TexHtml content={properties.content}/>}
   </span>
+})
+
+const GRAPH_PREVIEW_COORDINATE_DECIMALS = 6
+
+/**
+ * React renders this attribute independently on the server and in the browser.
+ * Quantizing only the final SVG coordinate prevents harmless libm tail-bit
+ * differences from changing hydration strings; graph analysis remains at full
+ * precision and still governs whether any segment is safe to draw.
+ */
+export function serializeGraphPreviewCoordinate(value: number): string {
+  if (!Number.isFinite(value)) throw new RangeError('Graph preview coordinates must be finite.')
+  const serialized = value.toFixed(GRAPH_PREVIEW_COORDINATE_DECIMALS)
+  return serialized === '-0.000000' ? '0.000000' : serialized
+}
+
+const GraphGeometry = memo(function GraphGeometry({ expression, xMin, xMax, width, height, stroke, strokeWidth }: {
+  expression: unknown
+  xMin: number
+  xMax: number
+  width: number
+  height: number
+  stroke: string
+  strokeWidth: number
+}) {
+  const expressionKey = JSON.stringify(expression)
+  // Preview objects are sampled anew at each playhead tick. Depending on the
+  // stable serialized graph authority prevents that animation sampling from
+  // resampling the graph lattice.
+  const analysis = useMemo(
+    () => analyzeGraphExpression(expression, xMin, xMax),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [expressionKey, xMax, xMin],
+  )
+  if (!analysis.ok) {
+    const message = analysis.diagnostics[0]?.message ?? 'Graph geometry is invalid.'
+    return <g
+      data-graph-analysis-hash={analysis.analysisHash}
+      data-graph-segment-count="0"
+      data-graph-status="invalid"
+      role="img"
+      aria-label={`Graph error: ${message}`}
+    >
+      <rect x={-width / 2} y={-height / 2} width={width} height={height} rx="6" fill="none" stroke={stroke} strokeWidth={Math.max(1, strokeWidth)} strokeDasharray="8 6" opacity="0.65"/>
+      <path d={`M ${-width / 6} ${-height / 6} L ${width / 6} ${height / 6} M ${width / 6} ${-height / 6} L ${-width / 6} ${height / 6}`} stroke={stroke} strokeWidth={Math.max(1, strokeWidth)} opacity="0.75"/>
+    </g>
+  }
+  return <g
+    data-graph-analysis-hash={analysis.analysisHash}
+    data-graph-diagnostic-codes={analysis.diagnostics.map(({ code }) => code).join(' ')}
+    data-graph-segment-count={analysis.normalizedSegments.length}
+    data-graph-status="valid"
+  >
+    {analysis.normalizedSegments.map((segment, index) => <polyline
+      key={`${analysis.analysisHash}-${index}`}
+      data-graph-segment-index={index}
+      points={segment.map(({ x, y }) => `${serializeGraphPreviewCoordinate(x * width)},${serializeGraphPreviewCoordinate(-y * height)}`).join(' ')}
+      fill="none"
+      stroke={stroke}
+      strokeWidth={strokeWidth}
+      vectorEffect="non-scaling-stroke"
+    />)}
+  </g>
 })
 
 export function temporallyTransformsObject(shot: Shot, objectId: string, time: number): boolean {
@@ -302,12 +375,16 @@ function RenderObject({ object, style, selected, effectivelyLocked, temporallyTr
     case 'brace': return <g {...common}><path d={`M ${-width / 2} 0 C ${-width / 4} ${height / 2}, ${-width / 4} ${height / 2}, 0 ${height / 2} C ${width / 4} ${height / 2}, ${width / 4} ${height / 2}, ${width / 2} 0`} fill="none" stroke={stroke} strokeWidth={strokeWidth}/><text y={height + 12} textAnchor="middle" fill={object.style.color ?? style.colors.warmAccent} fontSize={object.style.fontSize ?? 22}>{String(object.properties.label ?? '')}</text></g>
     case 'axes': return <g {...common} stroke={stroke} strokeWidth={strokeWidth}><line x1={-width / 2} x2={width / 2}/><line y1={-height / 2} y2={height / 2}/>{[-2,-1,1,2].map((tick) => <line key={`x${tick}`} x1={tick * width / 5} x2={tick * width / 5} y1={-3} y2={3}/>)}</g>
     case 'graph': {
-      const points = Array.from({ length: 31 }, (_, index) => {
-        const x = -width / 2 + width * index / 30
-        const y = -Math.min(height / 2, (x / Math.max(1, width / 4)) ** 2 * height / 5)
-        return `${x},${y}`
-      }).join(' ')
-      return <polyline {...common} points={points} fill="none" stroke={object.style.stroke ?? style.colors.coolAccent} strokeWidth={object.style.strokeWidth ?? style.graph.curveWeight}/>
+      const graphStroke = resolvedGraphStroke(object, style)
+      return <g {...common}><GraphGeometry
+        expression={object.properties.expression}
+        xMin={Number(object.properties.xMin)}
+        xMax={Number(object.properties.xMax)}
+        width={width}
+        height={height}
+        stroke={graphStroke.stroke}
+        strokeWidth={graphStroke.strokeWidth}
+      /></g>
     }
     case 'image':
     case 'svg': return <image {...common} href={String(object.properties.source ?? '')} x={-width / 2} y={-height / 2} width={width} height={height} preserveAspectRatio="xMidYMid meet"/>
@@ -340,8 +417,9 @@ export const CanvasThumbnail = memo(function CanvasThumbnail({ aspectRatio, shot
 
 export default function CanvasStage({ project, shot, playhead, previewStyle, projectRevision, previewQuality, selectedIds, authoringEnabled = true, onSelect, onCommitTransforms, onCommitKeyboardTransform, onNotice }: CanvasStageProps) {
   const svgRef = useRef<SVGSVGElement | null>(null)
-  const [gesture, setGesture] = useState<Gesture | null>(null)
+  const gestureRef = useRef<Gesture | null>(null)
   const [previewTransforms, setPreviewTransforms] = useState<Map<string, SceneObject['transform']>>(new Map())
+  const previewTransformsRef = useRef<Map<string, SceneObject['transform']>>(new Map())
   const [guides, setGuides] = useState<{ x?: number; y?: number }>({})
   const frame = useMemo(() => logicalFrameFor(project.settings.aspectRatio), [project.settings.aspectRatio])
   const preview = useMemo(() => previewShotAtTime(shot, playhead), [shot, playhead])
@@ -367,7 +445,8 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, pro
   }, [shot])
 
   const cancelGesture = useCallback(() => {
-    setGesture(null)
+    gestureRef.current = null
+    previewTransformsRef.current = new Map()
     setPreviewTransforms(new Map())
     setGuides({})
   }, [])
@@ -381,7 +460,12 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, pro
   // Pointer drafts are absolute transforms derived from one canonical
   // document. Undo, redo, shot changes, or any other committed edit invalidates
   // that base so releasing a stale pointer cannot resurrect older geometry.
-  useEffect(() => cancelGesture(), [authoringEnabled, cancelGesture, projectRevision, shot.id])
+  // This must be conditional: a passive effect from the preceding commit may
+  // run after the user has already started a new gesture on the new revision.
+  useEffect(() => {
+    const activeGesture = gestureRef.current
+    if (canvasGestureAuthorityInvalidated(activeGesture, { authoringEnabled, projectRevision, shotId: shot.id })) cancelGesture()
+  }, [authoringEnabled, cancelGesture, projectRevision, shot.id])
 
   const simulateGroupTransformAroundDisplayCenter = useCallback((source: SceneObject, requested: SceneObject['transform'], center: { x: number; y: number }) => {
     let adjusted = { ...requested }
@@ -408,7 +492,7 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, pro
 
   const beginGesture = (event: ReactPointerEvent<SVGElement>, object: SceneObject, kind: Gesture['kind'] = 'move') => {
     if (!authoringEnabled) return
-    if (event.button !== 0) return
+    if (event.button !== 0 || event.isPrimary === false || gestureRef.current) return
     event.stopPropagation()
     svgRef.current?.focus({ preventScroll: true })
     const nextSelection = event.shiftKey
@@ -451,47 +535,51 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, pro
       const candidate = shot.objects.find((item) => item.id === id)
       if (candidate && !effectiveLockOwner(shot, candidate)) originals.set(id, { ...candidate.transform })
     }
-    setGesture({ kind, pointerId: event.pointerId, start: cameraPoint(svgPoint(svgRef.current, event.nativeEvent), preview.camera, frame), objectId: object.id, displayOriginal: styledDisplayTransform(object, shot, previewStyle, visibleObjects), originals, commitIds, baseRevision: projectRevision })
-    setPreviewTransforms(new Map(originals))
+    const nextGesture = { kind, pointerId: event.pointerId, start: cameraPoint(svgPoint(svgRef.current, event.nativeEvent), preview.camera, frame), objectId: object.id, displayOriginal: styledDisplayTransform(object, shot, previewStyle, visibleObjects), originals, commitIds, baseRevision: projectRevision, baseShotId: shot.id }
+    const initialTransforms = new Map(originals)
+    gestureRef.current = nextGesture
+    previewTransformsRef.current = initialTransforms
+    setPreviewTransforms(initialTransforms)
   }
 
   const onPointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
     if (!authoringEnabled) return
-    if (!gesture || !svgRef.current || event.pointerId !== gesture.pointerId) return
+    const activeGesture = gestureRef.current
+    if (!activeGesture || !svgRef.current || event.pointerId !== activeGesture.pointerId) return
     const point = cameraPoint(svgPoint(svgRef.current, event.nativeEvent), preview.camera, frame)
-    const dx = point.x - gesture.start.x
-    const dy = point.y - gesture.start.y
-    const next = new Map(gesture.originals)
-    const primaryOriginal = gesture.originals.get(gesture.objectId)
+    const dx = point.x - activeGesture.start.x
+    const dy = point.y - activeGesture.start.y
+    const next = new Map(activeGesture.originals)
+    const primaryOriginal = activeGesture.originals.get(activeGesture.objectId)
     if (!primaryOriginal) return
-    if (gesture.kind === 'move') {
+    if (activeGesture.kind === 'move') {
       let snapX: number | undefined
       let snapY: number | undefined
-      const primarySource = shot.objects.find(({ id }) => id === gesture.objectId)
+      const primarySource = shot.objects.find(({ id }) => id === activeGesture.objectId)
       if (!primarySource) return
       const sourceAtStart = { ...primarySource, transform: primaryOriginal }
       const authoredDx = rawDeltaForStyledDelta(sourceAtStart, previewStyle, 'x', dx)
       const authoredDy = rawDeltaForStyledDelta(sourceAtStart, previewStyle, 'y', dy)
       const candidateObject = { ...primarySource, transform: { ...primaryOriginal, x: primaryOriginal.x + authoredDx, y: primaryOriginal.y + authoredDy } }
-      const candidateX = gesture.displayOriginal.x + dx
-      const candidateY = gesture.displayOriginal.y + dy
-      const snapObjects = visibleObjects.filter(({ id }) => !gesture.originals.has(id))
+      const candidateX = activeGesture.displayOriginal.x + dx
+      const candidateY = activeGesture.displayOriginal.y + dy
+      const snapObjects = visibleObjects.filter(({ id }) => !activeGesture.originals.has(id))
       const xTargets = [frame.centerX, ...snapObjects.map((object) => styledDisplayTransform(object, shot, previewStyle, visibleObjects).x)]
       const yTargets = [frame.centerY, ...snapObjects.map((object) => styledDisplayTransform(object, shot, previewStyle, visibleObjects).y)]
       snapX = xTargets.find((target) => Math.abs(target - candidateX) <= 6)
       snapY = yTargets.find((target) => Math.abs(target - candidateY) <= 6)
       const correctionX = snapX === undefined ? 0 : rawDeltaForStyledDelta(candidateObject, previewStyle, 'x', snapX - candidateX)
       const correctionY = snapY === undefined ? 0 : rawDeltaForStyledDelta(candidateObject, previewStyle, 'y', snapY - candidateY)
-      for (const [id, original] of gesture.originals) next.set(id, { ...original, x: original.x + authoredDx + correctionX, y: original.y + authoredDy + correctionY })
+      for (const [id, original] of activeGesture.originals) next.set(id, { ...original, x: original.x + authoredDx + correctionX, y: original.y + authoredDy + correctionY })
       setGuides({ x: snapX, y: snapY })
-    } else if (gesture.kind === 'resize') {
-      const source = shot.objects.find(({ id }) => id === gesture.objectId)
+    } else if (activeGesture.kind === 'resize') {
+      const source = shot.objects.find(({ id }) => id === activeGesture.objectId)
       if (!source) return
-      const radians = gesture.displayOriginal.rotation * Math.PI / 180
+      const radians = activeGesture.displayOriginal.rotation * Math.PI / 180
       const localDx = dx * Math.cos(radians) + dy * Math.sin(radians)
       const localDy = -dx * Math.sin(radians) + dy * Math.cos(radians)
-      const displayWidth = (gesture.displayOriginal.width ?? 60) * Math.abs(gesture.displayOriginal.scaleX)
-      const displayHeight = (gesture.displayOriginal.height ?? 30) * Math.abs(gesture.displayOriginal.scaleY)
+      const displayWidth = (activeGesture.displayOriginal.width ?? 60) * Math.abs(activeGesture.displayOriginal.scaleX)
+      const displayHeight = (activeGesture.displayOriginal.height ?? 30) * Math.abs(activeGesture.displayOriginal.scaleY)
       const nextDisplayWidth = Math.max(10, displayWidth + localDx * 2)
       const nextDisplayHeight = Math.max(10, displayHeight + localDy * 2)
       let transform = {
@@ -502,9 +590,9 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, pro
           : Math.max(1, (primaryOriginal.height ?? 30) * nextDisplayHeight / Math.max(1, displayHeight)),
       }
       if (source?.type === 'group') {
-        const simulation = simulateGroupTransformAroundDisplayCenter(source, transform, gesture.displayOriginal)
+        const simulation = simulateGroupTransformAroundDisplayCenter(source, transform, activeGesture.displayOriginal)
         const simulated = simulation.shot
-        for (const id of gesture.originals.keys()) {
+        for (const id of activeGesture.originals.keys()) {
           const candidate = simulated.objects.find((object) => object.id === id)
           if (candidate) next.set(id, candidate.transform)
         }
@@ -514,41 +602,48 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, pro
         const displayed = styledTransform(candidate, previewStyle)
         transform = {
           ...transform,
-          x: transform.x + rawDeltaForStyledDelta(candidate, previewStyle, 'x', gesture.displayOriginal.x - displayed.x),
-          y: transform.y + rawDeltaForStyledDelta(candidate, previewStyle, 'y', gesture.displayOriginal.y - displayed.y),
+          x: transform.x + rawDeltaForStyledDelta(candidate, previewStyle, 'x', activeGesture.displayOriginal.x - displayed.x),
+          y: transform.y + rawDeltaForStyledDelta(candidate, previewStyle, 'y', activeGesture.displayOriginal.y - displayed.y),
         }
-        next.set(gesture.objectId, transform)
+        next.set(activeGesture.objectId, transform)
       }
     } else {
-      const displayAngle = Math.atan2(point.y - gesture.displayOriginal.y, point.x - gesture.displayOriginal.x) * 180 / Math.PI + 90
-      const rotationDelta = displayAngle - gesture.displayOriginal.rotation
+      const displayAngle = Math.atan2(point.y - activeGesture.displayOriginal.y, point.x - activeGesture.displayOriginal.x) * 180 / Math.PI + 90
+      const rotationDelta = displayAngle - activeGesture.displayOriginal.rotation
       const transform = { ...primaryOriginal, rotation: Math.round((primaryOriginal.rotation + rotationDelta) * 10) / 10 }
-      const source = shot.objects.find(({ id }) => id === gesture.objectId)
+      const source = shot.objects.find(({ id }) => id === activeGesture.objectId)
       if (source?.type === 'group') {
-        const simulation = simulateGroupTransformAroundDisplayCenter(source, transform, gesture.displayOriginal)
+        const simulation = simulateGroupTransformAroundDisplayCenter(source, transform, activeGesture.displayOriginal)
         const simulated = simulation.shot
-        for (const id of gesture.originals.keys()) {
+        for (const id of activeGesture.originals.keys()) {
           const candidate = simulated.objects.find((object) => object.id === id)
           if (candidate) next.set(id, candidate.transform)
         }
         next.set(source.id, simulation.transform)
-      } else next.set(gesture.objectId, transform)
+      } else next.set(activeGesture.objectId, transform)
     }
+    previewTransformsRef.current = next
     setPreviewTransforms(next)
   }
 
   const endGesture = (event: ReactPointerEvent<SVGSVGElement>) => {
     if (!authoringEnabled) { cancelGesture(); return }
-    if (!gesture || event.pointerId !== gesture.pointerId) return
-    if (gesture.baseRevision !== projectRevision) {
+    const activeGesture = gestureRef.current
+    if (!activeGesture || event.pointerId !== activeGesture.pointerId) return
+    if (activeGesture.baseRevision !== projectRevision || activeGesture.baseShotId !== shot.id) {
       cancelGesture()
       return
     }
-    const updates = [...previewTransforms].filter(([objectId]) => gesture.commitIds.has(objectId)).map(([objectId, transform]) => ({ objectId, transform }))
-    if (updates.some(({ objectId, transform }) => JSON.stringify(transform) !== JSON.stringify(gesture.originals.get(objectId)))) onCommitTransforms(updates, gesture.kind === 'move' ? 'Move objects' : gesture.kind === 'resize' ? 'Resize object' : 'Rotate object')
-    setGesture(null)
-    setPreviewTransforms(new Map())
-    setGuides({})
+    const updates = [...previewTransformsRef.current].filter(([objectId]) => activeGesture.commitIds.has(objectId)).map(([objectId, transform]) => ({ objectId, transform }))
+    const changed = updates.some(({ objectId, transform }) => JSON.stringify(transform) !== JSON.stringify(activeGesture.originals.get(objectId)))
+    cancelGesture()
+    if (changed) onCommitTransforms(updates, activeGesture.kind === 'move' ? 'Move objects' : activeGesture.kind === 'resize' ? 'Resize object' : 'Rotate object')
+  }
+
+  const cancelPointerGesture = (event: ReactPointerEvent<SVGSVGElement>) => {
+    const activeGesture = gestureRef.current
+    if (!activeGesture || event.pointerId !== activeGesture.pointerId) return
+    cancelGesture()
   }
 
   const transformWithKeyboard = (event: ReactKeyboardEvent<SVGElement>, kind: 'resize' | 'rotate') => {
@@ -591,7 +686,7 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, pro
   const motionExceptionCount = shot.animations.filter(({ easing }) => easing !== previewStyle.motion.easing).length
   return (
     <div className="pc-stage-wrap" data-testid="proofcanvas-stage" style={{ background: previewStyle.colors.background, aspectRatio: `${frame.width} / ${frame.height}`, '--pc-stage-ratio': frame.width / frame.height } as CSSProperties}>
-      <svg ref={svgRef} className="pc-stage" viewBox={`0 0 ${frame.width} ${frame.height}`} style={{ '--pc-stage-aspect': `${frame.width} / ${frame.height}` } as CSSProperties} data-preview-quality={previewQuality} data-authoring-enabled={authoringEnabled ? 'true' : 'false'} role="group" tabIndex={0} aria-disabled={!authoringEnabled} aria-label={`${shot.name} canvas at ${playhead.toFixed(1)} seconds${authoringEnabled ? '' : '; playback preview, editing disabled'}`} onPointerDown={(event) => { if (authoringEnabled && event.target === event.currentTarget) { event.currentTarget.focus({ preventScroll: true }); onSelect([]) } }} onPointerMove={onPointerMove} onPointerUp={endGesture} onPointerCancel={cancelGesture}>
+      <svg ref={svgRef} className="pc-stage" viewBox={`0 0 ${frame.width} ${frame.height}`} style={{ '--pc-stage-aspect': `${frame.width} / ${frame.height}` } as CSSProperties} data-preview-quality={previewQuality} data-authoring-enabled={authoringEnabled ? 'true' : 'false'} role="group" tabIndex={0} aria-disabled={!authoringEnabled} aria-label={`${shot.name} canvas at ${playhead.toFixed(1)} seconds${authoringEnabled ? '' : '; playback preview, editing disabled'}`} onPointerDown={(event) => { if (authoringEnabled && event.target === event.currentTarget) { event.currentTarget.focus({ preventScroll: true }); onSelect([]) } }} onPointerMove={onPointerMove} onPointerUp={endGesture} onPointerCancel={cancelPointerGesture}>
         <defs><marker id="pc-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill={previewStyle.colors.ink}/></marker></defs>
         <g data-pc-camera-transform transform={`translate(${frame.centerX} ${frame.centerY}) scale(${preview.camera.zoom}) rotate(${-preview.camera.rotation}) translate(${-preview.camera.x} ${-preview.camera.y})`}>
           {guides.x !== undefined && <line className="pc-snap-guide" data-guide-axis="x" x1={guides.x} x2={guides.x} y1={0} y2={frame.height}/>}

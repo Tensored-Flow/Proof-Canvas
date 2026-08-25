@@ -20,6 +20,20 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
+function installTestPointerEvent() {
+  class TestPointerEvent extends MouseEvent {
+    readonly pointerId: number
+    readonly isPrimary: boolean
+
+    constructor(type: string, init: PointerEventInit = {}) {
+      super(type, init)
+      this.pointerId = init.pointerId ?? 0
+      this.isPrimary = init.isPrimary ?? true
+    }
+  }
+  Object.defineProperty(window, 'PointerEvent', { configurable: true, value: TestPointerEvent })
+}
+
 beforeAll(() => {
   Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL })
   Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL })
@@ -603,7 +617,7 @@ describe('ProofCanvas editor client', () => {
   })
 
   it('cancels a timeline draft when undo changes its canonical base', () => {
-    Object.defineProperty(window, 'PointerEvent', { configurable: true, value: MouseEvent })
+    installTestPointerEvent()
     const { container } = render(<ProofCanvasEditor />)
     const title = screen.getByRole('textbox', { name: 'Project title' })
     fireEvent.change(title, { target: { value: 'Gesture base' } })
@@ -614,13 +628,59 @@ describe('ProofCanvas editor client', () => {
     const originalStart = block.dataset.start
     const track = screen.getByTestId('timeline-track')
     Object.defineProperty(track, 'clientWidth', { configurable: true, value: 1000 })
-    fireEvent.pointerDown(block, { pointerId: 4, clientX: 100 })
+    fireEvent.pointerDown(block, { button: 0, pointerId: 4, clientX: 100 })
     fireEvent.pointerMove(track, { pointerId: 4, clientX: 220 })
     fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
     fireEvent.pointerUp(track, { pointerId: 4, clientX: 220 })
 
     expect(editor()).toHaveAttribute('data-history-past-count', '0')
     expect(container.querySelector<HTMLElement>(`[data-animation-id="${block.dataset.animationId}"]`)).toHaveAttribute('data-start', originalStart)
+  })
+
+  it('commits the latest timeline draft when pointer move and pointer up share one render batch', () => {
+    installTestPointerEvent()
+    const { container } = render(<ProofCanvasEditor />)
+    const block = container.querySelector<HTMLElement>('[data-animation-id="animation-title-write"]')!
+    const track = screen.getByTestId('timeline-track')
+    Object.defineProperty(track, 'clientWidth', { configurable: true, value: 1_000 })
+
+    act(() => {
+      fireEvent.pointerDown(block, { button: 0, pointerId: 5, clientX: 100 })
+      fireEvent.pointerMove(track, { pointerId: 5, clientX: 220 })
+      fireEvent.pointerUp(track, { pointerId: 5, clientX: 220 })
+    })
+
+    expect(container.querySelector('[data-animation-id="animation-title-write"]')).toHaveAttribute('data-start', '2.5')
+    expect(editor()).toHaveAttribute('data-history-past-count', '1')
+  })
+
+  it('admits only a primary left-button timeline pointer and commits only its captured identity', () => {
+    installTestPointerEvent()
+    const { container } = render(<ProofCanvasEditor />)
+    const block = container.querySelector<HTMLElement>('[data-animation-id="animation-title-write"]')!
+    const track = screen.getByTestId('timeline-track')
+    const originalStart = block.dataset.start
+    Object.defineProperty(track, 'clientWidth', { configurable: true, value: 1_000 })
+
+    fireEvent.pointerDown(block, { button: 2, pointerId: 3, clientX: 100, isPrimary: true })
+    fireEvent.pointerMove(track, { pointerId: 3, clientX: 220, isPrimary: true })
+    fireEvent.pointerUp(track, { pointerId: 3, clientX: 220, isPrimary: true })
+    fireEvent.pointerDown(block, { button: 0, pointerId: 4, clientX: 100, isPrimary: false })
+    expect(editor()).toHaveAttribute('data-history-past-count', '0')
+    expect(block).toHaveAttribute('data-start', originalStart)
+
+    fireEvent.pointerDown(block, { button: 0, pointerId: 5, clientX: 100, isPrimary: true })
+    fireEvent.pointerMove(track, { pointerId: 6, clientX: 220, isPrimary: false })
+    fireEvent.pointerUp(track, { pointerId: 6, clientX: 220, isPrimary: false })
+    expect(editor()).toHaveAttribute('data-history-past-count', '0')
+    expect(block).toHaveAttribute('data-start', originalStart)
+
+    fireEvent.pointerMove(track, { pointerId: 5, clientX: 220, isPrimary: true })
+    fireEvent.pointerUp(track, { pointerId: 6, clientX: 220, isPrimary: false })
+    expect(editor()).toHaveAttribute('data-history-past-count', '0')
+    fireEvent.pointerUp(track, { pointerId: 5, clientX: 220, isPrimary: true })
+    expect(container.querySelector('[data-animation-id="animation-title-write"]')).toHaveAttribute('data-start', '2.5')
+    expect(editor()).toHaveAttribute('data-history-past-count', '1')
   })
 
   it('keeps editor command shortcuts active after toolbar buttons receive focus', () => {

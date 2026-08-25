@@ -5,11 +5,12 @@
   "codec": "h264",
   "width": 854,
   "height": 480,
-  "fps": 15.000349612862024,
-  "durationSeconds": 27.932682,
-  "frames": 419,
+  "fps": 15.000343062588339,
+  "durationSeconds": 28.466016,
+  "frames": 427,
   "evidenceFrameSeconds": 12.5330078125,
-  "bytes": 473780,
-  "sha256": "638041f76b602646fdc1b81116c02c0d0b77d32204c77c7e99172fd015d3b8e9",
-  "sourceSha256": "064df3d9548836ee681508e2b894277923b69c4eb6308e5697341693e3b50db6"
+  "evidenceFrameSha256": "91b131bf0e943cd7653b101d490ce8d3a14e67017aececb8e0186d1e06cf2eff",
+  "bytes": 444135,
+  "sha256": "b38c648373c5a807abde53056840987b6961e59f2a0350a20384dbb54477bf17",
+  "sourceSha256": "b3070c6dda61109a45b83f56d47674d5b3505f29f3797f67539fdcadf8c07f30"
 }

@@ -2,6 +2,7 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent, type ComponentProps, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import CanvasStage, { resolveCanvasKeyboardTransformIntent, temporallyTransformsObject, type CanvasKeyboardTransformIntent } from './CanvasStage'
+import GraphInspector, { type GraphDraftValue } from './GraphInspector'
 import KeyframeInspector from './KeyframeInspector'
 import MathPropertiesEditor from './MathPropertiesEditor'
 import PropertyKeyframeField from './PropertyKeyframeField'
@@ -14,8 +15,9 @@ import { critiqueProject, type CritiqueIssue } from '@/lib/proofcanvas/critique'
 import { ensureSessionCsrfToken } from '@/lib/proofcanvas/csrf.client'
 import { createCantorDemoProject } from '@/lib/proofcanvas/demo'
 import { applyDocumentOperations } from '@/lib/proofcanvas/documentOperations'
+import { projectAuthoringTransitionIssue, projectGraphAuthoringIssues } from '@/lib/proofcanvas/authoringPolicy'
 import { addTimelineTimes, compareTimelineTimes, logicalFrameFor, resolutionFor, subtractTimelineTimes, type LogicalFrame } from '@/lib/proofcanvas/frame'
-import { canRedo, canUndo, commitOperations, commitProject, createHistory, redo, undo, type ProjectHistory } from '@/lib/proofcanvas/history'
+import { canRedo, canUndo, commitOperations, commitProject, createHistory, redoAuthoringHistory, undoAuthoringHistory, type ProjectHistory } from '@/lib/proofcanvas/history'
 import { commandTargetWithin, createEditorCommandController, EDITOR_COMMANDS, type EditorCommandId, type EditorCommandInvocation } from '@/lib/proofcanvas/editorCommands'
 import { EditorSequencePlaybackClock, type EditorSequencePlaybackSnapshot } from '@/lib/proofcanvas/editorPlayback'
 import { animationSelection, keyframeSelection, normalizeEditorSelection, objectSelection, projectSelection, selectedAnimationIds, selectedObjectIds, shotSelection, type EditorKeyframeRef, type EditorSelection } from '@/lib/proofcanvas/editorSelection'
@@ -25,7 +27,7 @@ import { allocateId, collectProjectIds } from '@/lib/proofcanvas/ids'
 import { applyOperations, duplicateObjects, effectiveLockOwner, effectiveVisibilityOwner, inspectOperations, type ManualSceneOperation } from '@/lib/proofcanvas/operations'
 import { previewShotAtTime } from '@/lib/proofcanvas/preview'
 import { PROOFCANVAS_BRACE_LABEL_MAX_CHARS, PROOFCANVAS_PROJECT_MAX_BYTES, PROOFCANVAS_SCHEMA_LIMITS, PROOFCANVAS_TEXT_MAX_CHARS, ProjectDocumentSchema, SceneOperationSchema, animationAuthoringCompatibilityIssue, canonicalProjectJson, cloneSerializable, mathPropertiesFor, objectTypeSupportsStyleProperty, parseProjectDocument, type AnimationType, type Easing, type MathProperties, type ProjectDocument, type PropertyKeyframe, type PropertyTrack, type SceneAnimation, type SceneObject, type SceneOperation, type Shot } from '@/lib/proofcanvas/schema'
-import { EDITORIAL_INK_STYLE_ID, RAW_MANIM_STYLE_ID, styleById } from '@/lib/proofcanvas/styles'
+import { EDITORIAL_INK_STYLE_ID, RAW_MANIM_STYLE_ID, resolvedGraphStroke, styleById } from '@/lib/proofcanvas/styles'
 import { propertyTrackKey } from '@/lib/proofcanvas/timeline'
 
 const STORAGE_KEY = 'proofcanvas_project_v1'
@@ -142,7 +144,7 @@ type DurableEditorContext = {
   csrfToken: string | null
 }
 
-type DurableSaveState = 'saved' | 'waiting' | 'saving' | 'offline' | 'conflict'
+type DurableSaveState = 'saved' | 'waiting' | 'saving' | 'offline' | 'blocked' | 'conflict' | 'reconcile'
 
 type DurableCheckpoint = {
   id: string
@@ -158,6 +160,30 @@ type PendingDurableSave = {
   document: ProjectDocument
   mutationId: string
   expectedRevision: number
+}
+
+type BlockedDurableSave = Pick<PendingDurableSave, 'canonical' | 'expectedRevision'>
+
+function blockedSaveMatches(
+  blocked: readonly BlockedDurableSave[],
+  canonical: string,
+  expectedRevision: number,
+): boolean {
+  return blocked.some((candidate) => candidate.expectedRevision === expectedRevision && candidate.canonical === canonical)
+}
+
+function rememberBlockedSave(
+  blocked: readonly BlockedDurableSave[],
+  candidate: BlockedDurableSave,
+): BlockedDurableSave[] {
+  const withoutDuplicate = blocked.filter(({ canonical, expectedRevision }) => (
+    canonical !== candidate.canonical || expectedRevision !== candidate.expectedRevision
+  ))
+  // Do not evict an older rejection while its durable base is current: doing
+  // so would let A -> B -> A retry bytes the server already classified as a
+  // deterministic failure. The collection is page-session scoped and every
+  // entry is discarded as soon as any save advances the durable revision.
+  return [...withoutDuplicate, candidate]
 }
 
 type NumericField = {
@@ -297,6 +323,15 @@ function responseMessage(candidate: unknown, fallback: string): string {
     ? (candidate as { message: string }).message
     : fallback
 }
+
+function responseCode(candidate: unknown): string | undefined {
+  return candidate && typeof candidate === 'object' && typeof (candidate as { code?: unknown }).code === 'string'
+    ? (candidate as { code: string }).code
+    : undefined
+}
+
+const DURABLE_TUPLE_REJECTION_CODES = new Set(['invalid_project', 'request_too_large'])
+const DURABLE_RECONCILIATION_CODES = new Set(['idempotency_conflict', 'project_not_found', 'project_recovery_required'])
 
 function selectionBounds(objects: readonly SceneObject[]) {
   const corners = objects.flatMap((object) => {
@@ -486,7 +521,9 @@ export default function ProofCanvasEditor({
   const [animationType, setAnimationType] = useState<AnimationType>('fade-in')
   const [lifetimeInputRevision, setLifetimeInputRevision] = useState(0)
   const [timelineDraft, setTimelineDraft] = useState<{ id: string; start: number; duration: number } | null>(null)
-  const [timelineGesture, setTimelineGesture] = useState<{ id: string; kind: 'move' | 'resize'; clientX: number; start: number; duration: number; baseRevision: string; baseShotId: string } | null>(null)
+  const [timelineGesture, setTimelineGesture] = useState<{ id: string; kind: 'move' | 'resize'; pointerId: number; clientX: number; start: number; duration: number; baseRevision: string; baseShotId: string } | null>(null)
+  const timelineDraftRef = useRef<typeof timelineDraft>(null)
+  const timelineGestureRef = useRef<typeof timelineGesture>(null)
   const [instruction, setInstruction] = useState<string>(REQUIRED_AI_COMMANDS[0])
   const [proposal, setProposal] = useState<AiProposal | null>(null)
   const [proposalBase, setProposalBase] = useState<{ revision: string; shotId: string } | null>(null)
@@ -554,6 +591,7 @@ export default function ProofCanvasEditor({
   const savePromiseRef = useRef<Promise<boolean> | null>(null)
   const revisionMutationTailRef = useRef<Promise<void>>(Promise.resolve())
   const saveConflictRef = useRef(false)
+  const blockedSaveTuplesRef = useRef<BlockedDurableSave[]>([])
   const recoveryAppliedRef = useRef(false)
   const authorityRef = useRef(editorAuthority)
   const historyRef = useRef(history)
@@ -653,6 +691,7 @@ export default function ProofCanvasEditor({
   const projectRevision = useMemo(() => canonicalProjectJson(project), [project])
   const primaryMathProperties = primary ? mathPropertiesFor(primary) : null
   const mathDraftAuthorityKey = primary ? `${projectRevision}\u0000${shot.id}\u0000${primary.id}` : ''
+  const graphDraftAuthorityKey = primary ? `${projectRevision}\u0000${shot.id}\u0000${primary.id}` : ''
   const projectRevisionRef = useRef(projectRevision)
   projectRevisionRef.current = projectRevision
   const ensureCsrfToken = useCallback(async () => {
@@ -669,7 +708,9 @@ export default function ProofCanvasEditor({
       headers: { 'Content-Type': 'application/json', 'X-ProofCanvas-CSRF': token },
       body: JSON.stringify(body),
     })
-    const payload: unknown = await response.json()
+    let payload: unknown = null
+    try { payload = await response.json() }
+    catch { /* HTTP status still owns retry classification when the body is malformed. */ }
     return { response, payload }
   }, [ensureCsrfToken])
 
@@ -683,6 +724,12 @@ export default function ProofCanvasEditor({
     if (!durableProject) return true
     if (saveConflictRef.current) return false
     const currentCanonical = projectRevisionRef.current
+    const currentRevision = serverRevisionRef.current
+    if (blockedSaveMatches(blockedSaveTuplesRef.current, currentCanonical, currentRevision)) {
+      setSaveState('blocked')
+      setSaveMessage('Autosave is blocked for this exact project revision. Change or undo the rejected document before retrying; browser recovery is preserved.')
+      return false
+    }
     if (!pendingSaveRef.current && currentCanonical === lastSavedCanonicalRef.current) {
       setSaveState('saved')
       return true
@@ -709,16 +756,57 @@ export default function ProofCanvasEditor({
         setSaveMessage('This project changed elsewhere. Reload the durable version before continuing.')
         return false
       }
-      if (!response.ok || !payload || typeof payload !== 'object' || (payload as { ok?: unknown }).ok !== true) {
+      if (!response.ok) {
+        const code = responseCode(payload)
+        const retryable = response.status === 408 || response.status === 429 || response.status >= 500
+        if (
+          response.status === 401
+          || response.status === 403
+          || response.status === 404
+          || response.status === 409
+          || DURABLE_RECONCILIATION_CODES.has(code ?? '')
+        ) {
+          pendingSaveRef.current = null
+          saveConflictRef.current = true
+          setSaveState('reconcile')
+          const guidance = response.status === 401 || response.status === 403
+            ? 'Reload to refresh owner authentication before continuing.'
+            : response.status === 404 || code === 'project_not_found'
+              ? 'Reload to confirm whether this project was deleted.'
+              : 'Reload the durable project before continuing.'
+          setSaveMessage(`${responseMessage(payload, 'Autosave requires reconciliation')}. ${guidance} Browser recovery is preserved.`)
+          return false
+        }
+        if (DURABLE_TUPLE_REJECTION_CODES.has(code ?? '')) {
+          pendingSaveRef.current = null
+          blockedSaveTuplesRef.current = rememberBlockedSave(blockedSaveTuplesRef.current, pending)
+          setSaveState('blocked')
+          setSaveMessage(`${responseMessage(payload, 'Autosave was rejected')}. This exact document/revision tuple will not retry automatically; change or undo it to continue. Browser recovery is preserved.`)
+          return false
+        }
+        if (!retryable && response.status >= 400 && response.status < 500) {
+          throw new Error(responseMessage(payload, 'Autosave was rejected by an unrecognized response'))
+        }
+        throw new Error(responseMessage(payload, 'Autosave could not complete'))
+      }
+      if (!payload || typeof payload !== 'object' || (payload as { ok?: unknown }).ok !== true) {
         throw new Error(responseMessage(payload, 'Autosave could not complete'))
       }
       const receipt = (payload as { project?: unknown }).project
-      if (!receipt || typeof receipt !== 'object' || typeof (receipt as { revision?: unknown }).revision !== 'number') {
+      if (!receipt || typeof receipt !== 'object') {
         throw new Error('Autosave returned an invalid response')
       }
-      const nextRevision = (receipt as { revision: number }).revision
+      const nextRevision = (receipt as { revision?: unknown }).revision
+      const receiptProjectId = (receipt as { projectId?: unknown }).projectId
+      if (!Number.isSafeInteger(nextRevision)
+        || nextRevision !== pending.expectedRevision + 1
+        || receiptProjectId !== durableProject.projectId) {
+        throw new Error('Autosave returned a non-advancing revision receipt')
+      }
       serverRevisionRef.current = nextRevision
       setServerRevision(nextRevision)
+      // Any prior deterministic rejection was bound to an older durable base.
+      blockedSaveTuplesRef.current = []
       lastSavedCanonicalRef.current = pending.canonical
       pendingSaveRef.current = null
       const caughtUp = projectRevisionRef.current === pending.canonical
@@ -765,7 +853,12 @@ export default function ProofCanvasEditor({
       return await promise
     } finally {
       savePromiseRef.current = null
-      if (!saveConflictRef.current && !pendingSaveRef.current && projectRevisionRef.current !== lastSavedCanonicalRef.current) {
+      const currentBlocked = blockedSaveMatches(
+        blockedSaveTuplesRef.current,
+        projectRevisionRef.current,
+        serverRevisionRef.current,
+      )
+      if (!saveConflictRef.current && !currentBlocked && !pendingSaveRef.current && projectRevisionRef.current !== lastSavedCanonicalRef.current) {
         window.setTimeout(() => { void performDurableSave() }, 0)
       }
     }
@@ -837,6 +930,10 @@ export default function ProofCanvasEditor({
       catch { /* Durable autosave remains authoritative; browser recovery is best-effort. */ }
     }
     if (saveConflictRef.current) return
+    if (blockedSaveMatches(blockedSaveTuplesRef.current, projectRevision, serverRevisionRef.current)) {
+      setSaveState('blocked')
+      return
+    }
     if (projectRevision === lastSavedCanonicalRef.current && !pendingSaveRef.current) {
       setSaveState('saved')
       return
@@ -857,6 +954,8 @@ export default function ProofCanvasEditor({
 
   useEffect(() => {
     if (timelineGesture && (timelineGesture.baseRevision !== projectRevision || timelineGesture.baseShotId !== shot.id || isPlaying)) {
+      timelineGestureRef.current = null
+      timelineDraftRef.current = null
       setTimelineGesture(null)
       setTimelineDraft(null)
     }
@@ -1192,7 +1291,7 @@ export default function ProofCanvasEditor({
     }
   }, [materializeLiveWorkspace, publishEditorAuthority])
 
-  const commitDocument = useCallback((document: ProjectDocument, label: string) => {
+  const commitDocument = useCallback((document: ProjectDocument, label: string, options: Readonly<{ allowLegacyGraphLoad?: boolean }> = {}) => {
     try {
       const currentAuthority = authorityRef.current
       if (currentAuthority.isPlaying) {
@@ -1201,7 +1300,10 @@ export default function ProofCanvasEditor({
       }
       const current = currentAuthority.history
       const liveWorkspace = materializeLiveWorkspace(currentAuthority)
-      const next = commitProject(current, ProjectDocumentSchema.parse(document), label)
+      const parsed = ProjectDocumentSchema.parse(document)
+      const authoringIssue = options.allowLegacyGraphLoad ? undefined : projectAuthoringTransitionIssue(current.present, parsed)
+      if (authoringIssue) throw new Error(authoringIssue)
+      const next = commitProject(current, parsed, label)
       publishEditorAuthority(next, reconcileEditorWorkspace(next.present, liveWorkspace), 'pause', { status: next === current ? 'No project values changed' : label })
       return true
     } catch (error) {
@@ -1359,6 +1461,36 @@ export default function ProofCanvasEditor({
     return commitOps([{ type: 'update-object', objectId: latestPrimaryId, patch: { properties: { ...next } } }], 'Edit mathematical content')
   }
 
+  const commitGraphProperties = (next: GraphDraftValue, baseAuthorityKey: string) => {
+    const current = authorityRef.current
+    const latestProject = current.history.present
+    const latestShot = latestProject.shots.find(({ id }) => id === current.workspace.activeShotId) ?? latestProject.shots[0]
+    const latestPrimaryId = selectedObjectIds(current.workspace.selection, latestShot.id).at(-1) ?? ''
+    const latestAuthorityKey = `${projectRevisionRef.current}\u0000${latestShot.id}\u0000${latestPrimaryId}`
+    if (baseAuthorityKey !== latestAuthorityKey) {
+      setStatus('The graph changed before this draft could be applied. Review it against the current object and retry.')
+      return false
+    }
+    if (current.isPlaying) {
+      setStatus('Pause sequence playback before editing graph geometry.')
+      return false
+    }
+    const latestObject = latestShot.objects.find(({ id }) => id === latestPrimaryId)
+    if (!latestObject || latestObject.type !== 'graph') {
+      setStatus('The selected graph object is no longer available.')
+      return false
+    }
+    if (effectiveLockOwner(latestShot, latestObject)) {
+      setStatus('Unlock the graph and its ancestors before applying graph geometry.')
+      return false
+    }
+    return commitOps([{
+      type: 'update-object',
+      objectId: latestPrimaryId,
+      patch: { properties: { expression: next.expression, xMin: next.xMin, xMax: next.xMax } },
+    }], 'Edit function graph')
+  }
+
   const objectPropertyValue = (property: PropertyTrack['property'], tracked: boolean): PropertyKeyframe['value'] => {
     if (!primary || !primaryPreview) return 0
     const source = tracked ? primaryPreview : primary
@@ -1368,8 +1500,8 @@ export default function ProofCanvasEditor({
     if (property === 'scale') return (source.transform.scaleX + source.transform.scaleY) / 2
     if (property === 'opacity') return source.style.opacity ?? 1
     if (property === 'fill') return source.style.fill ?? source.style.color ?? (primary.type === 'circle' ? previewStyle.colors.background : previewStyle.colors.ink)
-    if (property === 'stroke') return source.style.stroke ?? previewStyle.colors.ink
-    if (property === 'strokeWidth') return source.style.strokeWidth ?? previewStyle.strokes.regular
+    if (property === 'stroke') return primary.type === 'graph' ? resolvedGraphStroke(source, previewStyle, shot.objects).stroke : source.style.stroke ?? previewStyle.colors.ink
+    if (property === 'strokeWidth') return primary.type === 'graph' ? resolvedGraphStroke(source, previewStyle, shot.objects).strokeWidth : source.style.strokeWidth ?? previewStyle.strokes.regular
     return 0
   }
 
@@ -1469,8 +1601,13 @@ export default function ProofCanvasEditor({
       setStatus('Nothing to undo')
       return false
     }
+    const traversal = undoAuthoringHistory(current)
+    if (!traversal.ok) {
+      setStatus(`Undo blocked: ${traversal.message}`)
+      return false
+    }
+    const next = traversal.history
     workspaceSnapshotsRef.current.set(current.present, materializeLiveWorkspace(currentAuthority))
-    const next = undo(current)
     const restored = workspaceSnapshotsRef.current.get(next.present)
       ?? reconcileEditorWorkspace(next.present, currentAuthority.workspace)
     publishEditorAuthority(next, restored, 'pause', { status: `Undid: ${label}` })
@@ -1489,8 +1626,13 @@ export default function ProofCanvasEditor({
       setStatus('Nothing to redo')
       return false
     }
+    const traversal = redoAuthoringHistory(current)
+    if (!traversal.ok) {
+      setStatus(`Redo blocked: ${traversal.message}`)
+      return false
+    }
+    const next = traversal.history
     workspaceSnapshotsRef.current.set(current.present, materializeLiveWorkspace(currentAuthority))
-    const next = redo(current)
     const restored = workspaceSnapshotsRef.current.get(next.present)
       ?? reconcileEditorWorkspace(next.present, currentAuthority.workspace)
     publishEditorAuthority(next, restored, 'pause', { status: `Redid: ${label}` })
@@ -1742,6 +1884,7 @@ export default function ProofCanvasEditor({
 
   const beginTimelineGesture = (event: ReactPointerEvent, animation: SceneAnimation, kind: 'move' | 'resize') => {
     event.stopPropagation()
+    if (event.button !== 0 || event.isPrimary === false || timelineGestureRef.current) return
     if (authorityRef.current.isPlaying) {
       setStatus('Pause preview before editing timeline blocks.')
       return
@@ -1753,32 +1896,51 @@ export default function ProofCanvasEditor({
     }
     event.currentTarget.setPointerCapture?.(event.pointerId)
     setSelectedAnimationId(animation.id)
-    setTimelineGesture({ id: animation.id, kind, clientX: event.clientX, start: animation.start, duration: animation.duration, baseRevision: projectRevisionRef.current, baseShotId: activeShotIdRef.current })
-    setTimelineDraft({ id: animation.id, start: animation.start, duration: animation.duration })
+    const gesture = { id: animation.id, kind, pointerId: event.pointerId, clientX: event.clientX, start: animation.start, duration: animation.duration, baseRevision: projectRevisionRef.current, baseShotId: activeShotIdRef.current }
+    const draft = { id: animation.id, start: animation.start, duration: animation.duration }
+    timelineGestureRef.current = gesture
+    timelineDraftRef.current = draft
+    setTimelineGesture(gesture)
+    setTimelineDraft(draft)
   }
 
   const moveTimelineGesture = (event: ReactPointerEvent) => {
-    if (!timelineGesture || !trackRef.current) return
-    if (timelineGesture.baseRevision !== projectRevisionRef.current || timelineGesture.baseShotId !== activeShotIdRef.current || authorityRef.current.isPlaying) {
+    const gesture = timelineGestureRef.current
+    if (!gesture || event.pointerId !== gesture.pointerId || !trackRef.current) return
+    if (gesture.baseRevision !== projectRevisionRef.current || gesture.baseShotId !== activeShotIdRef.current || authorityRef.current.isPlaying) {
+      timelineGestureRef.current = null
+      timelineDraftRef.current = null
       setTimelineGesture(null)
       setTimelineDraft(null)
       return
     }
-    const seconds = (event.clientX - timelineGesture.clientX) / trackRef.current.clientWidth * shot.duration
+    const seconds = (event.clientX - gesture.clientX) / trackRef.current.clientWidth * shot.duration
     const snap = (value: number) => Math.round(value * 10) / 10
-    if (timelineGesture.kind === 'move') setTimelineDraft({ id: timelineGesture.id, start: snap(Math.max(0, Math.min(subtractTimelineTimes(shot.duration, timelineGesture.duration), addTimelineTimes(timelineGesture.start, seconds)))), duration: timelineGesture.duration })
-    else setTimelineDraft({ id: timelineGesture.id, start: timelineGesture.start, duration: snap(Math.max(0.1, Math.min(subtractTimelineTimes(shot.duration, timelineGesture.start), addTimelineTimes(timelineGesture.duration, seconds)))) })
+    const draft = gesture.kind === 'move'
+      ? { id: gesture.id, start: snap(Math.max(0, Math.min(subtractTimelineTimes(shot.duration, gesture.duration), addTimelineTimes(gesture.start, seconds)))), duration: gesture.duration }
+      : { id: gesture.id, start: gesture.start, duration: snap(Math.max(0.1, Math.min(subtractTimelineTimes(shot.duration, gesture.start), addTimelineTimes(gesture.duration, seconds)))) }
+    timelineDraftRef.current = draft
+    setTimelineDraft(draft)
   }
 
-  const endTimelineGesture = () => {
-    if (timelineGesture && timelineDraft && timelineGesture.baseRevision === projectRevisionRef.current && timelineGesture.baseShotId === activeShotIdRef.current && !authorityRef.current.isPlaying) {
-      commitOps([{ type: 'update-animation', animationId: timelineGesture.id, patch: { start: timelineDraft.start, duration: timelineDraft.duration } }], timelineGesture.kind === 'move' ? 'Move timeline block' : 'Resize timeline block')
+  const endTimelineGesture = (event: ReactPointerEvent) => {
+    const gesture = timelineGestureRef.current
+    if (!gesture || event.pointerId !== gesture.pointerId) return
+    const draft = timelineDraftRef.current
+    if (draft && gesture.baseRevision === projectRevisionRef.current && gesture.baseShotId === activeShotIdRef.current && !authorityRef.current.isPlaying) {
+      commitOps([{ type: 'update-animation', animationId: gesture.id, patch: { start: draft.start, duration: draft.duration } }], gesture.kind === 'move' ? 'Move timeline block' : 'Resize timeline block')
     }
+    timelineGestureRef.current = null
+    timelineDraftRef.current = null
     setTimelineGesture(null)
     setTimelineDraft(null)
   }
 
-  const cancelTimelineGesture = () => {
+  const cancelTimelineGesture = (event: ReactPointerEvent) => {
+    const gesture = timelineGestureRef.current
+    if (!gesture || event.pointerId !== gesture.pointerId) return
+    timelineGestureRef.current = null
+    timelineDraftRef.current = null
     setTimelineGesture(null)
     setTimelineDraft(null)
   }
@@ -1968,7 +2130,7 @@ export default function ProofCanvasEditor({
       const raw = window.localStorage.getItem(STORAGE_KEY)
       if (!raw) return setStatus('No saved ProofCanvas project was found')
       const loaded = parseProjectDocument(raw)
-      if (commitDocument(loaded, 'Load saved project')) { resetWorkspaceToShot(loaded.shots[0].id); setCritique(null) }
+      if (commitDocument(loaded, 'Load saved project', { allowLegacyGraphLoad: true })) { resetWorkspaceToShot(loaded.shots[0].id); setCritique(null) }
     } catch (error) { setStatus(error instanceof Error ? error.message : 'Saved project is invalid') }
   }
 
@@ -1978,19 +2140,39 @@ export default function ProofCanvasEditor({
     try {
       const created = await enqueueRevisionMutation(async () => {
         if (!await drainDurableSaves()) throw new Error('Save the current project before creating a checkpoint')
+        const expectedRevision = serverRevisionRef.current
         const { response, payload } = await durableMutation(`/api/projects/${encodeURIComponent(durableProject.projectId)}/checkpoints`, 'POST', {
-          expectedRevision: serverRevisionRef.current,
+          expectedRevision,
           mutationId: window.crypto.randomUUID(),
           label: 'Manual checkpoint',
         })
-        if (!response.ok || !payload || typeof payload !== 'object' || (payload as { ok?: unknown }).ok !== true) throw new Error(responseMessage(payload, 'Checkpoint could not be created'))
+        if (!response.ok) throw new Error(responseMessage(payload, 'Checkpoint could not be created'))
+        const uncertainCheckpointReceipt = (): never => {
+          // A 2xx response may already have committed. Never guess the new CAS
+          // base or retry with a fresh mutation ID; require an authoritative
+          // reload before another durable mutation.
+          saveConflictRef.current = true
+          setSaveState('conflict')
+          throw new Error('Checkpoint returned an uncertain revision receipt. Reload the durable project before continuing')
+        }
+        if (!payload || typeof payload !== 'object' || (payload as { ok?: unknown }).ok !== true) uncertainCheckpointReceipt()
         const receipt = (payload as { checkpoint?: unknown }).checkpoint
-        if (!receipt || typeof receipt !== 'object' || typeof (receipt as { revision?: unknown }).revision !== 'number') throw new Error('Checkpoint returned an invalid response')
-        const revision = (receipt as { revision: number }).revision
-        serverRevisionRef.current = revision
-        setServerRevision(revision)
+        const revision = receipt && typeof receipt === 'object' ? (receipt as { revision?: unknown }).revision : undefined
+        const receiptProjectId = receipt && typeof receipt === 'object' ? (receipt as { projectId?: unknown }).projectId : undefined
+        const checkpointId = receipt && typeof receipt === 'object' ? (receipt as { checkpointId?: unknown }).checkpointId : undefined
+        if (typeof revision !== 'number'
+          || !Number.isSafeInteger(revision)
+          || revision !== expectedRevision + 1
+          || receiptProjectId !== durableProject.projectId
+          || typeof checkpointId !== 'string'
+          || !/^checkpoint-[a-f0-9]{24}$/.test(checkpointId)) {
+          uncertainCheckpointReceipt()
+        }
+        const acceptedRevision = revision as number
+        serverRevisionRef.current = acceptedRevision
+        setServerRevision(acceptedRevision)
         setSaveState(projectRevisionRef.current === lastSavedCanonicalRef.current ? 'saved' : 'waiting')
-        setSaveMessage(`Checkpoint created at revision ${revision}`)
+        setSaveMessage(`Checkpoint created at revision ${acceptedRevision}`)
         return true
       })
       if (!created) return
@@ -2030,15 +2212,21 @@ export default function ProofCanvasEditor({
 
   const applyLocalRecovery = () => {
     if (!localRecovery || !durableProject) return
-    const recovered = ProjectDocumentSchema.parse({
-      ...cloneSerializable(localRecovery),
-      metadata: { ...localRecovery.metadata, id: durableProject.projectId, createdAt: project.metadata.createdAt },
-    })
-    recoveryAppliedRef.current = true
-    setRecoveryIgnored(true)
-    if (commitDocument(recovered, 'Recover explicit browser copy')) {
+    try {
+      const recovered = ProjectDocumentSchema.parse({
+        ...cloneSerializable(localRecovery),
+        metadata: { ...localRecovery.metadata, id: durableProject.projectId, createdAt: project.metadata.createdAt },
+      })
+      if (!commitDocument(recovered, 'Recover explicit browser copy')) {
+        setSaveMessage('Browser recovery was not applied. The recovery offer and stored copy were preserved; resolve the reported authoring issue or ignore it explicitly.')
+        return
+      }
+      recoveryAppliedRef.current = true
+      setRecoveryIgnored(true)
       resetWorkspaceToShot(recovered.shots[0].id)
       setSaveMessage('Browser recovery applied; durable autosave is pending.')
+    } catch (error) {
+      setSaveMessage(error instanceof Error ? `Browser recovery was not applied: ${error.message}` : 'Browser recovery was not applied. The stored copy was preserved.')
     }
   }
 
@@ -2066,6 +2254,8 @@ export default function ProofCanvasEditor({
       const raw = await file.text()
       if (requestId !== importRequestSequence.current) return
       const loaded = parseProjectDocument(raw)
+      const graphIssues = projectGraphAuthoringIssues(loaded)
+      if (graphIssues.length) throw new Error(`Imported projects may not introduce invalid graph geometry: ${graphIssues[0].code}, object ${graphIssues[0].objectId}. ${graphIssues[0].message}`)
       if (requestId !== importRequestSequence.current) return
       if (projectRevisionRef.current !== baseRevision) {
         setImportError('The project changed while the import was being read. Select the file again.')
@@ -2161,7 +2351,13 @@ export default function ProofCanvasEditor({
     if (commandPaletteOpen) { setCommandPaletteOpen(false); setCommandSearch(''); return }
     if (ownerMenuOpen) { setOwnerMenuOpen(false); ownerMenuTriggerRef.current?.focus(); return }
     if (assistantOpen) { setAssistantOpen(false); return }
-    if (timelineGesture || timelineDraft) { setTimelineGesture(null); setTimelineDraft(null); return }
+    if (timelineGesture || timelineDraft) {
+      timelineGestureRef.current = null
+      timelineDraftRef.current = null
+      setTimelineGesture(null)
+      setTimelineDraft(null)
+      return
+    }
     if (proposal) { setProposal(null); setProposalBase(null); return }
     if (recoveryOpen) { setRecoveryOpen(false); return }
     if (rendererMessage || importError) { setRendererMessage(''); setImportError(''); return }
@@ -2312,7 +2508,7 @@ export default function ProofCanvasEditor({
       <header className="pc-header" role="group" aria-label="Project actions">
         <a href="/" className="pc-back-link" aria-label="Back to projects" aria-disabled={leavePending} onClick={(event) => { event.preventDefault(); void guardedLeave('/') }}>←</a>
         <div className="pc-wordmark"><span aria-hidden="true">∴</span><h1>ProofCanvas</h1></div>
-        <label className="pc-project-title"><span className="pc-visually-hidden">Project title</span><input aria-label="Project title" key={`${project.metadata.id}-${project.metadata.title}`} defaultValue={project.metadata.title} maxLength={160} disabled={isPlaying} onFocus={selectProjectContext} onBlur={(event) => commitTextInput(event, project.metadata.title, 'Project title', renameProject, { trim: true, required: true })}/>{durableProject ? <small role="status" aria-label="Autosave status" data-save-state={saveState}>{saveState === 'saved' ? `Saved · r${serverRevision}` : saveState === 'waiting' ? 'Autosave queued' : saveState === 'saving' ? 'Saving…' : saveState === 'conflict' ? 'Save conflict' : 'Offline · retry'}</small> : <small role="status" aria-label="Autosave status">Local project</small>}</label>
+        <label className="pc-project-title"><span className="pc-visually-hidden">Project title</span><input aria-label="Project title" key={`${project.metadata.id}-${project.metadata.title}`} defaultValue={project.metadata.title} maxLength={160} disabled={isPlaying} onFocus={selectProjectContext} onBlur={(event) => commitTextInput(event, project.metadata.title, 'Project title', renameProject, { trim: true, required: true })}/>{durableProject ? <small role="status" aria-label="Autosave status" data-save-state={saveState}>{saveState === 'saved' ? `Saved · r${serverRevision}` : saveState === 'waiting' ? 'Autosave queued' : saveState === 'saving' ? 'Saving…' : saveState === 'conflict' ? 'Save conflict' : saveState === 'reconcile' ? 'Reload required' : saveState === 'blocked' ? 'Autosave blocked' : 'Offline · retry'}</small> : <small role="status" aria-label="Autosave status">Local project</small>}</label>
         <div className="pc-history-actions">
           <button type="button" onClick={() => commandController.execute('undo')} disabled={isPlaying || !canUndo(history)} aria-label="Undo" title="Undo · Ctrl/Cmd Z">↶</button>
           <button type="button" onClick={() => commandController.execute('redo')} disabled={isPlaying || !canRedo(history)} aria-label="Redo" title="Redo · Ctrl/Cmd Shift Z">↷</button>
@@ -2388,11 +2584,20 @@ export default function ProofCanvasEditor({
             {(primary.type === 'text' || primary.type === 'math' || primary.type === 'brace') && <label>Font size<input key={`${primary.id}-font-size-${primary.style.fontSize ?? 22}`} type="number" min={PROOFCANVAS_SCHEMA_LIMITS.fontSizeMin} max={PROOFCANVAS_SCHEMA_LIMITS.fontSizeMax} aria-label="Font size" defaultValue={primary.style.fontSize ?? 22} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => { const value = primary.style.fontSize ?? 22; commitNumericInput(event, { key: 'fontSize', label: 'Font size', fallback: value, min: PROOFCANVAS_SCHEMA_LIMITS.fontSizeMin, max: PROOFCANVAS_SCHEMA_LIMITS.fontSizeMax }, value, (next) => commitPatch({ style: { fontSize: next } }, 'Set font size')) }}/></label>}
             {primary.type === 'text' && <label className="pc-wide">Content<textarea aria-label="Content" rows={3} maxLength={PROOFCANVAS_TEXT_MAX_CHARS} defaultValue={String(primary.properties.content ?? '')} key={`${primary.id}-content-${String(primary.properties.content ?? '')}`} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => { const current = String(primary.properties.content ?? ''); commitTextInput(event, current, 'Content', (value) => commitPatch({ properties: { content: value } }, 'Edit content')) }}/></label>}
             {primary.type === 'math' && primaryMathProperties && <MathPropertiesEditor key={primary.id} objectId={primary.id} value={primaryMathProperties} authorityKey={mathDraftAuthorityKey} disabled={isPlaying || primaryEffectivelyLocked} onCommit={commitMathProperties} onNotice={setStatus}/>}
+            {primary.type === 'graph' && <GraphInspector
+              key={primary.id}
+              objectId={primary.id}
+              value={{ expression: primary.properties.expression as GraphDraftValue['expression'], xMin: Number(primary.properties.xMin), xMax: Number(primary.properties.xMax) }}
+              authorityKey={graphDraftAuthorityKey}
+              disabled={isPlaying || primaryEffectivelyLocked}
+              onCommit={commitGraphProperties}
+              onNotice={setStatus}
+            />}
             {primary.type === 'brace' && <label className="pc-wide">Brace label<input aria-label="Brace label" maxLength={PROOFCANVAS_BRACE_LABEL_MAX_CHARS} defaultValue={String(primary.properties.label ?? '')} key={`${primary.id}-label-${String(primary.properties.label ?? '')}`} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => { const current = String(primary.properties.label ?? ''); commitTextInput(event, current, 'Brace label', (value) => commitPatch({ properties: { label: value } }, 'Edit brace label')) }}/></label>}
             {(primary.type === 'image' || primary.type === 'svg') && <label className="pc-wide">Asset source<input aria-label="Asset source" defaultValue={String(primary.properties.source ?? '')} key={`${primary.id}-source-${String(primary.properties.source ?? '')}`} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => { const current = String(primary.properties.source ?? ''); commitTextInput(event, current, 'Asset source', (value) => commitPatch({ properties: { source: value } }, 'Edit asset source'), { trim: true, required: true }) }}/></label>}
-            {(primary.type === 'axes' || primary.type === 'graph') && (['xMin', 'xMax'] as const).map((key) => { const label = key === 'xMin' ? 'X minimum' : 'X maximum'; const value = Number(primary.properties[key]); const field = { key, label, fallback: value, min: -PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude, max: PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude }; return <label key={key}>{label}<input key={`${primary.id}-${key}-${String(primary.properties[key])}`} type="number" min={field.min} max={field.max} aria-label={label} defaultValue={value} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => commitNumericInput(event, field, value, (next) => commitPatch({ properties: { [key]: next } }, `Set ${key}`))}/></label> })}
+            {primary.type === 'axes' && (['xMin', 'xMax'] as const).map((key) => { const label = key === 'xMin' ? 'X minimum' : 'X maximum'; const value = Number(primary.properties[key]); const field = { key, label, fallback: value, min: -PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude, max: PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude }; return <label key={key}>{label}<input key={`${primary.id}-${key}-${String(primary.properties[key])}`} type="number" min={field.min} max={field.max} aria-label={label} defaultValue={value} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => commitNumericInput(event, field, value, (next) => commitPatch({ properties: { [key]: next } }, `Set ${key}`))}/></label> })}
             {primary.type === 'axes' && (['yMin', 'yMax'] as const).map((key) => { const label = key === 'yMin' ? 'Y minimum' : 'Y maximum'; const value = Number(primary.properties[key]); const field = { key, label, fallback: value, min: -PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude, max: PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude }; return <label key={key}>{label}<input key={`${primary.id}-${key}-${String(primary.properties[key])}`} type="number" min={field.min} max={field.max} aria-label={label} defaultValue={value} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => commitNumericInput(event, field, value, (next) => commitPatch({ properties: { [key]: next } }, `Set ${key}`))}/></label> })}
-            {(primary.type === 'axes' || primary.type === 'graph') && <p className="pc-wide pc-inspector-note">The browser graph is schematic. Ranges and expressions are authoritative in Manim export and render.</p>}
+            {primary.type === 'axes' && <p className="pc-wide pc-inspector-note">Coordinate-axis ticks remain a bounded browser guide; axis ranges are authoritative in Manim export and render.</p>}
             {objectTypeSupportsStyleProperty(primary.type, 'fill') && renderObjectPropertyField('fill', ['text', 'math'].includes(primary.type) ? 'Glyph fill' : 'Fill', { inputType: 'color' })}
             {objectTypeSupportsStyleProperty(primary.type, 'stroke') && renderObjectPropertyField('stroke', 'Stroke', { inputType: 'color' })}
             {objectTypeSupportsStyleProperty(primary.type, 'strokeWidth') && renderObjectPropertyField('strokeWidth', 'Stroke width', { min: 0, max: PROOFCANVAS_SCHEMA_LIMITS.strokeWidthMax, step: 0.1 })}
@@ -2464,7 +2669,7 @@ export default function ProofCanvasEditor({
       {assistantOpen && <aside ref={assistantRef} className="pc-assistant-drawer" role="dialog" aria-modal="false" aria-label="AI command drawer"><header><div><span>Assistant</span><h2>Structured edit</h2></div><button type="button" onClick={() => setAssistantOpen(false)} aria-label="Close AI command drawer">×</button></header><section className="pc-ai" role="region" aria-label="AI command" data-ai-provider={aiProvider}><p className="pc-demo-label">{aiProvider === 'configured-provider' ? 'OpenAI structured operations — server configured' : 'Deterministic demo interpreter — limited commands'}</p><div className="pc-presets">{REQUIRED_AI_COMMANDS.map((command, index) => <button type="button" key={command} onClick={() => void runAi(command)} aria-label={`Run AI preset ${index + 1}: ${command}`} title={command} disabled={aiPending}>{index + 1}</button>)}</div><label>Instruction<textarea aria-label="Describe the edit" value={instruction} onChange={(event) => setInstruction(event.target.value)} rows={4}/></label><button type="button" className="pc-primary" onClick={() => void runAi()} aria-label="Propose edit" disabled={aiPending}>{aiPending ? 'Proposing…' : 'Propose edit'}</button>{aiError && <p className="pc-error" role="alert">{aiError}</p>}{proposal && <div className="pc-proposal" role="region" aria-label="Proposed changes"><strong>{proposal.intention}</strong><p>Validated against shot <code>{proposalBase?.shotId}</code>. Expand each operation to inspect exact before and after values.</p><ol>{proposalReviews.map((review, index) => <li key={`${proposal.operations[index]?.type}-${index}`} data-operation-kind={proposal.operations[index]?.type}><details><summary>{review.summary}</summary><pre>{review.details}</pre></details></li>)}</ol><div><button type="button" className="pc-primary" onClick={applyProposal}>Apply proposed changes</button><button type="button" onClick={() => { setProposal(null); setProposalBase(null); setCritique(null) }}>Discard proposed changes</button></div></div>}</section><section className="pc-critique" role="region" aria-label="Composition critique"><div className="pc-section-heading"><h2>Composition</h2><button type="button" onClick={() => setCritique({ issues: critiqueProject(project, { shotId: shot.id, proposedOperations: proposal?.operations }), revision: projectRevision, shotId: shot.id })}>Critique composition</button></div>{critique && <p className="pc-critique-provenance">Current revision · {shot.name}</p>}{critique && (critique.issues.length > 0 ? <ul>{critique.issues.map((item) => <li key={item.id} data-issue-kind={item.kind} data-object-ids={item.objectIds.join(' ')} data-severity={item.severity}><strong>{item.kind.replaceAll('-', ' ')}</strong><span>{item.explanation}</span><em>{item.proposedCorrection}</em></li>)}</ul> : <p className="pc-critique-clear" role="status">No deterministic composition issues found for this shot.</p>)}</section></aside>}
 
       {(rendererMessage || importError) && <div className="pc-message" role="alert"><p>{importError || rendererMessage}</p><button type="button" onClick={() => { setRendererMessage(''); setImportError('') }}>Dismiss</button></div>}
-      {durableProject && saveMessage && <div className={`pc-save-message ${saveState === 'conflict' ? 'conflict' : ''}`} role={saveState === 'conflict' ? 'alert' : 'status'}><p>{saveMessage}</p>{(saveState === 'offline' || saveState === 'conflict') && <button type="button" onClick={() => saveState === 'conflict' ? window.location.reload() : void performDurableSave()}>{saveState === 'conflict' ? 'Reload durable project' : 'Retry autosave'}</button>}<button type="button" onClick={() => setSaveMessage('')} aria-label="Dismiss save message">×</button></div>}
+      {durableProject && saveMessage && <div className={`pc-save-message ${saveState === 'conflict' || saveState === 'reconcile' || saveState === 'blocked' ? 'conflict' : ''}`} role={saveState === 'conflict' || saveState === 'reconcile' || saveState === 'blocked' ? 'alert' : 'status'}><p>{saveMessage}</p>{(saveState === 'offline' || saveState === 'conflict' || saveState === 'reconcile') && <button type="button" onClick={() => saveState === 'offline' ? void performDurableSave() : window.location.reload()}>{saveState === 'offline' ? 'Retry autosave' : saveState === 'conflict' ? 'Reload durable project' : 'Reload project'}</button>}<button type="button" onClick={() => setSaveMessage('')} aria-label="Dismiss save message">×</button></div>}
       {durableProject && localRecovery && !recoveryIgnored && <section className="pc-recovery-offer" role="region" aria-label="Browser recovery available"><strong>Unsaved browser recovery found</strong><p>ProofCanvas did not load it automatically. Apply this project-scoped copy only if it contains work missing from durable revision {serverRevision}.</p><div><button type="button" onClick={applyLocalRecovery}>Apply browser recovery</button><button type="button" onClick={() => setRecoveryIgnored(true)}>Ignore for now</button></div></section>}
       {durableProject && recoveryOpen && <section className="pc-checkpoint-panel" role="dialog" aria-modal="false" aria-label="Project recovery"><header><div><span>Durable recovery</span><strong>Checkpoints</strong></div><button type="button" onClick={() => setRecoveryOpen(false)} aria-label="Close project recovery">×</button></header>{checkpoints.length === 0 ? <p>No checkpoints have been created yet.</p> : <ul>{checkpoints.map((checkpoint) => <li key={checkpoint.id}><div><strong>{checkpoint.label}</strong><span>Revision {checkpoint.revision} · {checkpoint.createdAt.replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC')}{checkpoint.recoveryRequired ? ' · exact legacy export required' : ''}</span></div>{checkpoint.recoveryRequired ? <a href={`/api/projects/${encodeURIComponent(durableProject.projectId)}/legacy-export?checkpointId=${encodeURIComponent(checkpoint.id)}`}>Export exact legacy JSON</a> : <button type="button" onClick={() => void recoverCheckpoint(checkpoint)} disabled={checkpointPending}>Recover…</button>}</li>)}</ul>}</section>}
       {renderJob && <section className="pc-render-panel" role="region" aria-label="Render status" data-render-job-id={renderJob.id} data-render-status={renderJob.status} data-render-current={renderRepresentsCurrentProject ? 'true' : 'false'}>

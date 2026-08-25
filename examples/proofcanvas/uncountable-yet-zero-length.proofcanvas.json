@@ -1,13 +1,24 @@
 {
   "activeStyleId": "style-editorial-ink",
-  "aspectRatio": "16:9",
+  "assets": [],
+  "customEasings": [],
   "metadata": {
     "createdAt": "2026-08-23T00:00:00.000Z",
     "id": "project-uncountable-zero-length",
     "title": "Uncountable, Yet Zero Length",
     "updatedAt": "2026-08-23T00:00:00.000Z"
   },
-  "schemaVersion": 1,
+  "schemaVersion": 3,
+  "settings": {
+    "aspectRatio": "16:9",
+    "frameRate": 30,
+    "previewQuality": "standard",
+    "renderPreset": "720p",
+    "resolution": {
+      "height": 720,
+      "width": 1280
+    }
+  },
   "shots": [
     {
       "animations": [
@@ -189,7 +200,7 @@
         },
         {
           "duration": 1.3,
-          "easing": "editorial",
+          "easing": "there-and-back",
           "id": "animation-limit-emphasis",
           "properties": {
             "scale": 1.08
@@ -212,14 +223,17 @@
           "type": "fade-in"
         }
       ],
+      "audioClips": [],
       "camera": {
         "rotation": 0,
         "x": 480,
         "y": 270,
         "zoom": 1
       },
+      "captionClips": [],
       "duration": 21,
       "id": "shot-cantor-construction",
+      "markers": [],
       "name": "The construction",
       "objects": [
         {
@@ -858,7 +872,9 @@
           "name": "Length after n stages",
           "parentId": "object-equation-chain",
           "properties": {
-            "content": "L_n = (2/3)^n"
+            "content": "L_n = (2/3)^n",
+            "mode": "display",
+            "renderer": "mathtex"
           },
           "semanticRole": "surviving-length-equation",
           "style": {
@@ -883,7 +899,9 @@
           "name": "Limit of surviving length",
           "parentId": "object-equation-chain",
           "properties": {
-            "content": "\\lim_{n\\to\\infty} L_n = 0"
+            "content": "\\lim_{n\\to\\infty} L_n = 0",
+            "mode": "display",
+            "renderer": "mathtex"
           },
           "semanticRole": "limit-equation",
           "style": {
@@ -929,7 +947,8 @@
           "type": "text",
           "visible": true
         }
-      ]
+      ],
+      "propertyTracks": []
     },
     {
       "animations": [
@@ -983,14 +1002,17 @@
           "type": "camera-focus"
         }
       ],
+      "audioClips": [],
       "camera": {
         "rotation": 0,
         "x": 480,
         "y": 270,
         "zoom": 1
       },
+      "captionClips": [],
       "duration": 7,
       "id": "shot-cantor-conclusion",
+      "markers": [],
       "name": "The paradox",
       "objects": [
         {
@@ -1067,7 +1089,8 @@
           "type": "text",
           "visible": true
         }
-      ]
+      ],
+      "propertyTracks": []
     }
   ],
   "styles": [
@@ -1110,6 +1133,7 @@
         "exit": "fade-out"
       },
       "name": "Editorial Ink",
+      "origin": "preset",
       "spacing": {
         "margin": 48,
         "objectGap": 18,
@@ -1167,6 +1191,7 @@
         "exit": "fade-out"
       },
       "name": "Raw Manim",
+      "origin": "preset",
       "spacing": {
         "margin": 24,
         "objectGap": 12,

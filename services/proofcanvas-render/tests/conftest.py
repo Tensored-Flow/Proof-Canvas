@@ -18,14 +18,16 @@ class GeneratedScene(MovingCameraScene):
         pc_title = Text("ProofCanvas", font_size=28.0).set_color("#252722").set_opacity(1.0)
         pc_title.scale(min(3.0 / max(pc_title.width, 0.001), 1.0 / max(pc_title.height, 0.001)))
         pc_title.move_to([0.0, 1.0, 0])
-        pc_graph = FunctionGraph(lambda x: math.sin(x), x_range=[-2.0, 2.0], color="#316b83")
+        pc_graph = VGroup(VMobject().set_points_as_corners([[-2.0, -0.9, 0.0], [0.0, 0.0, 0.0], [2.0, 0.9, 0.0]])).set_stroke("#316b83", width=2.0)
+        pc_graph.move_to([0.0, 0.0, 0])
         self.add(pc_title, pc_graph)
         self.play(AnimationGroup(
-            Succession(Wait(0.0), FadeIn(pc_title, run_time=0.1, rate_func=rate_functions.ease_out_quart)),
-            Indicate(pc_title, color="#71402d", run_time=0.1, rate_func=rate_functions.there_and_back),
-            Wait(0.1),
+            Succession(Wait(0.0), FadeIn(pc_title, run_time=0.1, rate_func=rate_functions.ease_out_quart), group=Group(), run_time=0.1),
+            Indicate(pc_title, color="#71402d", scale_factor=1.08, run_time=0.1, rate_func=rate_functions.there_and_back),
+            Succession(Wait(0.1), group=Group(), run_time=0.1),
             group=Group(),
             lag_ratio=0,
+            run_time=0.1,
         ))
 """
 

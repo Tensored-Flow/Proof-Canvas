@@ -52,8 +52,10 @@ import math
 
 class GeneratedScene(MovingCameraScene):
     def construct(self):
-        pc_dot = Circle(radius=0.2).set_opacity(0.0)
-        self.play(Succession(Wait(0.2), Succession(Transform(pc_dot, pc_dot.copy().set_opacity(1.0), run_time=0.0, rate_func=linear), FadeIn(pc_dot, run_time=0.0, rate_func=linear), group=Group(), run_time=0.0), group=Group(), run_time=0.2))
+        pc_dot = Circle(radius=1.0).stretch_to_fit_width(0.4).stretch_to_fit_height(0.4).set_opacity(0.0)
+        pc_dot.move_to([0.0, 0.0, 0])
+        pc_ref = pc_dot.copy()
+        self.play(Succession(Wait(0.2), Succession(Transform(pc_dot, pc_ref.copy().set_opacity(1.0), run_time=0.0, rate_func=linear), FadeIn(pc_dot, run_time=0.0, rate_func=linear), group=Group(), run_time=0.0), group=Group(), run_time=0.2))
         self.play(Succession(Wait(0.2), Transform(pc_dot, pc_dot.copy().set_opacity(0.0), run_time=0.0, rate_func=linear), group=Group(), run_time=0.2))
         self.play(Succession(Wait(0.2), group=Group(), run_time=0.2))
 """
@@ -66,9 +68,11 @@ import math
 
 class GeneratedScene(MovingCameraScene):
     def construct(self):
-        pc_dot = Circle(radius=0.2)
+        pc_dot = Circle(radius=1.0).stretch_to_fit_width(0.4).stretch_to_fit_height(0.4)
+        pc_dot.move_to([0.0, 0.0, 0])
+        pc_ref = pc_dot.copy()
         self.add(pc_dot)
-        self.play(Succession(Wait(0.4), Transform(pc_dot, pc_dot.copy().shift(RIGHT), run_time=0.0, rate_func=linear), group=Group(), run_time=0.4))
+        self.play(Succession(Wait(0.4), Transform(pc_dot, pc_ref.copy().move_to([1.0, 0.0, 0]).set_opacity(1.0), run_time=0.0, rate_func=linear), group=Group(), run_time=0.4))
 """
     render_probe(tmp_path, source, expected_frames=4)
 
@@ -79,11 +83,12 @@ import math
 
 class GeneratedScene(MovingCameraScene):
     def construct(self):
-        pc_dot = Circle(radius=0.25).set_fill("#ffffff", opacity=1.0).set_stroke("#ffffff", width=0.0).move_to([-1.0, 0.0, 0])
+        pc_dot = Circle(radius=1.0).stretch_to_fit_width(0.5).stretch_to_fit_height(0.5).set_fill("#ffffff", opacity=1.0).set_stroke("#ffffff", width=0.0)
+        pc_dot.move_to([-1.0, 0.0, 0])
         pc_ref = pc_dot.copy()
         self.add(pc_dot)
-        self.play(Succession(Wait(0.1), Transform(pc_dot, pc_ref.copy().move_to([0.0, 0.0, 0]), run_time=0.3, rate_func=linear), group=Group(), run_time=0.4))
-        self.play(Succession(Wait(0.2), Transform(pc_dot, pc_ref.copy().move_to([1.0, 0.0, 0]), run_time=0.0, rate_func=linear), group=Group(), run_time=0.2))
+        self.play(Succession(Wait(0.1), Transform(pc_dot, pc_ref.copy().move_to([0.0, 0.0, 0]).set_opacity(1.0), run_time=0.3, rate_func=linear), group=Group(), run_time=0.4))
+        self.play(Succession(Wait(0.2), Transform(pc_dot, pc_ref.copy().move_to([1.0, 0.0, 0]).set_opacity(1.0), run_time=0.0, rate_func=linear), group=Group(), run_time=0.2))
         self.play(Succession(Wait(0.1), group=Group(), run_time=0.1))
 """
     frames = render_probe(tmp_path, source, expected_frames=7)
@@ -109,10 +114,11 @@ import math
 
 class GeneratedScene(MovingCameraScene):
     def construct(self):
-        pc_dot = Circle(radius=0.25).set_fill("#ffffff", opacity=1.0).set_stroke("#ffffff", width=0.0).move_to([-1.0, 0.0, 0])
+        pc_dot = Circle(radius=1.0).stretch_to_fit_width(0.5).stretch_to_fit_height(0.5).set_fill("#ffffff", opacity=1.0).set_stroke("#ffffff", width=0.0)
+        pc_dot.move_to([-1.0, 0.0, 0])
         pc_ref = pc_dot.copy()
         self.add(pc_dot)
-        self.play(Succession(Transform(pc_dot, pc_ref.copy().move_to([0.0, 0.0, 0]), run_time=0.2, rate_func=rate_functions.there_and_back), Transform(pc_dot, pc_ref.copy().move_to([0.0, 0.0, 0]), run_time=0.0, rate_func=linear), Transform(pc_dot, pc_ref.copy().move_to([1.0, 0.0, 0]), run_time=0.2, rate_func=linear), group=Group(), run_time=0.4))
+        self.play(Succession(Transform(pc_dot, pc_ref.copy().move_to([0.0, 0.0, 0]).set_opacity(1.0), run_time=0.2, rate_func=rate_functions.there_and_back), Transform(pc_dot, pc_ref.copy().move_to([0.0, 0.0, 0]).set_opacity(1.0), run_time=0.0, rate_func=linear), Transform(pc_dot, pc_ref.copy().move_to([1.0, 0.0, 0]).set_opacity(1.0), run_time=0.2, rate_func=linear), group=Group(), run_time=0.4))
         self.play(Succession(Wait(0.1), group=Group(), run_time=0.1))
 """
     frames = render_probe(tmp_path, source, expected_frames=5)
@@ -137,13 +143,15 @@ import math
 
 class GeneratedScene(MovingCameraScene):
     def construct(self):
-        pc_expiring = Rectangle(width=1.0, height=1.0).set_fill("#ff0000", opacity=1.0).set_stroke("#ff0000", width=0.0).move_to([-1.0, 0.0, 0])
+        pc_expiring = Rectangle(width=1.0, height=1.0).set_fill("#ff0000", opacity=1.0).set_stroke("#ff0000", width=0.0)
+        pc_expiring.move_to([-1.0, 0.0, 0])
         pc_expiring_ref = pc_expiring.copy()
-        pc_sibling = Rectangle(width=1.0, height=1.0).set_fill("#0000ff", opacity=1.0).set_stroke("#0000ff", width=0.0).move_to([1.0, 0.0, 0])
-        pc_sibling_ref = pc_sibling.copy()
-        pc_group = VGroup(pc_expiring, pc_sibling)
         pc_expiring.set_opacity(0.0)
+        pc_sibling = Rectangle(width=1.0, height=1.0).set_fill("#0000ff", opacity=1.0).set_stroke("#0000ff", width=0.0)
+        pc_sibling.move_to([1.0, 0.0, 0])
+        pc_sibling_ref = pc_sibling.copy()
         pc_sibling.set_opacity(0.0)
+        pc_group = VGroup(pc_expiring, pc_sibling)
         self.play(Transform(pc_group, VGroup(pc_expiring_ref.copy().move_to([-0.5, 0.0, 0]).set_opacity(0.0), pc_sibling_ref.copy().move_to([1.5, 0.0, 0]).set_opacity(0.0)), run_time=0.2, rate_func=linear))
         self.play(Succession(Wait(0.1), Transform(pc_expiring, pc_expiring.copy().set_opacity(0.0), run_time=0.0, rate_func=linear), group=Group(), run_time=0.1))
         self.play(Succession(Wait(0.1), Transform(pc_group, VGroup(pc_expiring_ref.copy().move_to([-0.5, 0.0, 0]).set_opacity(0.0), pc_sibling_ref.copy().move_to([1.5, 0.0, 0]).set_opacity(1.0)), run_time=0.2, rate_func=linear), group=Group(), run_time=0.3))
@@ -168,9 +176,11 @@ import math
 class GeneratedScene(MovingCameraScene):
     def construct(self):
         pc_shape = Rectangle(width=2.0, height=1.0).set_fill("#ffffff", opacity=1.0).set_stroke("#ffffff", width=4.0)
+        pc_shape.move_to([0.0, 0.0, 0])
         self.play({constructor}(pc_shape, run_time=0.2, rate_func=rate_functions.there_and_back))
         self.play(Succession(Wait(0.1), group=Group(), run_time=0.1))
         pc_reference = Rectangle(width=2.0, height=1.0).set_fill("#ffffff", opacity=1.0).set_stroke("#ffffff", width=4.0)
+        pc_reference.move_to([0.0, 0.0, 0])
         self.add(pc_reference)
         self.play(Succession(Wait(0.1), group=Group(), run_time=0.1))
 """
@@ -203,7 +213,8 @@ import math
 class GeneratedScene(MovingCameraScene):
     def construct(self):
         pc_shape = Rectangle(width=2.0, height=1.0).set_fill("#ffffff", opacity=1.0).set_stroke("#ffffff", width=4.0)
-        pc_reference = Rectangle(width=2.0, height=1.0).set_fill("#ffffff", opacity=1.0).set_stroke("#ffffff", width=4.0)
+        pc_shape.move_to([0.0, 0.0, 0])
+        pc_reference = pc_shape.copy()
         self.play({constructor}(pc_shape, run_time=0.2, rate_func=rate_functions.there_and_back))
         self.play(Transform(pc_shape, pc_reference.copy().set_opacity(0.0), run_time=0.2, rate_func=linear))
         self.play(Transform(pc_shape, pc_reference.copy().set_opacity(1.0), run_time=0.2, rate_func=linear))
@@ -238,6 +249,7 @@ import math
 class GeneratedScene(MovingCameraScene):
     def construct(self):
         pc_shape = Rectangle(width=1.0, height=1.0).set_fill("#ffffff", opacity=1.0).set_stroke("#ffffff", width=0.0)
+        pc_shape.move_to([0.0, 0.0, 0])
         self.add(pc_shape)
         self.play(Indicate(pc_shape, color="#71402d", scale_factor=1.5, run_time=0.4, rate_func=rate_functions.there_and_back))
         self.play(Succession(Wait(0.1), group=Group(), run_time=0.1))
@@ -266,10 +278,12 @@ import math
 
 class GeneratedScene(MovingCameraScene):
     def construct(self):
-        pc_text = Tex(r"First line\\\\input and $\\sqrt[x_1]{y}+x^\\alpha+\\text{Area = 2x}$", font_size=34.0).shift(LEFT)
-        pc_math = MathTex(r"x\\\\y", font_size=34.0).shift(RIGHT)
+        pc_text = Tex(r"First line\\\\input and $\\sqrt[x_1]{y}+x^\\alpha+\\text{Area = 2x}$", font_size=34.0)
+        pc_text.move_to([-1.0, 0.0, 0])
+        pc_math = MathTex(r"x\\\\y", font_size=34.0)
+        pc_math.move_to([1.0, 0.0, 0])
         self.add(pc_text, pc_math)
-        self.wait(0.1)
+        self.play(Succession(Wait(0.1), group=Group(), run_time=0.1))
 """
     render_probe(tmp_path, source, expected_frames=1)
 
@@ -280,11 +294,14 @@ import math
 
 class GeneratedScene(MovingCameraScene):
     def construct(self):
-        pc_small = MathTex(r"\\frac{\\sqrt[3]{x}}{\\mathbf{y}}", font_size=1.0).shift(LEFT)
-        pc_large = MathTex(r"\\left\\{z\\right\\}", font_size=256.0).shift(RIGHT)
-        pc_controls = MathTex(r"{\\left(x\\right)} + x^{\\sqrt{2}} + x^\\alpha + \\text{Area = 2x}", font_size=34.0).shift(DOWN)
+        pc_small = MathTex(r"\\frac{\\sqrt[3]{x}}{\\mathbf{y}}", font_size=1.0)
+        pc_small.move_to([-1.0, 0.0, 0])
+        pc_large = MathTex(r"\\left\\{z\\right\\}", font_size=256.0)
+        pc_large.move_to([1.0, 0.0, 0])
+        pc_controls = MathTex(r"{\\left(x\\right)} + x^{\\sqrt{2}} + x^\\alpha + \\text{Area = 2x}", font_size=34.0)
+        pc_controls.move_to([0.0, -1.0, 0])
         self.add(pc_small, pc_large, pc_controls)
-        self.wait(0.1)
+        self.play(Succession(Wait(0.1), group=Group(), run_time=0.1))
 """
     render_probe(tmp_path, source, expected_frames=1)
 

@@ -1,6 +1,7 @@
 import { applyOperations, type ManualSceneOperation } from "./operations";
 import { canonicalProjectJson, cloneProject, type ProjectDocument } from "./schema";
 import { applyDocumentOperations, type DocumentOperation, type DocumentOperationResult } from "./documentOperations";
+import { analyzeProjectAuthoringTransition } from "./authoringPolicy";
 
 export interface HistoryEntry {
   label: string;
@@ -95,4 +96,30 @@ export function redo(history: ProjectHistory): ProjectHistory {
     present: next.project,
     future: history.future.slice(1),
   };
+}
+
+export type AuthoringHistoryTraversal = Readonly<
+  | { ok: true; history: ProjectHistory }
+  | { ok: false; history: ProjectHistory; message: string }
+>;
+
+/**
+ * Undo/redo are authoring transitions too. A legacy-invalid snapshot may be
+ * retained as history evidence, but restoring it from a repaired document
+ * would reintroduce renderer-rejected authority and is therefore blocked.
+ */
+function guardHistoryTraversal(current: ProjectHistory, candidate: ProjectHistory): AuthoringHistoryTraversal {
+  if (candidate === current) return { ok: true, history: current };
+  const analysis = analyzeProjectAuthoringTransition(current.present, candidate.present);
+  return analysis.allowed
+    ? { ok: true, history: candidate }
+    : { ok: false, history: current, message: analysis.message };
+}
+
+export function undoAuthoringHistory(history: ProjectHistory): AuthoringHistoryTraversal {
+  return guardHistoryTraversal(history, undo(history));
+}
+
+export function redoAuthoringHistory(history: ProjectHistory): AuthoringHistoryTraversal {
+  return guardHistoryTraversal(history, redo(history));
 }

@@ -816,7 +816,7 @@ describe("Manim compiler", () => {
     ]);
   });
 
-  test("maps every supported object class and compiles restricted graph AST without evaluation", () => {
+  test("maps every supported object class and compiles restricted graph AST to literal geometry", () => {
     const project = cloneSerializable(createCantorDemoProject());
     const shot = project.shots[1];
     const objects: SceneObject[] = [
@@ -841,7 +841,10 @@ describe("Manim compiler", () => {
     expect(result.python).toContain("BraceBetweenPoints");
     expect(result.python).toContain("Text(\"n pieces\", font_size=22.0)");
     expect(result.python).toContain("Axes(x_range=");
-    expect(result.python).toContain("FunctionGraph(lambda x: (x ** 2)");
+    expect(result.python).toContain("VGroup(VMobject().set_points_as_corners([");
+    expect(result.python).not.toContain("FunctionGraph");
+    expect(result.python).not.toContain("lambda x:");
+    expect(result.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: "GRAPH_GEOMETRY_DERIVED", objectId: "object-graph" })]));
     expect(result.python).toContain("SVGMobject(\"public/proofcanvas/assets/example.svg\")");
     expect(result.diagnostics.map(({ code }) => code)).toEqual(expect.arrayContaining(["ASSET_RENDER_TRANSPORT_UNSUPPORTED"]));
   });

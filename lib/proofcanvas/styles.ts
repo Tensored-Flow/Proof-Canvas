@@ -84,6 +84,30 @@ export function styleById(styles: readonly StylePack[], styleId: string): StyleP
   return styles.find((style) => style.id === styleId);
 }
 
+/** One effective graph-curve style for inspector, preview, and compiler. */
+export function resolvedGraphStroke(
+  object: Pick<SceneObject, "id" | "parentId" | "style">,
+  style: StylePack,
+  hierarchy: readonly Pick<SceneObject, "id" | "parentId" | "style">[] = [],
+): Readonly<{ stroke: string; strokeWidth: number }> {
+  const objects = new Map(hierarchy.map((candidate) => [candidate.id, candidate]));
+  const visited = new Set<string>();
+  let cursor: Pick<SceneObject, "id" | "parentId" | "style"> | undefined = object;
+  let stroke: string | undefined;
+  let strokeWidth: number | undefined;
+  while (cursor && !visited.has(cursor.id)) {
+    visited.add(cursor.id);
+    stroke ??= cursor.style.stroke;
+    strokeWidth ??= cursor.style.strokeWidth;
+    if (stroke !== undefined && strokeWidth !== undefined) break;
+    cursor = cursor.parentId ? objects.get(cursor.parentId) : undefined;
+  }
+  return {
+    stroke: stroke ?? style.colors.coolAccent,
+    strokeWidth: strokeWidth ?? style.graph.curveWeight,
+  };
+}
+
 export function styledTransform(object: Pick<SceneObject, "transform">, _style: StylePack): SceneObject["transform"] {
   // Geometry is authored project state. Style packs provide visual tokens and
   // insertion defaults; selecting or editing one must never move existing work.

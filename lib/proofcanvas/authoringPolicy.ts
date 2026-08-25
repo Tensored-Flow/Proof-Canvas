@@ -4,11 +4,13 @@ import {
   type CompilerTimelineAuthorityIssueCode,
 } from "./compilerSchedule";
 import {
+  animationAuthoringCompatibilityIssue,
   projectAnimationAuthoringTransitionIssue,
   type ProjectDocument,
   type Shot,
 } from "./schema";
 import { effectiveObjectLifetime } from "./timeline";
+import { analyzeGraphExpression, type GraphExpressionDiagnosticCode } from "./graphExpression";
 
 /** Audio transport/mux support belongs to M4 and remains a render-time capability failure. */
 export const AUTHORING_POLICY_EXCLUDED_COMPILER_CODES = Object.freeze([
@@ -26,10 +28,20 @@ export type ProjectAuthoringTransitionAnalysis =
   | Readonly<{ allowed: true; authorityUnchanged?: true; previousIssues?: readonly TimelineAuthoringIssueSignature[]; nextIssues?: readonly TimelineAuthoringIssueSignature[] }>
   | Readonly<{
     allowed: false;
-    reason: "animation-compatibility" | "introduced-timeline-authority" | "modified-timeline-authority";
+    reason: "animation-compatibility" | "introduced-graph-authority" | "modified-graph-authority" | "introduced-timeline-authority" | "modified-timeline-authority";
     message: string;
-    issue?: TimelineAuthoringIssueSignature;
+    issue?: TimelineAuthoringIssueSignature | GraphAuthoringIssueSignature;
   }>;
+
+export interface GraphAuthoringIssueSignature {
+  code: GraphExpressionDiagnosticCode;
+  shotId: string;
+  objectId: string;
+  signature: string;
+  authorityFingerprint: string;
+  analysisHash: string;
+  message: string;
+}
 
 function canonicalAuthorityBytes(value: unknown): string {
   const canonical = (candidate: unknown): unknown => {
@@ -169,6 +181,71 @@ function projectTimelineAuthorityFingerprint(project: ProjectDocument): string {
   })));
 }
 
+function projectGraphAuthorityFingerprint(project: ProjectDocument): string {
+  return canonicalAuthorityBytes([...project.shots].sort((left, right) => left.id.localeCompare(right.id)).flatMap((shot) => (
+    [...shot.objects]
+      .filter(({ type }) => type === "graph")
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((object) => ({
+        shotId: shot.id,
+        objectId: object.id,
+        expression: object.properties.expression,
+        xMin: object.properties.xMin,
+        xMax: object.properties.xMax,
+      }))
+  )));
+}
+
+/** Complete fatal graph geometry authority for a parsed project. */
+export function projectGraphAuthoringIssues(project: ProjectDocument): GraphAuthoringIssueSignature[] {
+  const issues: GraphAuthoringIssueSignature[] = [];
+  for (const shot of project.shots) {
+    for (const object of shot.objects) {
+      if (object.type !== "graph") continue;
+      const xMin = Number(object.properties.xMin);
+      const xMax = Number(object.properties.xMax);
+      const analysis = analyzeGraphExpression(object.properties.expression, xMin, xMax);
+      const fatal = analysis.diagnostics.find(({ severity }) => severity === "error");
+      if (!fatal) continue;
+      issues.push({
+        code: fatal.code,
+        shotId: shot.id,
+        objectId: object.id,
+        signature: `${shot.id}\u0000${object.id}`,
+        authorityFingerprint: canonicalAuthorityBytes({
+          expression: object.properties.expression,
+          xMin: object.properties.xMin,
+          xMax: object.properties.xMax,
+        }),
+        analysisHash: analysis.analysisHash,
+        message: fatal.message,
+      });
+    }
+  }
+  return issues.sort((left, right) => left.signature.localeCompare(right.signature));
+}
+
+function graphTransitionIssue(previous: ProjectDocument, next: ProjectDocument): Exclude<ProjectAuthoringTransitionAnalysis, { allowed: true }> | undefined {
+  if (projectGraphAuthorityFingerprint(previous) === projectGraphAuthorityFingerprint(next)) return undefined;
+  const previousBySignature = new Map(projectGraphAuthoringIssues(previous).map((issue) => [issue.signature, issue]));
+  for (const issue of projectGraphAuthoringIssues(next)) {
+    const prior = previousBySignature.get(issue.signature);
+    if (!prior) return {
+      allowed: false,
+      reason: "introduced-graph-authority",
+      issue,
+      message: `Authoring would introduce renderer-rejected ${issue.code}: shot ${issue.shotId}, object ${issue.objectId}. ${issue.message}`,
+    };
+    if (prior.authorityFingerprint !== issue.authorityFingerprint) return {
+      allowed: false,
+      reason: "modified-graph-authority",
+      issue,
+      message: `Legacy renderer-rejected graph authority cannot be modified while it remains invalid: shot ${issue.shotId}, object ${issue.objectId}. Repair it to a valid graph or leave its expression and domain unchanged.`,
+    };
+  }
+  return undefined;
+}
+
 /** Complete non-audio renderer-rejected timeline authority for a parsed project. */
 export function projectTimelineAuthoringIssues(project: ProjectDocument): TimelineAuthoringIssueSignature[] {
   const issues: TimelineAuthoringIssueSignature[] = [];
@@ -183,6 +260,23 @@ export function projectTimelineAuthoringIssues(project: ProjectDocument): Timeli
     }
   }
   return issues.sort((left, right) => left.signature.localeCompare(right.signature));
+}
+
+/** First renderer-rejected authority in a standalone project-copy ingress. */
+export function projectAuthoringIssue(project: ProjectDocument): string | undefined {
+  for (const shot of project.shots) {
+    for (const animation of shot.animations) {
+      const issue = animationAuthoringCompatibilityIssue(animation);
+      if (issue) return `Project contains renderer-rejected animation ${animation.id} in shot ${shot.id}: ${issue}`;
+    }
+  }
+  const graphIssue = projectGraphAuthoringIssues(project)[0];
+  if (graphIssue) {
+    return `Project contains renderer-rejected ${graphIssue.code}: shot ${graphIssue.shotId}, object ${graphIssue.objectId}. ${graphIssue.message}`;
+  }
+  const timelineIssue = projectTimelineAuthoringIssues(project)[0];
+  if (timelineIssue) return `Project contains renderer-rejected ${timelineIssue.code}: ${issueIds(timelineIssue)}`;
+  return undefined;
 }
 
 function issueIds(issue: CompilerTimelineAuthorityIssue): string {
@@ -207,6 +301,8 @@ export function analyzeProjectAuthoringTransition(
 ): ProjectAuthoringTransitionAnalysis {
   const animationIssue = projectAnimationAuthoringTransitionIssue(previous, next);
   if (animationIssue) return { allowed: false, reason: "animation-compatibility", message: animationIssue };
+  const graphIssue = graphTransitionIssue(previous, next);
+  if (graphIssue) return graphIssue;
   if (projectTimelineAuthorityFingerprint(previous) === projectTimelineAuthorityFingerprint(next)) {
     return { allowed: true, authorityUnchanged: true };
   }

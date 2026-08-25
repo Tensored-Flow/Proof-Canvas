@@ -5,12 +5,17 @@ import path from 'node:path'
 
 const evidenceDir = process.env.PROOFCANVAS_EVIDENCE_DIR ?? path.join(process.cwd(), '.proofcanvas-evidence')
 
-async function dragBy(page: Page, locator: Locator, dx: number, dy: number) {
+async function dragBy(page: Page, locator: Locator, dx: number, dy: number, startXOffset?: number) {
+  await locator.scrollIntoViewIfNeeded()
   const box = await locator.boundingBox()
   expect(box, `Expected a visible box for ${await locator.getAttribute('aria-label')}`).not.toBeNull()
-  const x = box!.x + box!.width / 2
-  const y = box!.y + box!.height / 2
-  await page.mouse.move(x, y)
+  const relativeX = startXOffset === undefined ? box!.width / 2 : Math.min(box!.width - 1, Math.max(1, startXOffset))
+  const relativeY = box!.height / 2
+  await locator.hover({ position: { x: relativeX, y: relativeY } })
+  const settledBox = await locator.boundingBox()
+  expect(settledBox).not.toBeNull()
+  const x = settledBox!.x + relativeX
+  const y = settledBox!.y + relativeY
   await page.mouse.down()
   await page.mouse.move(x + dx, y + dy, { steps: 5 })
   await page.mouse.up()
@@ -27,21 +32,37 @@ async function boxCenter(locator: Locator) {
 }
 
 test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => {
+  const ownerPassword = process.env.PROOFCANVAS_E2E_OWNER_PASSWORD
+  expect(ownerPassword, 'The isolated acceptance harness must provide an ephemeral owner password').toBeTruthy()
   const consoleErrors: string[] = []
   page.on('console', (message) => { if (message.type() === 'error') consoleErrors.push(message.text()) })
   page.on('pageerror', (error) => consoleErrors.push(error.message))
 
   const compatibility = await page.request.get('/proofcanvas', { maxRedirects: 0 })
   expect(compatibility.status()).toBe(307)
-  expect(compatibility.headers().location).toBe('/')
+  expect(compatibility.headers().location).toBe('/login')
 
   await page.goto('/')
+  await expect(page).toHaveURL(/\/login$/)
+  await page.getByLabel('Owner password').fill(ownerPassword!)
+  await page.getByRole('button', { name: 'Log in' }).click()
+  await expect(page).toHaveURL(/\/$/)
+  await expect(page.getByRole('heading', { name: 'Your mathematical motion projects' })).toBeVisible()
+  await page.getByRole('textbox', { name: 'Project title' }).fill('M3.6 graph authority acceptance')
+  await page.getByRole('button', { name: 'New sample project' }).click()
+  await expect(page).toHaveURL(/\/projects\/project-[a-f0-9]{24}$/)
   const editor = page.getByRole('application', { name: 'ProofCanvas editor' })
-  await expect(editor).toHaveAttribute('data-project-id', 'project-uncountable-zero-length')
+  await expect(editor).toHaveAttribute('data-project-id', /^project-[a-f0-9]{24}$/)
+  await expect(editor).toHaveAttribute('data-durable', 'true')
+  const projectId = await editor.getAttribute('data-project-id')
+  expect(projectId).not.toBeNull()
+  const authenticatedCompatibility = await page.request.get('/proofcanvas', { maxRedirects: 0 })
+  expect(authenticatedCompatibility.status()).toBe(307)
+  expect(authenticatedCompatibility.headers().location).toBe('/')
   await expect(page.getByRole('tree', { name: 'Objects' })).toBeVisible()
-  await expect(page.getByRole('region', { name: 'Animation timeline' })).toBeVisible()
+  await expect(page.locator('[role="tabpanel"][aria-label="Animation timeline"]')).toBeVisible()
 
-  const playhead = page.getByRole('slider', { name: 'Playhead' })
+  const playhead = page.getByRole('slider', { name: 'Sequence time' })
   await playhead.fill('12.5')
   await expect(page.getByRole('region', { name: 'Scene canvas' })).toHaveAttribute('data-preview-time', '12.5')
   await expect(page.locator('[data-object-id="object-equation-length"]')).toHaveCount(0)
@@ -55,13 +76,18 @@ test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => 
   const editorialTransform = await title.getAttribute('transform')
   await playhead.fill('0.6')
   const editorialOpacity = Number(await title.getAttribute('opacity'))
+  const titleText = title.locator('.pc-canvas-text')
+  const editorialFontFamily = await titleText.evaluate((element) => getComputedStyle(element).fontFamily)
+  const editorialBackground = await page.locator('.pc-stage-wrap').evaluate((element) => getComputedStyle(element).backgroundColor)
   const styleHistory = await historyCount(page)
   await page.getByRole('radio', { name: 'Raw Manim' }).check()
   await expect(page.getByRole('region', { name: 'Scene canvas' })).toHaveAttribute('data-preview-style-id', 'style-raw-manim')
   expect(await historyCount(page)).toBe(styleHistory + 1)
-  expect(Number(await title.getAttribute('opacity'))).toBeLessThan(editorialOpacity)
+  expect(Number(await title.getAttribute('opacity'))).toBeCloseTo(editorialOpacity, 8)
+  expect(await titleText.evaluate((element) => getComputedStyle(element).fontFamily)).not.toBe(editorialFontFamily)
+  expect(await page.locator('.pc-stage-wrap').evaluate((element) => getComputedStyle(element).backgroundColor)).not.toBe(editorialBackground)
   await playhead.fill('12.5')
-  expect(await title.getAttribute('transform')).not.toBe(editorialTransform)
+  expect(await title.getAttribute('transform')).toBe(editorialTransform)
   await title.click()
   const rawTitleBefore = await boxCenter(title)
   await dragBy(page, title, 100, 0)
@@ -108,8 +134,8 @@ test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => 
   const materialA11y = axe.violations.filter(({ impact }) => impact === 'critical' || impact === 'serious')
   expect(materialA11y, JSON.stringify(materialA11y, null, 2)).toEqual([])
 
-  const constructionTab = page.getByRole('tab', { name: 'Select shot The construction' })
-  const paradoxTab = page.getByRole('tab', { name: 'Select shot The paradox' })
+  const constructionTab = page.getByRole('tab', { name: /^Shot \d+, The construction,/ })
+  const paradoxTab = page.getByRole('tab', { name: /^Shot \d+, The paradox,/ })
   await constructionTab.focus()
   await page.keyboard.press('ArrowRight')
   await expect(paradoxTab).toBeFocused()
@@ -180,11 +206,55 @@ test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => 
   await expect(page.getByRole('treeitem', { name: /Uncountable, Yet Zero Length copy/ })).toBeVisible()
   await page.keyboard.press('Control+Shift+z')
 
-  for (const name of ['Add text', 'Add math', 'Add circle', 'Add arrow', 'Add brace']) {
-    await page.getByRole('button', { name }).click()
-  }
+  await page.getByRole('tab', { name: 'Text' }).click()
+  await page.getByRole('button', { name: 'Add text' }).click()
+  await page.getByRole('tab', { name: 'Math' }).click()
+  await page.getByRole('button', { name: 'Add math' }).click()
+  await page.getByRole('button', { name: 'Add brace' }).click()
+  await page.getByRole('tab', { name: 'Shapes' }).click()
+  await page.getByRole('button', { name: 'Add circle' }).click()
+  await page.getByRole('button', { name: 'Add arrow' }).click()
+  await page.getByRole('tab', { name: 'Graphs' }).click()
+  await page.getByRole('button', { name: 'Add coordinate axes' }).click()
+  await page.getByRole('button', { name: 'Add function graph' }).click()
   await expect(page.getByRole('treeitem', { name: /Plain text/ })).toBeVisible()
   await expect(page.getByRole('treeitem', { name: /Mathematical text/ })).toBeVisible()
+
+  const insertedGraph = page.locator('[data-object-type="graph"]').last()
+  await expect(insertedGraph).toBeVisible()
+  const graphExpression = page.getByRole('textbox', { name: 'Graph expression' })
+  await expect(graphExpression).toHaveValue('(x ^ 2)')
+  await graphExpression.fill('1 / 0')
+  await expect(page.locator('.pc-graph-properties [role="alert"]')).toContainText(/division by zero/i)
+  await expect(page.getByRole('button', { name: 'Apply graph draft' })).toBeDisabled()
+  await page.getByRole('button', { name: 'Discard graph draft' }).click()
+  await expect(graphExpression).toHaveValue('(x ^ 2)')
+
+  let longGraphTerms = Array.from({ length: 32 }, (_, index) => String(-(0.123456789012345 + index * Number.EPSILON)))
+  while (longGraphTerms.length > 1) {
+    const next: string[] = []
+    for (let index = 0; index < longGraphTerms.length; index += 2) next.push(`(${longGraphTerms[index]} + ${longGraphTerms[index + 1]})`)
+    longGraphTerms = next
+  }
+  const longGraphExpression = longGraphTerms[0]
+  expect(longGraphExpression.length).toBeGreaterThan(512)
+  const longGraphHistory = await historyCount(page)
+  await graphExpression.fill(longGraphExpression)
+  await page.getByRole('button', { name: 'Apply graph draft' }).click()
+  expect(await historyCount(page)).toBe(longGraphHistory + 1)
+  await expect(graphExpression).toHaveValue(longGraphExpression)
+
+  const reciprocalHistory = await historyCount(page)
+  await graphExpression.fill('1 / x')
+  await page.getByRole('button', { name: 'Apply graph draft' }).click()
+  expect(await historyCount(page)).toBe(reciprocalHistory + 1)
+  const graphGeometry = insertedGraph.locator('[data-graph-status="valid"]')
+  await expect(graphGeometry).toHaveAttribute('data-graph-segment-count', '2')
+  await expect(graphGeometry).toHaveAttribute('data-graph-diagnostic-codes', 'GRAPH_DISCONTINUITIES_SEGMENTED')
+  await page.getByRole('button', { name: 'Undo' }).click()
+  await expect(graphExpression).toHaveValue(longGraphExpression)
+  await page.getByRole('button', { name: 'Redo' }).click()
+  await expect(graphExpression).toHaveValue('(1 / x)')
 
   const insertedArrow = page.locator('[data-object-type="arrow"]').last()
   await expect(insertedArrow).toHaveAttribute('opacity', '1')
@@ -214,7 +284,7 @@ test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => 
   await expect(page.getByRole('tab', { name: 'Components' })).toHaveAttribute('aria-selected', 'true')
   await page.getByRole('tab', { name: 'Components' }).focus()
   await page.keyboard.press('ArrowLeft')
-  await expect(page.getByRole('tab', { name: 'Objects' })).toBeFocused()
+  await expect(page.getByRole('tab', { name: 'Graphs' })).toBeFocused()
   await page.keyboard.press('ArrowRight')
   await expect(page.getByRole('tab', { name: 'Components' })).toBeFocused()
   await page.getByRole('button', { name: 'Insert focus callout' }).click()
@@ -243,6 +313,7 @@ test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => 
   groupCenterBefore = await boxCenter(insertedTitleGroup)
   expect(Math.abs(groupCenterBefore.x - canvasCenter.x)).toBeLessThan(2)
   const groupResizeHandle = page.getByLabel(/^Resize selected object;/)
+  const groupHistoryBeforeResize = await historyCount(page)
   const groupResizeBefore = await boxCenter(groupResizeHandle)
   await dragBy(page, groupResizeHandle, 30, 15)
   const groupResizeAfter = await boxCenter(groupResizeHandle)
@@ -253,6 +324,7 @@ test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => 
   expect(Math.abs((groupResizeAfter.y - groupResizeBefore.y) - 15)).toBeLessThan(2)
   const groupRotationBefore = await page.getByRole('spinbutton', { name: 'Rotation' }).inputValue()
   await dragBy(page, page.getByLabel(/^Rotate selected object;/), 28, -6)
+  expect(await historyCount(page)).toBe(groupHistoryBeforeResize + 2)
   expect(await page.getByRole('spinbutton', { name: 'Rotation' }).inputValue()).not.toBe(groupRotationBefore)
   const groupCenterAfterRotate = await boxCenter(insertedTitleGroup)
   expect(Math.abs(groupCenterAfterRotate.x - groupCenterBefore.x)).toBeLessThan(2)
@@ -267,7 +339,7 @@ test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => 
   expect(alignedGroup).not.toBeNull()
   expect(alignedTitle).not.toBeNull()
   expect(Math.abs((alignedGroup!.x + alignedGroup!.width) - (alignedTitle!.x + alignedTitle!.width))).toBeLessThan(2)
-  await page.getByRole('tab', { name: 'Objects' }).click()
+  await page.getByRole('tab', { name: 'Text' }).click()
 
   const titleLayer = page.getByRole('treeitem', { name: /Uncountable, Yet Zero Length/ })
   const subtitleLayer = page.getByRole('treeitem', { name: /A quiet paradox/ })
@@ -314,9 +386,11 @@ test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => 
   await page.getByRole('button', { name: 'Add animation' }).click()
   const newBlock = page.locator('[data-animation-type="appear"]').last()
   await expect(newBlock).toBeVisible()
+  await expect(newBlock).toHaveAttribute('data-locked', 'false')
   expect(await page.locator('[data-animation-id]').count()).toBe(blocksBefore + 1)
   const oldStart = await newBlock.getAttribute('data-start')
-  await dragBy(page, newBlock, 45, 0)
+  // Start in the block body, away from the dedicated right-edge resize grip.
+  await dragBy(page, newBlock, 45, 0, 4)
   expect(await newBlock.getAttribute('data-start')).not.toBe(oldStart)
   const oldDuration = await newBlock.getAttribute('data-duration')
   await dragBy(page, page.locator('.pc-animation-block i').last(), 35, 0)
@@ -334,6 +408,8 @@ test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => 
   await expect(page.locator('[data-object-id="object-generation-note"]')).toBeVisible()
   await expect(page.getByRole('region', { name: 'Scene canvas' })).toHaveAttribute('data-preview-time', '6.8')
 
+  await page.getByRole('button', { name: 'Open command palette' }).click()
+  await page.getByRole('option', { name: /AI structured edit/ }).click()
   for (let index = 1; index <= 5; index += 1) {
     await page.getByRole('button', { name: new RegExp(`^Run AI preset ${index}:`) }).click()
     const proposal = page.getByRole('region', { name: 'Proposed changes' })
@@ -360,6 +436,7 @@ test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => 
       expect(await title.getAttribute('transform')).toBe(visibleBefore)
     }
   }
+  await page.getByRole('button', { name: 'Close AI command drawer' }).click()
 
   await titleLayer.click()
   const nameField = page.getByRole('textbox', { name: 'Name', exact: true })
@@ -367,11 +444,15 @@ test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => 
   await nameField.blur()
   const savedAnimationCount = await page.locator('[data-animation-id]').count()
   await page.getByRole('radio', { name: 'Raw Manim' }).check()
+  await page.getByLabel('Owner menu').click()
   await page.getByRole('button', { name: 'Save project' }).click()
-  await page.getByRole('button', { name: 'Reset demo' }).click()
-  await expect(page.getByRole('treeitem', { name: /Persisted theorem title/ })).toHaveCount(0)
-  await expect(page.getByRole('radio', { name: 'Editorial Ink' })).toBeChecked()
-  await page.getByRole('button', { name: 'Load saved project' }).click()
+  await expect(page.getByRole('status', { name: 'Autosave status' })).toHaveAttribute('data-save-state', 'saved')
+  const savedRevision = Number(await editor.getAttribute('data-server-revision'))
+  expect(savedRevision).toBeGreaterThan(1)
+  await page.reload()
+  await expect(editor).toHaveAttribute('data-project-id', projectId!)
+  await expect(editor).toHaveAttribute('data-durable', 'true')
+  await expect(editor).toHaveAttribute('data-save-state', 'saved')
   await expect(page.getByRole('treeitem', { name: /Persisted theorem title/ })).toHaveAttribute('data-layer-object-id', 'object-title')
   await expect(page.getByRole('treeitem', { name: /Focus callout/ })).toBeVisible()
   await expect(page.getByRole('radio', { name: 'Raw Manim' })).toBeChecked()
@@ -386,11 +467,12 @@ test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => 
   const shotDuration = page.getByRole('spinbutton', { name: 'Shot duration' })
   await shotDuration.fill('2.5')
   await shotDuration.blur()
-  await page.getByRole('button', { name: 'Move shot earlier' }).click()
-  await expect(page.getByRole('tab', { name: 'Select shot Closing annotation' })).toBeVisible()
-  await page.getByRole('tab', { name: 'Select shot The construction' }).click()
+  await page.getByRole('button', { name: 'Move shot later' }).click()
+  await expect(page.getByRole('tab', { name: /^Shot \d+, Closing annotation,/ })).toBeVisible()
+  await page.getByRole('tab', { name: /^Shot \d+, The construction,/ }).click()
   await expect(editor).toHaveAttribute('data-active-shot-id', 'shot-cantor-construction')
 
+  await page.getByRole('button', { name: 'Render or export' }).click()
   const jsonDownloadPromise = page.waitForEvent('download')
   const exportJsonButton = page.getByRole('button', { name: 'Export project JSON' })
   await exportJsonButton.click()
@@ -399,7 +481,7 @@ test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => 
   expect(jsonPath).not.toBeNull()
   const exportedJson = await readFile(jsonPath!, 'utf8')
   const exportedProject = JSON.parse(exportedJson)
-  expect(exportedProject.metadata.id).toBe('project-uncountable-zero-length')
+  expect(exportedProject.metadata.id).toBe(projectId)
   expect(exportedProject.activeStyleId).toBe('style-editorial-ink')
   expect(exportedProject.shots[0].objects.some((object: { type: string }) => object.type === 'group')).toBe(true)
   expect(exportedProject.shots[0].animations.length).toBeGreaterThan(0)
@@ -408,8 +490,9 @@ test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => 
   expect(await page.locator('.pc-header').evaluate((element: HTMLElement) => element.inert)).toBe(true)
   await page.keyboard.press('Escape')
   await expect(page.getByRole('dialog', { name: 'Project JSON' })).toHaveCount(0)
-  await expect(exportJsonButton).toBeFocused()
+  await expect(page.getByRole('button', { name: 'Render or export' })).toBeFocused()
 
+  await page.getByRole('button', { name: 'Render or export' }).click()
   const pythonDownloadPromise = page.waitForEvent('download')
   await page.getByRole('button', { name: 'Export Manim Python' }).click()
   const pythonDownload = await pythonDownloadPromise
@@ -418,22 +501,28 @@ test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => 
   expect(await readFile(pythonPath!, 'utf8')).toContain('class GeneratedScene(MovingCameraScene):')
   await page.getByRole('button', { name: 'Close export preview' }).click()
 
+  await page.getByLabel('Owner menu').click()
   const importInput = page.getByLabel('Import project JSON')
   await importInput.focus()
   expect(await importInput.locator('..').evaluate((element) => element.matches(':focus-within'))).toBe(true)
   await importInput.setInputFiles({ name: 'project.json', mimeType: 'application/json', buffer: Buffer.from(exportedJson) })
-  await expect(editor).toHaveAttribute('data-project-id', 'project-uncountable-zero-length')
+  await expect(editor).toHaveAttribute('data-project-id', projectId!)
   await expect(page.getByRole('treeitem', { name: /Focus callout/ })).toBeVisible()
   expect(await page.locator('[data-animation-id]').count()).toBe(exportedProject.shots[0].animations.length)
+  await page.getByLabel('Owner menu').click()
   await importInput.setInputFiles({ name: 'invalid.json', mimeType: 'application/json', buffer: Buffer.from('{"schemaVersion":999}') })
   await expect(page.locator('.pc-message[role="alert"]')).toContainText(/schema version|unsupported|invalid|expected/i)
-  await page.getByRole('button', { name: 'Dismiss' }).click()
-  await expect(editor).toHaveAttribute('data-project-id', 'project-uncountable-zero-length')
+  await page.getByRole('button', { name: 'Dismiss', exact: true }).click()
+  await expect(editor).toHaveAttribute('data-project-id', projectId!)
 
+  await page.getByRole('button', { name: 'Open command palette' }).click()
+  await page.getByRole('option', { name: /AI structured edit/ }).click()
   await page.getByRole('button', { name: 'Critique composition' }).click()
   await expect(page.locator('[data-issue-kind]').first()).toBeVisible()
+  await page.getByRole('button', { name: 'Close AI command drawer' }).click()
 
   if (testInfo.project.name === 'proofcanvas-chromium-1440') {
+    await page.getByRole('button', { name: 'Render or export' }).click()
     await page.getByRole('button', { name: 'Render MP4' }).click()
     const renderStatus = page.getByRole('region', { name: 'Render status' })
     await expect(renderStatus).toHaveAttribute('data-render-status', 'succeeded', { timeout: 240_000 })

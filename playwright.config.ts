@@ -18,6 +18,9 @@ export default defineConfig({
   reporter: [['json', { outputFile: path.join(artifactRoot, 'report.json') }]],
   use: {
     baseURL: process.env.PROOFCANVAS_BASE_URL ?? 'http://localhost:3217',
+    // The isolated acceptance harness terminates TLS with an ephemeral,
+    // loopback-only certificate so production Secure cookies are exercised.
+    ignoreHTTPSErrors: process.env.PROOFCANVAS_BASE_URL?.startsWith('https://127.0.0.1:') ?? false,
     serviceWorkers: 'block',
     trace: 'off',
     video: 'off',
