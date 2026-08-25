@@ -1,6 +1,6 @@
 import { applyOperations, type ManualSceneOperation } from "./operations";
 import { canonicalProjectJson, cloneProject, type ProjectDocument } from "./schema";
-import { applyDocumentOperations, type DocumentOperation } from "./documentOperations";
+import { applyDocumentOperations, type DocumentOperation, type DocumentOperationResult } from "./documentOperations";
 
 export interface HistoryEntry {
   label: string;
@@ -46,8 +46,27 @@ export function commitDocumentOperations(
   operations: readonly DocumentOperation[],
   label: string,
 ): ProjectHistory {
+  return commitDocumentOperationsWithResult(history, operations, label).history;
+}
+
+/**
+ * Commit one atomic document-operation batch while retaining its structural
+ * mappings for transient editor context. The document operation authority is
+ * evaluated exactly once; the published result is rebound to the immutable-by-
+ * contract snapshot owned by history so callers do not retain a second project
+ * authority beside `history.present`.
+ */
+export function commitDocumentOperationsWithResult(
+  history: ProjectHistory,
+  operations: readonly DocumentOperation[],
+  label: string,
+): Readonly<{ history: ProjectHistory; result: DocumentOperationResult }> {
   const result = applyDocumentOperations(history.present, operations);
-  return commitProject(history, result.project, label);
+  const nextHistory = commitProject(history, result.project, label);
+  return {
+    history: nextHistory,
+    result: { ...result, project: nextHistory.present },
+  };
 }
 
 export function canUndo(history: ProjectHistory): boolean {

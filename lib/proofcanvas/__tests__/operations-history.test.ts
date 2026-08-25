@@ -1,6 +1,6 @@
 import { createCantorDemoProject } from "../demo";
 import { insertSemanticComponent } from "../components";
-import { canRedo, canUndo, commitOperations, commitProject, createHistory, redo, undo } from "../history";
+import { canRedo, canUndo, commitDocumentOperations, commitDocumentOperationsWithResult, commitOperations, commitProject, createHistory, redo, undo } from "../history";
 import { applyOperations, duplicateObjects, effectiveLockOwner, validateOperations } from "../operations";
 import { PROOFCANVAS_SCHEMA_LIMITS, ProjectDocumentSchema, cloneProject, cloneSerializable, type ProjectDocument, type SceneAnimation, type SceneObject, type SceneOperation } from "../schema";
 import { styleById, styledDisplayBounds, styledTransform } from "../styles";
@@ -492,5 +492,54 @@ describe("snapshot history", () => {
     const redone = redo(undone);
     expect(redone.present.shots[0].objects.map(({ id }) => id)).toEqual(committed.present.shots[0].objects.map(({ id }) => id));
     expect(redone.present.shots[0].objects.find(({ id }) => id === "object-title")?.transform.x).toBe(150);
+  });
+
+  test("retains document-operation mappings on the exact published snapshot and delegates compatibly", () => {
+    const project = createCantorDemoProject();
+    const initial = createHistory(project);
+    const committed = commitDocumentOperationsWithResult(initial, [{
+      type: "duplicate-shot",
+      shotId: SHOT,
+    }], "Duplicate shot");
+
+    expect(committed.history.past).toHaveLength(1);
+    expect(committed.result.project).toBe(committed.history.present);
+    expect(committed.history.past[0].project).toBe(initial.present);
+    const duplicateId = committed.result.idMappings[0].ids[SHOT][0];
+    expect(committed.history.present.shots.map(({ id }) => id)).toEqual([
+      SHOT,
+      duplicateId,
+      "shot-cantor-conclusion",
+    ]);
+
+    const undone = undo(committed.history);
+    const redone = redo(undone);
+    expect(redone.present).toBe(committed.history.present);
+    expect(redone.present.shots[1].id).toBe(duplicateId);
+    expect(redone.past[0].project).toBe(initial.present);
+
+    const delegated = commitDocumentOperations(initial, [{
+      type: "update-shot",
+      shotId: SHOT,
+      patch: { name: "Delegated rename" },
+    }], "Rename shot");
+    expect(delegated.present.shots[0].name).toBe("Delegated rename");
+    expect(delegated.past[0].project).toBe(initial.present);
+
+    const unchanged = commitDocumentOperationsWithResult(initial, [{
+      type: "update-shot",
+      shotId: SHOT,
+      patch: { name: initial.present.shots[0].name },
+    }], "Unchanged shot name");
+    expect(unchanged.history).toBe(initial);
+    expect(unchanged.result.project).toBe(initial.present);
+    expect(unchanged.result.applied).toBe(1);
+
+    expect(() => commitDocumentOperationsWithResult(initial, [{
+      type: "delete-shot",
+      shotId: "missing-shot",
+    }], "Invalid delete")).toThrow(/Shot not found/);
+    expect(initial.past).toEqual([]);
+    expect(initial.present).toEqual(project);
   });
 });
