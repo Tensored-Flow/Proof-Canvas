@@ -15,7 +15,7 @@ import { commandTargetWithin, createEditorCommandController, EDITOR_COMMANDS, ty
 import { EditorPlaybackClock } from '@/lib/proofcanvas/editorPlayback'
 import { animationSelection, normalizeEditorSelection, objectSelection, projectSelection, selectedAnimationIds, selectedObjectIds, shotSelection, type EditorSelection } from '@/lib/proofcanvas/editorSelection'
 import { allocateId, collectProjectIds } from '@/lib/proofcanvas/ids'
-import { applyOperations, duplicateObjects, effectiveLockOwner, effectiveVisibilityOwner } from '@/lib/proofcanvas/operations'
+import { applyOperations, duplicateObjects, effectiveLockOwner, effectiveVisibilityOwner, inspectOperations } from '@/lib/proofcanvas/operations'
 import { PROOFCANVAS_BRACE_LABEL_MAX_CHARS, PROOFCANVAS_LATEX_MAX_CHARS, PROOFCANVAS_PROJECT_MAX_BYTES, PROOFCANVAS_SCHEMA_LIMITS, PROOFCANVAS_TEXT_MAX_CHARS, ProjectDocumentSchema, SceneOperationSchema, animationAuthoringCompatibilityIssue, canonicalProjectJson, cloneSerializable, parseProjectDocument, type AnimationType, type Easing, type ProjectDocument, type SceneAnimation, type SceneObject, type SceneOperation, type Shot } from '@/lib/proofcanvas/schema'
 import { EDITORIAL_INK_STYLE_ID, RAW_MANIM_STYLE_ID, styleById } from '@/lib/proofcanvas/styles'
 
@@ -187,26 +187,30 @@ function snapshotForReview(project: ProjectDocument, shotId: string, operation: 
 }
 
 function reviewOperations(project: ProjectDocument, shotId: string, proposal: AiProposal): OperationReview[] {
-  let cursor = project
-  return proposal.operations.map((operation, index) => {
-    const before = snapshotForReview(cursor, shotId, operation)
-    try {
-      cursor = applyOperations(cursor, shotId, [operation]).project
-      const after = snapshotForReview(cursor, shotId, operation)
-      const shot = cursor.shots.find(({ id }) => id === shotId)
+  if (!proposal.operations.length) return []
+  try {
+    const inspected = inspectOperations(project, shotId, proposal.operations, (candidate, operation) => {
+      const shot = candidate.shots.find(({ id }) => id === shotId)
       const objectIds = shot ? objectIdsForReview(shot, operation) : []
-      const names = objectIds.map((id) => {
-        const object = shot?.objects.find((candidate) => candidate.id === id)
-        return object ? `${object.name} (${id})` : id
-      })
       return {
-        summary: `${proposal.summary[index] ?? operation.type}${names.length ? ` — ${names.join(', ')}` : ''}`,
-        details: JSON.stringify({ operation, before, after }, null, 2),
+        snapshot: snapshotForReview(candidate, shotId, operation),
+        names: objectIds.map((id) => {
+          const object = shot?.objects.find((item) => item.id === id)
+          return object ? `${object.name} (${id})` : id
+        }),
       }
-    } catch {
-      return { summary: proposal.summary[index] ?? operation.type, details: JSON.stringify({ operation, before }, null, 2) }
-    }
-  })
+    })
+    return inspected.inspections.map(({ operation, before, after }, index) => ({
+      summary: `${proposal.summary[index] ?? operation.type}${after.names.length ? ` — ${after.names.join(', ')}` : ''}`,
+      details: JSON.stringify({ operation, before: before.snapshot, after: after.snapshot }, null, 2),
+    }))
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'The proposed operation batch is invalid'
+    return proposal.operations.map((operation, index) => ({
+      summary: proposal.summary[index] ?? operation.type,
+      details: JSON.stringify({ operation, before: snapshotForReview(project, shotId, operation), validationError: message }, null, 2),
+    }))
+  }
 }
 
 function renderJobFromPayload(candidate: unknown): ClientRenderJob {

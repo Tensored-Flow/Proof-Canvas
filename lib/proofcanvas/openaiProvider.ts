@@ -6,7 +6,7 @@ import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
 import type { AiCommandRequest, AiProposal } from "./ai";
 import { SEMANTIC_COMPONENTS } from "./components";
-import { applyOperations, describeOperations, effectiveLockOwner } from "./operations";
+import { applyOperations, describeOperations } from "./operations";
 import {
   AnimationTypeSchema,
   CameraStateSchema,
@@ -18,7 +18,6 @@ import {
   type JsonValue,
   type ProjectDocument,
   type SceneOperation,
-  type Shot,
 } from "./schema";
 
 const MAX_CONTEXT_BYTES = 128 * 1024;
@@ -326,41 +325,9 @@ function decodeOperation(operation: z.infer<typeof ModelOperationSchema>): Scene
   return SceneOperationSchema.parse(candidate);
 }
 
-function descendantsOf(shot: Shot, objectId: string): string[] {
-  const result: string[] = [];
-  const queue = [objectId];
-  while (queue.length) {
-    const parentId = queue.shift()!;
-    const children = shot.objects.filter((object) => object.parentId === parentId);
-    result.push(...children.map(({ id }) => id));
-    queue.push(...children.map(({ id }) => id));
-  }
-  return result;
-}
-
-function protectedTargets(operation: SceneOperation, shot: Shot): string[] {
+function assertAiOperationDialect(operation: SceneOperation): void {
   switch (operation.type) {
-    case "add-object": return operation.object.parentId ? [operation.object.parentId] : [];
-    case "update-object": return [operation.objectId, ...(operation.patch.parentId ? [operation.patch.parentId] : [])];
-    case "delete-object": return [operation.objectId, ...descendantsOf(shot, operation.objectId)];
-    case "group-objects": return [...operation.objectIds, ...(operation.group.parentId ? [operation.group.parentId] : [])];
-    case "ungroup-object": return [operation.groupId, ...descendantsOf(shot, operation.groupId)];
-    case "align-objects":
-    case "distribute-objects": return operation.objectIds;
-    case "reorder-object":
-    case "lock-object": return [operation.objectId];
     case "unlock-object": throw new ProofCanvasProviderOutputError("AI proposals may not unlock objects");
-    case "add-animation": return operation.animation.targetIds;
-    case "update-animation": {
-      const animation = shot.animations.find(({ id }) => id === operation.animationId);
-      if (!animation) throw new ProofCanvasProviderOutputError(`Generated operation targets missing animation ${operation.animationId}`);
-      return [...animation.targetIds, ...(operation.patch.targetIds ?? [])];
-    }
-    case "delete-animation": {
-      const animation = shot.animations.find(({ id }) => id === operation.animationId);
-      if (!animation) throw new ProofCanvasProviderOutputError(`Generated operation targets missing animation ${operation.animationId}`);
-      return animation.targetIds;
-    }
     case "set-object-lifetime":
     case "add-property-track":
     case "delete-property-track":
@@ -370,8 +337,7 @@ function protectedTargets(operation: SceneOperation, shot: Shot): string[] {
     case "delete-keyframe":
     case "duplicate-keyframe":
       throw new ProofCanvasProviderOutputError(`AI proposals may not use manual-only operation ${operation.type}`);
-    case "set-camera":
-    case "set-style": return [];
+    default: return;
   }
 }
 
@@ -380,21 +346,15 @@ function validateSecureOperations(
   shotId: string,
   operations: readonly SceneOperation[],
 ): SceneOperation[] {
-  let current = project;
-  operations.forEach((operation, index) => {
-    const shot = current.shots.find(({ id }) => id === shotId);
-    if (!shot) throw new ProofCanvasProviderOutputError(`Shot not found: ${shotId}`);
-    const locked = [...new Set(protectedTargets(operation, shot))].filter((id) => {
-      if (!shot.objects.some((object) => object.id === id)) throw new ProofCanvasProviderOutputError(`Generated operation targets missing object ${id}`);
-      return effectiveLockOwner(shot, id);
-    });
-    if (locked.length) throw new ProofCanvasProviderOutputError(`Operation ${index + 1} targets locked object${locked.length === 1 ? "" : "s"}: ${locked.join(", ")}`);
-    try {
-      current = applyOperations(current, shotId, [operation]).project;
-    } catch (error) {
-      throw new ProofCanvasProviderOutputError(error instanceof Error ? error.message : `Operation ${index + 1} is invalid`);
-    }
-  });
+  operations.forEach(assertAiOperationDialect);
+  try {
+    // Apply the proposal once so operation order, locks, IDs, and the final
+    // authoring transition are validated atomically. Validating prefixes would
+    // reject a batch that repairs legacy-invalid authority in a later step.
+    applyOperations(project, shotId, operations);
+  } catch (error) {
+    throw new ProofCanvasProviderOutputError(error instanceof Error ? error.message : "Generated operation transaction is invalid");
+  }
   return [...operations];
 }
 

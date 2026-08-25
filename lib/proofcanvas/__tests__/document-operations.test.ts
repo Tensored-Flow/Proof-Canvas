@@ -50,7 +50,43 @@ function xTrack(interpolation: PropertyTrack["keyframes"][number]["interpolation
   };
 }
 
+function compilerConflictDocument(): ProjectDocument {
+  const project = cloneSerializable(authoringProject());
+  const shot = project.shots[0];
+  shot.propertyTracks = [xTrack({ kind: "hold" })];
+  shot.animations = [{
+    id: "animation-authoring-conflict",
+    type: "move",
+    targetIds: ["object-authoring-title"],
+    start: 1,
+    duration: 1,
+    easing: "linear",
+    properties: { deltaX: 20 },
+  }];
+  return ProjectDocumentSchema.parse(project);
+}
+
 describe("typed document operations", () => {
+  test("guards unchanged, introduced, modified, and repaired compiler authority at the final document boundary", () => {
+    const legacy = compilerConflictDocument();
+    const renamed = applyDocumentOperations(legacy, [{ type: "rename-project", title: "Unrelated legacy rename" }]).project;
+    expect(renamed.metadata.title).toBe("Unrelated legacy rename");
+
+    expect(() => applyDocumentOperations(legacy, [duplicateShotOperation(legacy, "shot-authoring")])).toThrow(/introduce renderer-rejected TRACK_SEMANTIC_COLLISION/);
+    expect(applyDocumentOperations(legacy, [{ type: "update-shot", shotId: "shot-authoring", patch: { duration: 7 } }]).project.shots[0].duration).toBe(7);
+
+    const cleanShot = cloneSerializable(authoringProject().shots[0]);
+    cleanShot.id = "shot-authoring-repair";
+    cleanShot.name = "Repair target";
+    cleanShot.objects[0].id = "object-authoring-repair";
+    const repaired = applyDocumentOperations(legacy, [
+      { type: "add-shot", shot: cleanShot },
+      { type: "delete-shot", shotId: "shot-authoring" },
+    ]).project;
+    expect(repaired.shots.map(({ id }) => id)).toEqual(["shot-authoring-repair"]);
+    expect(repaired.shots[0].propertyTracks).toEqual([]);
+  });
+
   test("applies settings, shot, and marker changes atomically without mutating metadata clocks", () => {
     const project = authoringProject();
     const updatedAt = project.metadata.updatedAt;

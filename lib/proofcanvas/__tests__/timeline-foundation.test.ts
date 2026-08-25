@@ -423,6 +423,7 @@ describe("deterministic property-track sampling", () => {
 describe("timeline operations and compiler", () => {
   test("applies keyframe transactions atomically, honors locks, and undoes without ID drift", () => {
     const project = createCantorDemoProject();
+    project.shots[0].animations = [];
     const shotId = project.shots[0].id;
     const track = numericTrack();
     const committed = commitOperations(createHistory(project), shotId, [

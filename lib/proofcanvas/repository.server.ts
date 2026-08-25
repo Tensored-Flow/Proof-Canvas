@@ -4,14 +4,13 @@ import { z } from "zod";
 import { proofCanvasDatabase } from "./database.server";
 import {
   ProjectDocumentSchema,
-  animationAuthoringCompatibilityIssue,
   canonicalProjectJson,
   cloneSerializable,
   parseProjectDocument,
-  projectAnimationAuthoringTransitionIssue,
   projectDurationSeconds,
   type ProjectDocument,
 } from "./schema";
+import { projectAuthoringTransitionIssue } from "./authoringPolicy";
 import { createProjectTemplate, type ProjectTemplateKind } from "./templates";
 import { canonicalTimelineTime } from "./frame";
 
@@ -394,7 +393,7 @@ export class SqliteProjectRepository implements ProjectRepository {
       if (replayed) return { value: replayed, replayed: true };
       const row = this.readyActiveRow(projectId);
       this.checkRevision(row, expectedRevision);
-      const authoringIssue = projectAnimationAuthoringTransitionIssue(durableFromRow(row).document, supplied);
+      const authoringIssue = projectAuthoringTransitionIssue(durableFromRow(row).document, supplied);
       if (authoringIssue) throw new ProjectRepositoryError(400, "invalid_project", authoringIssue);
       const now = this.isoNow();
       const document = ProjectDocumentSchema.parse({
@@ -468,9 +467,9 @@ export class SqliteProjectRepository implements ProjectRepository {
       const source = this.readyActiveRow(projectId);
       this.checkRevision(source, expectedRevision);
       const sourceDocument = durableFromRow(source).document;
-      if (sourceDocument.shots.some((shot) => shot.animations.some((animation) => animationAuthoringCompatibilityIssue(animation)))) {
-        throw new ProjectRepositoryError(400, "invalid_project", "Repair or delete legacy render-unsupported animations before duplicating this project");
-      }
+      // Duplication is an exact preservation/copy boundary, not new timeline
+      // authoring. Legacy renderer-rejected authority is retained byte-for-byte
+      // under new project metadata, just as checkpoint recovery may restore it.
       const now = this.isoNow();
       const duplicateId = parseProjectId(this.randomId("project"));
       const title = requestedTitle ?? `${source.title} copy`.slice(0, 160);

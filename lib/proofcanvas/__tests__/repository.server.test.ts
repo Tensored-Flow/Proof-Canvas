@@ -33,7 +33,7 @@ import {
   openProofCanvasDatabase,
 } from "../database.server";
 import { ProjectRepositoryError, SqliteProjectRepository } from "../repository.server";
-import { PROOFCANVAS_PROJECT_MAX_BYTES, canonicalProjectJson, cloneSerializable } from "../schema";
+import { PROOFCANVAS_PROJECT_MAX_BYTES, ProjectDocumentSchema, canonicalProjectJson, cloneSerializable } from "../schema";
 
 const temporaryDirectories: string[] = [];
 const leaseWorkers: LeaseWorker[] = [];
@@ -700,11 +700,12 @@ test("checkpoints and recovers previously valid V2 easing without silently rewri
   const repository = new SqliteProjectRepository(database);
   const initial = repository.getProject(initialV3.id);
   expect(initial.document.shots[0].animations.find(({ id }) => id === emphasisId)?.easing).toBe("editorial");
-  expect(() => repository.duplicateProject({
+  const duplicatedLegacy = repository.duplicateProject({
     projectId: initial.id,
     expectedRevision: initial.revision,
-    mutationId: "mutation-reject-legacy-duplicate",
-  })).toThrow(expect.objectContaining({ status: 400, code: "invalid_project" }));
+    mutationId: "mutation-preserve-legacy-duplicate",
+  });
+  expect(repository.getProject(duplicatedLegacy.value.projectId).document.shots[0].animations.find(({ id }) => id === emphasisId)?.easing).toBe("editorial");
   const checkpoint = repository.createCheckpoint({
     projectId: initial.id,
     expectedRevision: initial.revision,
@@ -765,6 +766,84 @@ test("checkpoints and recovers previously valid V2 easing without silently rewri
   })).not.toThrow();
   expect(() => assertProofCanvasPersistenceIntegrity(database)).not.toThrow();
   database.close();
+});
+
+test("full-document save guards compiler-invalid timeline authority while exact copy remains preservative", () => {
+  const source = harness();
+  const created = source.repository.createProject({ kind: "sample", title: "Timeline transition", mutationId: "mutation-create-timeline-policy" });
+  const initial = source.repository.getProject(created.value.projectId);
+  const legacyCandidate = cloneSerializable(initial.document);
+  const shot = legacyCandidate.shots[0];
+  const object = shot.objects.find(({ id }) => id === "object-title")!;
+  delete object.parentId;
+  object.lifetime = { start: 0, end: 8 };
+  shot.duration = 8;
+  shot.objects = [object];
+  shot.animations = [{ id: "animation-repository-policy", type: "move", targetIds: [object.id], start: 1, duration: 1, easing: "linear", properties: { deltaX: 20 } }];
+  shot.propertyTracks = [{
+    id: "track-repository-policy-x",
+    target: { kind: "object", objectId: object.id },
+    property: "x",
+    keyframes: [
+      { id: "keyframe-repository-policy-a", time: 0, value: 100, interpolation: { kind: "hold" } },
+      { id: "keyframe-repository-policy-b", time: 4, value: 300, interpolation: { kind: "linear" } },
+    ],
+  }];
+  shot.audioClips = [];
+  shot.captionClips = [];
+  shot.markers = [];
+  legacyCandidate.shots = [shot];
+  const legacy = ProjectDocumentSchema.parse(legacyCandidate);
+  source.database.prepare("UPDATE projects SET document_json = ?, shot_count = ?, object_count = ?, duration_seconds = ? WHERE id = ?")
+    .run(canonicalProjectJson(legacy), 1, 1, 8, initial.id);
+
+  const durableLegacy = source.repository.getProject(initial.id);
+  const copied = source.repository.duplicateProject({
+    projectId: initial.id,
+    expectedRevision: durableLegacy.revision,
+    mutationId: "mutation-copy-timeline-policy",
+  });
+  expect(source.repository.getProject(copied.value.projectId).document.shots[0].propertyTracks[0]).toEqual(durableLegacy.document.shots[0].propertyTracks[0]);
+
+  const unrelated = cloneSerializable(durableLegacy.document);
+  unrelated.shots[0].objects[0].name = "Unrelated repository edit";
+  const unrelatedSave = source.repository.saveProject({
+    projectId: initial.id,
+    expectedRevision: durableLegacy.revision,
+    mutationId: "mutation-save-timeline-unrelated",
+    document: unrelated,
+  });
+
+  const modified = cloneSerializable(source.repository.getProject(initial.id).document);
+  modified.shots[0].propertyTracks[0].keyframes[0].value = 101;
+  expect(() => source.repository.saveProject({
+    projectId: initial.id,
+    expectedRevision: unrelatedSave.value.revision,
+    mutationId: "mutation-save-timeline-modified",
+    document: modified,
+  })).toThrow(expect.objectContaining({
+    status: 400,
+    code: "invalid_project",
+    message: expect.stringMatching(/TRACK_SEMANTIC_COLLISION.*track track-repository-policy-x.*animation animation-repository-policy/),
+  }));
+
+  const repaired = cloneSerializable(source.repository.getProject(initial.id).document);
+  repaired.shots[0].propertyTracks = [];
+  const repairedSave = source.repository.saveProject({
+    projectId: initial.id,
+    expectedRevision: unrelatedSave.value.revision,
+    mutationId: "mutation-save-timeline-repaired",
+    document: repaired,
+  });
+  const introduced = cloneSerializable(source.repository.getProject(initial.id).document);
+  introduced.shots[0].propertyTracks = cloneSerializable(legacy.shots[0].propertyTracks);
+  expect(() => source.repository.saveProject({
+    projectId: initial.id,
+    expectedRevision: repairedSave.value.revision,
+    mutationId: "mutation-save-timeline-introduced",
+    document: introduced,
+  })).toThrow(expect.objectContaining({ status: 400, code: "invalid_project", message: expect.stringContaining("introduce renderer-rejected TRACK_SEMANTIC_COLLISION") }));
+  source.database.close();
 });
 
 test("rejects recovery replay when its pre-restore checkpoint was independently quarantined", () => {

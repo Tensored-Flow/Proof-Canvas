@@ -16,6 +16,7 @@ import {
 } from "./schema";
 import { styleById, styledDisplayBounds, styledTransform } from "./styles";
 import { compareTimelineTimes } from "./frame";
+import { projectAuthoringTransitionIssue } from "./authoringPolicy";
 
 export const ManualSceneOperationSchema = z.union([
   SceneOperationSchema,
@@ -38,6 +39,17 @@ export interface OperationResult {
   project: ProjectDocument;
   applied: number;
   summary: string[];
+}
+
+export interface InspectedOperation<Operation extends ManualSceneOperation, Snapshot> {
+  operation: Operation;
+  before: Snapshot;
+  after: Snapshot;
+}
+
+export interface OperationInspectionResult<Operation extends ManualSceneOperation, Snapshot> {
+  result: OperationResult;
+  inspections: readonly InspectedOperation<Operation, Snapshot>[];
 }
 
 export type OperationValidationResult =
@@ -635,7 +647,8 @@ export function applyOperations(
   if (operations.some(({ type }) => type === "unlock-object") && operations.length !== 1) {
     throw new OperationValidationError("Unlock must be an explicit standalone transaction");
   }
-  const next = ProjectDocumentSchema.parse(cloneSerializable(project));
+  const previous = ProjectDocumentSchema.parse(cloneSerializable(project));
+  const next = cloneSerializable(previous);
   const summary: string[] = [];
   operations.forEach((candidate, index) => {
     try {
@@ -646,11 +659,38 @@ export function applyOperations(
       throw new OperationValidationError(error instanceof Error ? error.message : "Malformed operation", index);
     }
   });
+  let parsed: ProjectDocument;
   try {
-    return { project: ProjectDocumentSchema.parse(next), applied: operations.length, summary };
+    parsed = ProjectDocumentSchema.parse(next);
   } catch (error) {
     throw new OperationValidationError(error instanceof Error ? `Resulting project is invalid: ${error.message}` : "Resulting project is invalid");
   }
+  const authoringIssue = projectAuthoringTransitionIssue(previous, parsed);
+  if (authoringIssue) throw new OperationValidationError(authoringIssue);
+  return { project: parsed, applied: operations.length, summary };
+}
+
+/**
+ * Validate one atomic transaction, then inspect its sequential effects without
+ * exposing an authoring-policy bypass or retaining full project snapshots.
+ */
+export function inspectOperations<Snapshot, Operation extends ManualSceneOperation>(
+  project: ProjectDocument,
+  shotId: string,
+  operations: readonly Operation[],
+  snapshot: (project: ProjectDocument, operation: Operation, index: number) => Snapshot,
+): OperationInspectionResult<Operation, Snapshot> {
+  const result = applyOperations(project, shotId, operations);
+  const cursor = ProjectDocumentSchema.parse(cloneSerializable(project));
+  const cloneSnapshot = (value: Snapshot): Snapshot => value === undefined ? value : cloneSerializable(value);
+  const inspections = operations.map((candidate, index) => {
+    const before = cloneSnapshot(snapshot(cursor, candidate, index));
+    const operation = ManualSceneOperationSchema.parse(candidate);
+    applyOne(cursor, shotId, operation);
+    const afterProject = index === operations.length - 1 ? result.project : cursor;
+    return { operation: candidate, before, after: cloneSnapshot(snapshot(afterProject, candidate, index)) };
+  });
+  return { result, inspections };
 }
 
 export function validateOperations(

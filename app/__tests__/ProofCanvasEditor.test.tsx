@@ -2,7 +2,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import ProofCanvasEditor from '../ProofCanvasEditor'
 import { createCantorDemoProject } from '@/lib/proofcanvas/demo'
 import { logicalFrameFor, resolutionFor, type ProofCanvasAspectRatio } from '@/lib/proofcanvas/frame'
-import { PROJECT_SCHEMA_VERSION, PROOFCANVAS_PROJECT_MAX_BYTES, canonicalProjectJson, cloneSerializable } from '@/lib/proofcanvas/schema'
+import { applyOperations } from '@/lib/proofcanvas/operations'
+import { PROJECT_SCHEMA_VERSION, PROOFCANVAS_PROJECT_MAX_BYTES, ProjectDocumentSchema, canonicalProjectJson, cloneSerializable } from '@/lib/proofcanvas/schema'
 
 const createObjectURL = jest.fn(() => 'blob:proofcanvas-test')
 const revokeObjectURL = jest.fn()
@@ -323,6 +324,60 @@ describe('ProofCanvas editor client', () => {
     expect(proposal.querySelector('pre')).toHaveTextContent('"before"')
     expect(proposal.querySelector('pre')).toHaveTextContent('"after"')
     expect(proposal.querySelector('pre')).toHaveTextContent('"x": 210')
+  })
+
+  it('reviews an atomically valid AI repair without dropping its invalid intermediate prefix', async () => {
+    const project = cloneSerializable(createCantorDemoProject())
+    const shot = project.shots[0]
+    shot.animations = [{
+      id: 'animation-review-atomic',
+      type: 'move',
+      targetIds: ['object-title'],
+      start: 1,
+      duration: 1,
+      easing: 'linear',
+      properties: { deltaX: 20 },
+    }]
+    shot.propertyTracks = [{
+      id: 'track-review-title-x',
+      target: { kind: 'object', objectId: 'object-title' },
+      property: 'x',
+      keyframes: [
+        { id: 'keyframe-review-title-x-a', time: 0, value: 100, interpolation: { kind: 'hold' } },
+        { id: 'keyframe-review-title-x-b', time: 4, value: 300, interpolation: { kind: 'linear' } },
+      ],
+    }]
+    const legacy = ProjectDocumentSchema.parse(project)
+    const operations = [
+      { type: 'update-animation' as const, animationId: 'animation-review-atomic', patch: { duration: 2 } },
+      { type: 'update-animation' as const, animationId: 'animation-review-atomic', patch: { targetIds: ['object-subtitle'] } },
+    ]
+    expect(() => applyOperations(legacy, shot.id, [operations[0]])).toThrow(/cannot be modified while it remains invalid/)
+    expect(applyOperations(legacy, shot.id, operations).project.shots[0].animations[0]).toMatchObject({ duration: 2, targetIds: ['object-subtitle'] })
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, {
+      ok: true,
+      provider: 'configured-provider',
+      demoMode: false,
+      intention: 'Repair the legacy collision atomically.',
+      summary: ['Extend the move', 'Retarget the move'],
+      operations,
+    }))
+    render(<ProofCanvasEditor initialProject={legacy} aiConfigured />)
+
+    runAiPreset()
+    const proposal = await screen.findByRole('region', { name: 'Proposed changes' })
+    const details = [...proposal.querySelectorAll('pre')].map((element) => JSON.parse(element.textContent ?? '{}')) as Array<{
+      before: { animations: Array<{ duration: number; targetIds: string[] }> };
+      after: { animations: Array<{ duration: number; targetIds: string[] }> };
+    }>
+    expect(details).toHaveLength(2)
+    expect(details[0].after.animations[0]).toMatchObject({ duration: 2, targetIds: ['object-title'] })
+    expect(details[1].before.animations[0]).toMatchObject({ duration: 2, targetIds: ['object-title'] })
+    expect(details[1].after.animations[0]).toMatchObject({ duration: 2, targetIds: ['object-subtitle'] })
+
+    fireEvent.click(within(proposal).getByRole('button', { name: 'Apply proposed changes' }))
+    expect(editor()).toHaveAttribute('data-history-past-count', '1')
+    expect(screen.getByRole('status', { name: 'Editor status' })).toHaveTextContent('AI proposal applied as one transaction')
   })
 
   it('discards an in-flight provider response when the project revision changes', async () => {

@@ -1,5 +1,5 @@
 import { commandForKeyboardEvent, createEditorCommandController, EDITOR_COMMANDS } from "../editorCommands";
-import { animationSelection, keyframeSelection, normalizeEditorSelection, objectSelection, selectedAnimationIds, selectedObjectIds, shotSelection } from "../editorSelection";
+import { animationSelection, keyframeSelection, markerSelection, normalizeEditorSelection, objectSelection, selectedAnimationIds, selectedMarkerIds, selectedObjectIds, shotSelection } from "../editorSelection";
 import { createCantorDemoProject } from "../demo";
 import { commitOperations, createHistory, redo, undo } from "../history";
 
@@ -37,6 +37,45 @@ describe("editor selection and command controller", () => {
       { trackId: "missing-track", keyframeId: "missing-keyframe" },
     ]);
     expect(selection).toMatchObject({ kind: "keyframes", keyframes: [{ trackId: track.id, keyframeId: track.keyframes[0].id }] });
+  });
+
+  test("orders keyframe selection around its declared authoritative primary", () => {
+    const project = createCantorDemoProject();
+    const shot = project.shots[0];
+    shot.propertyTracks = [{
+      id: "track-test-x",
+      target: { kind: "object", objectId: shot.objects[0].id },
+      property: "x",
+      keyframes: [
+        { id: "keyframe-test-x-a", time: 0, value: 100, interpolation: { kind: "linear" } },
+        { id: "keyframe-test-x-b", time: 1, value: 120, interpolation: { kind: "linear" } },
+      ],
+    }];
+    const first = { trackId: "track-test-x", keyframeId: "keyframe-test-x-a" };
+    const second = { trackId: "track-test-x", keyframeId: "keyframe-test-x-b" };
+    expect(keyframeSelection(shot, [first, second], first)).toEqual({
+      kind: "keyframes",
+      shotId: shot.id,
+      keyframes: [second, first],
+      primaryKeyframe: first,
+    });
+  });
+
+  test("normalizes shot-scoped marker selection with an authoritative primary", () => {
+    const project = createCantorDemoProject();
+    const shot = project.shots[0];
+    shot.markers = [
+      { id: "marker-definition", time: 1, name: "Definition", color: "#ff0000" },
+      { id: "marker-proof", time: 2, name: "Proof", color: "#00ff00" },
+    ];
+    const selection = markerSelection(shot, ["marker-definition", "missing", "marker-proof", "marker-definition"], "marker-definition");
+    expect(selection).toEqual({ kind: "markers", shotId: shot.id, markerIds: ["marker-proof", "marker-definition"], primaryMarkerId: "marker-definition" });
+    expect(selectedMarkerIds(selection, shot.id)).toEqual(["marker-proof", "marker-definition"]);
+    expect(selectedObjectIds(selection, shot.id)).toEqual([]);
+
+    shot.markers = shot.markers.filter(({ id }) => id !== "marker-definition");
+    expect(normalizeEditorSelection(selection, project, shot.id)).toEqual({ kind: "markers", shotId: shot.id, markerIds: ["marker-proof"], primaryMarkerId: "marker-proof" });
+    expect(normalizeEditorSelection(selection, project, project.shots[1].id)).toEqual(shotSelection([project.shots[1].id]));
   });
 
   test("normalizes hierarchy roots and keeps the declared primary authoritative", () => {

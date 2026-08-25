@@ -2,7 +2,7 @@ import { createCantorDemoProject } from "../demo";
 import { insertSemanticComponent } from "../components";
 import { canRedo, canUndo, commitOperations, commitProject, createHistory, redo, undo } from "../history";
 import { applyOperations, duplicateObjects, effectiveLockOwner, validateOperations } from "../operations";
-import { PROOFCANVAS_SCHEMA_LIMITS, ProjectDocumentSchema, cloneProject, cloneSerializable, type SceneAnimation, type SceneObject, type SceneOperation } from "../schema";
+import { PROOFCANVAS_SCHEMA_LIMITS, ProjectDocumentSchema, cloneProject, cloneSerializable, type ProjectDocument, type SceneAnimation, type SceneObject, type SceneOperation } from "../schema";
 import { styleById, styledDisplayBounds, styledTransform } from "../styles";
 
 const SHOT = "shot-cantor-construction";
@@ -20,6 +20,32 @@ function groupObject(): SceneObject {
   };
 }
 
+function compilerConflictProject(): ProjectDocument {
+  const project = cloneSerializable(createCantorDemoProject());
+  const shot = project.shots.find(({ id }) => id === SHOT)!;
+  const object = shot.objects.find(({ id }) => id === "object-title")!;
+  delete object.parentId;
+  object.locked = false;
+  object.lifetime = { start: 0, end: 8 };
+  shot.duration = 8;
+  shot.objects = [object];
+  shot.animations = [{ id: "animation-policy-scene", type: "move", targetIds: [object.id], start: 1, duration: 1, easing: "linear", properties: { deltaX: 20 } }];
+  shot.propertyTracks = [{
+    id: "track-policy-scene-x",
+    target: { kind: "object", objectId: object.id },
+    property: "x",
+    keyframes: [
+      { id: "keyframe-policy-scene-a", time: 0, value: 100, interpolation: { kind: "hold" } },
+      { id: "keyframe-policy-scene-b", time: 4, value: 300, interpolation: { kind: "linear" } },
+    ],
+  }];
+  shot.audioClips = [];
+  shot.captionClips = [];
+  shot.markers = [];
+  project.shots = [shot];
+  return ProjectDocumentSchema.parse(project);
+}
+
 function renderedLeft(object: SceneObject, style: ReturnType<typeof styleById> extends infer T ? Exclude<T, undefined> : never): number {
   const transform = styledTransform(object, style);
   const halfWidth = (transform.width ?? 60) * Math.abs(transform.scaleX) / 2;
@@ -29,6 +55,30 @@ function renderedLeft(object: SceneObject, style: ReturnType<typeof styleById> e
 }
 
 describe("atomic scene operations", () => {
+  test("guards compiler-invalid timeline authority only at the final atomic scene boundary", () => {
+    const legacy = compilerConflictProject();
+    const unrelated = applyOperations(legacy, SHOT, [{ type: "update-object", objectId: "object-title", patch: { name: "Unrelated legacy rename" } }]).project;
+    expect(unrelated.shots[0].objects[0].name).toBe("Unrelated legacy rename");
+
+    expect(() => applyOperations(legacy, SHOT, [{
+      type: "update-keyframe",
+      trackId: "track-policy-scene-x",
+      keyframeId: "keyframe-policy-scene-a",
+      patch: { value: 101 },
+    }])).toThrow(/TRACK_SEMANTIC_COLLISION.*track track-policy-scene-x.*animation animation-policy-scene/);
+
+    const repaired = applyOperations(legacy, SHOT, [{ type: "delete-property-track", trackId: "track-policy-scene-x" }]).project;
+    expect(repaired.shots[0].propertyTracks).toEqual([]);
+    expect(() => applyOperations(repaired, SHOT, [{ type: "add-property-track", track: cloneSerializable(legacy.shots[0].propertyTracks[0]) }])).toThrow(/introduce renderer-rejected TRACK_SEMANTIC_COLLISION/);
+
+    const atomicRepair = applyOperations(legacy, SHOT, [
+      { type: "update-keyframe", trackId: "track-policy-scene-x", keyframeId: "keyframe-policy-scene-a", patch: { value: 102 } },
+      { type: "delete-animation", animationId: "animation-policy-scene" },
+    ]).project;
+    expect(atomicRepair.shots[0].animations).toEqual([]);
+    expect(atomicRepair.shots[0].propertyTracks[0].keyframes[0].value).toBe(102);
+  });
+
   test("preserves immutable snapshot references instead of quadratically cloning history", () => {
     let history = createHistory(createCantorDemoProject());
     history = commitOperations(history, SHOT, [{ type: "update-object", objectId: "object-title", patch: { name: "First" } }], "First rename");

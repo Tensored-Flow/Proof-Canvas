@@ -42,6 +42,8 @@ export interface CompilerDiagnostic {
   objectId?: string;
   animationId?: string;
   trackId?: string;
+  conflictingTrackId?: string;
+  lifetimeBoundary?: "enter" | "exit";
 }
 
 export interface CompileResult {

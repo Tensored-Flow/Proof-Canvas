@@ -3,6 +3,7 @@ import { allocateId, collectProjectIds, collectShotIds } from "./ids";
 import { addTimelineTimes, compareTimelineTimes, logicalFrameFor, resolutionFor, subtractTimelineTimes } from "./frame";
 import { firstVisibilityAnimationByTarget, previewShotAtTime } from "./preview";
 import { effectiveObjectLifetime, propertyTrackKey, samplePropertyTrack } from "./timeline";
+import { projectAuthoringTransitionIssue } from "./authoringPolicy";
 import {
   AspectRatioSchema,
   CustomEasingPresetSchema,
@@ -338,7 +339,8 @@ export function applyDocumentOperations(
   operations: readonly DocumentOperation[],
 ): DocumentOperationResult {
   if (!operations.length) throw new DocumentOperationValidationError("A transaction must contain at least one document operation");
-  const next = ProjectDocumentSchema.parse(cloneSerializable(project));
+  const previous = ProjectDocumentSchema.parse(cloneSerializable(project));
+  const next = cloneSerializable(previous);
   const summary: string[] = [];
   const idMappings: DocumentIdMapping[] = [];
   operations.forEach((candidate, index) => {
@@ -353,20 +355,23 @@ export function applyDocumentOperations(
       throw new DocumentOperationValidationError(error instanceof Error ? error.message : "Malformed document operation", index);
     }
   });
+  let parsed: ProjectDocument;
   try {
-    const parsed = ProjectDocumentSchema.parse(next);
-    return {
-      project: parsed,
-      applied: operations.length,
-      summary,
-      idMappings: mappingsToFinalIds(
-        idMappings,
-        new Set(parsed.shots.flatMap((shot) => shotEntityIds(shot))),
-      ),
-    };
+    parsed = ProjectDocumentSchema.parse(next);
   } catch (error) {
     throw new DocumentOperationValidationError(error instanceof Error ? `Resulting project is invalid: ${error.message}` : "Resulting project is invalid");
   }
+  const authoringIssue = projectAuthoringTransitionIssue(previous, parsed);
+  if (authoringIssue) throw new DocumentOperationValidationError(authoringIssue);
+  return {
+    project: parsed,
+    applied: operations.length,
+    summary,
+    idMappings: mappingsToFinalIds(
+      idMappings,
+      new Set(parsed.shots.flatMap((shot) => shotEntityIds(shot))),
+    ),
+  };
 }
 
 function boundedHint(value: string): string {

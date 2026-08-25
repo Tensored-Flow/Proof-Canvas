@@ -69,12 +69,37 @@ export interface CompilerScheduleDiagnostic {
   objectId?: string;
   animationId?: string;
   trackId?: string;
+  conflictingTrackId?: string;
+  lifetimeBoundary?: "enter" | "exit";
+}
+
+export type CompilerTimelineAuthorityIssueCode =
+  | "TRACK_EASING_DOMAIN_UNSAFE"
+  | "TRACK_SEMANTIC_COLLISION"
+  | "TRACK_TRACK_COLLISION"
+  | "LIFETIME_SEMANTIC_COLLISION"
+  | "TRACK_LIFETIME_COLLISION";
+
+/**
+ * Complete structured relation used by authoring policy. Unlike presentation
+ * diagnostics this stream is not truncated, and it deliberately excludes
+ * M4-only audio transport capability failures.
+ */
+export interface CompilerTimelineAuthorityIssue {
+  code: CompilerTimelineAuthorityIssueCode;
+  shotId: string;
+  objectId?: string;
+  animationId?: string;
+  trackId?: string;
+  conflictingTrackId?: string;
+  lifetimeBoundary?: "enter" | "exit";
 }
 
 export interface CompilerSchedule {
   shot: Shot;
   events: CompilerEvent[];
   diagnostics: CompilerScheduleDiagnostic[];
+  authorityIssues: readonly CompilerTimelineAuthorityIssue[];
   rejectedTrackIds: ReadonlySet<string>;
   workCount: number;
   helpers: { cubicBezier: boolean };
@@ -322,9 +347,40 @@ export function buildCompilerSchedule(
   const holdAuthoritySpans: RawPropertyAuthoritySpan[] = [];
   const { objects, ancestorsOf, shareHierarchy, leafIds } = objectMaps(shot);
   const diagnosticKeys = new Set<string>();
+  const authorityIssues: CompilerTimelineAuthorityIssue[] = [];
+  const authorityIssueKeys = new Set<string>();
+  const authorityCodes = new Set<CompilerTimelineAuthorityIssueCode>([
+    "TRACK_EASING_DOMAIN_UNSAFE",
+    "TRACK_SEMANTIC_COLLISION",
+    "TRACK_TRACK_COLLISION",
+    "LIFETIME_SEMANTIC_COLLISION",
+    "TRACK_LIFETIME_COLLISION",
+  ]);
+  const addAuthorityIssue = (diagnostic: CompilerScheduleDiagnostic) => {
+    if (!authorityCodes.has(diagnostic.code as CompilerTimelineAuthorityIssueCode)) return;
+    let trackId = diagnostic.trackId;
+    let conflictingTrackId = diagnostic.conflictingTrackId;
+    if (diagnostic.code === "TRACK_TRACK_COLLISION" && trackId && conflictingTrackId && trackId.localeCompare(conflictingTrackId) > 0) {
+      [trackId, conflictingTrackId] = [conflictingTrackId, trackId];
+    }
+    const issue: CompilerTimelineAuthorityIssue = {
+      code: diagnostic.code as CompilerTimelineAuthorityIssueCode,
+      shotId: shot.id,
+      objectId: diagnostic.objectId,
+      animationId: diagnostic.animationId,
+      trackId,
+      conflictingTrackId,
+      lifetimeBoundary: diagnostic.lifetimeBoundary,
+    };
+    const key = [issue.code, issue.shotId, issue.objectId ?? "", issue.animationId ?? "", issue.trackId ?? "", issue.conflictingTrackId ?? "", issue.lifetimeBoundary ?? ""].join("\u0000");
+    if (authorityIssueKeys.has(key)) return;
+    authorityIssueKeys.add(key);
+    authorityIssues.push(issue);
+  };
   const addDiagnostic = (diagnostic: CompilerScheduleDiagnostic, key: string) => {
     if (diagnosticKeys.has(key)) return;
     diagnosticKeys.add(key);
+    addAuthorityIssue(diagnostic);
     if (diagnosticKeys.size <= 64) diagnostics.push(diagnostic);
   };
 
@@ -434,8 +490,7 @@ export function buildCompilerSchedule(
 
   const semanticRanges = [...shot.animations].sort((left, right) => compareTimelineTimes(left.start, right.start) || left.id.localeCompare(right.id));
   for (const authority of holdAuthoritySpans) {
-    if (rejectedTrackIds.has(authority.trackId)) continue;
-    const collision = semanticRanges.find((animation) => {
+    const collisions = semanticRanges.filter((animation) => {
       const sameTarget = authority.target.kind === "camera"
         ? animation.type === "camera-focus"
         : animationTargetsObject(animation, authority.target.objectId, shareHierarchy);
@@ -444,6 +499,15 @@ export function buildCompilerSchedule(
         end: addTimelineTimes(animation.start, animation.duration),
       });
     });
+    for (const collision of collisions) addAuthorityIssue({
+      severity: "error",
+      code: "TRACK_SEMANTIC_COLLISION",
+      message: "",
+      trackId: authority.trackId,
+      animationId: collision.id,
+    });
+    if (rejectedTrackIds.has(authority.trackId)) continue;
+    const collision = collisions[0];
     if (!collision) continue;
     rejectedTrackIds.add(authority.trackId);
     addDiagnostic({
@@ -453,6 +517,27 @@ export function buildCompilerSchedule(
       trackId: authority.trackId,
       animationId: collision.id,
     }, `semantic-hold:${authority.trackId}:${collision.id}`);
+  }
+  const completeGroups = groupedPropertyEvents(rawEvents, new Set());
+  for (const event of completeGroups) {
+    for (const collision of semanticRanges.filter((animation) => {
+      const sameTarget = event.target.kind === "camera"
+        ? animation.type === "camera-focus"
+        : animationTargetsObject(animation, event.target.objectId, shareHierarchy);
+      if (!sameTarget) return false;
+      const semanticInterval = { start: animation.start, end: addTimelineTimes(animation.start, animation.duration) };
+      return event.point
+        ? pointStrictlyInside(event.start, semanticInterval)
+        : timeRangesOverlap(event, semanticInterval);
+    })) {
+      for (const trackId of event.trackIds) addAuthorityIssue({
+        severity: "error",
+        code: "TRACK_SEMANTIC_COLLISION",
+        message: "",
+        trackId,
+        animationId: collision.id,
+      });
+    }
   }
   for (const event of groupedPropertyEvents(rawEvents, rejectedTrackIds)) {
     const collision = semanticRanges.find((animation) => {
@@ -478,6 +563,24 @@ export function buildCompilerSchedule(
     }
   }
 
+  for (const authority of holdAuthoritySpans) {
+    for (const event of completeGroups) {
+      if (event.trackIds.includes(authority.trackId)) continue;
+      const sameMobject = authority.target.kind === "camera" && event.target.kind === "camera"
+        || authority.target.kind === "object" && event.target.kind === "object" && shareHierarchy(authority.target.objectId, event.target.objectId);
+      const temporalCollision = event.point
+        ? pointStrictlyInside(event.start, authority)
+        : timeRangesOverlap(authority, event);
+      if (!sameMobject || !temporalCollision) continue;
+      for (const conflictingTrackId of event.trackIds) addAuthorityIssue({
+        severity: "error",
+        code: "TRACK_TRACK_COLLISION",
+        message: "",
+        trackId: authority.trackId,
+        conflictingTrackId,
+      });
+    }
+  }
   let groups = groupedPropertyEvents(rawEvents, rejectedTrackIds);
   for (const authority of holdAuthoritySpans) {
     if (rejectedTrackIds.has(authority.trackId)) continue;
@@ -497,41 +600,59 @@ export function buildCompilerSchedule(
           code: "TRACK_TRACK_COLLISION",
           message: `Hold-owned property interval intersects ${trackId === authority.trackId ? event.trackIds[0] : authority.trackId} on the same Manim hierarchy; both whole tracks were omitted.`,
           trackId,
+          conflictingTrackId: trackId === authority.trackId ? event.trackIds[0] : authority.trackId,
         }, `track-hold:${trackId}:${authority.trackId}:${event.trackIds[0]}`);
       }
     }
   }
+  const propertyGroupsConflict = (left: GroupedPropertyEvent, right: GroupedPropertyEvent): boolean => {
+    const sameMobject = left.target.kind === "camera" && right.target.kind === "camera"
+      || left.target.kind === "object" && right.target.kind === "object" && shareHierarchy(left.target.objectId, right.target.objectId);
+    if (!sameMobject) return false;
+    const pointEndsForeignInterval = (point: GroupedPropertyEvent, interval: GroupedPropertyEvent) => (
+      compareTimelineTimes(point.start, interval.end) === 0
+      && !point.trackIds.every((trackId) => interval.trackIds.includes(trackId))
+      && interval.rateFunction.kind === "named"
+      && interval.rateFunction.easing === "there-and-back"
+    );
+    const temporalCollision = left.point && right.point
+      ? compareTimelineTimes(left.start, right.start) === 0
+      : left.point
+        ? pointStrictlyInside(left.start, right) || pointEndsForeignInterval(left, right)
+        : right.point
+          ? pointStrictlyInside(right.start, left) || pointEndsForeignInterval(right, left)
+          : timeRangesOverlap(left, right);
+    if (!temporalCollision) return false;
+    const visualProperties = new Set<PropertyTrack["property"]>(["fill", "stroke", "strokeWidth", "opacity"]);
+    const representableVisualHierarchy = left.target.kind === "object" && right.target.kind === "object"
+      && compareTimelineTimes(left.start, right.start) === 0
+      && compareTimelineTimes(left.end, right.end) === 0
+      && rateKey(left.rateFunction) === rateKey(right.rateFunction)
+      && left.propertyNames.every((property) => visualProperties.has(property))
+      && right.propertyNames.every((property) => visualProperties.has(property));
+    return left.key !== right.key && !representableVisualHierarchy;
+  };
+  for (let leftIndex = 0; leftIndex < completeGroups.length; leftIndex += 1) {
+    const left = completeGroups[leftIndex];
+    for (let rightIndex = leftIndex + 1; rightIndex < completeGroups.length; rightIndex += 1) {
+      const right = completeGroups[rightIndex];
+      if (!propertyGroupsConflict(left, right)) continue;
+      for (const trackId of left.trackIds) for (const conflictingTrackId of right.trackIds) addAuthorityIssue({
+        severity: "error",
+        code: "TRACK_TRACK_COLLISION",
+        message: "",
+        trackId,
+        conflictingTrackId,
+      });
+    }
+  }
+
   groups = groupedPropertyEvents(rawEvents, rejectedTrackIds);
   for (let leftIndex = 0; leftIndex < groups.length; leftIndex += 1) {
     const left = groups[leftIndex];
     for (let rightIndex = leftIndex + 1; rightIndex < groups.length; rightIndex += 1) {
       const right = groups[rightIndex];
-      const sameMobject = left.target.kind === "camera" && right.target.kind === "camera"
-        || left.target.kind === "object" && right.target.kind === "object" && shareHierarchy(left.target.objectId, right.target.objectId);
-      if (!sameMobject) continue;
-      const pointEndsForeignInterval = (point: GroupedPropertyEvent, interval: GroupedPropertyEvent) => (
-        compareTimelineTimes(point.start, interval.end) === 0
-        && !point.trackIds.every((trackId) => interval.trackIds.includes(trackId))
-        && interval.rateFunction.kind === "named"
-        && interval.rateFunction.easing === "there-and-back"
-      );
-      const temporalCollision = left.point && right.point
-        ? compareTimelineTimes(left.start, right.start) === 0
-        : left.point
-          ? pointStrictlyInside(left.start, right) || pointEndsForeignInterval(left, right)
-          : right.point
-            ? pointStrictlyInside(right.start, left) || pointEndsForeignInterval(right, left)
-            : timeRangesOverlap(left, right);
-      if (!temporalCollision) continue;
-      const visualProperties = new Set<PropertyTrack["property"]>(["fill", "stroke", "strokeWidth", "opacity"]);
-      const representableVisualHierarchy = left.target.kind === "object" && right.target.kind === "object"
-        && compareTimelineTimes(left.start, right.start) === 0
-        && compareTimelineTimes(left.end, right.end) === 0
-        && rateKey(left.rateFunction) === rateKey(right.rateFunction)
-        && left.propertyNames.every((property) => visualProperties.has(property))
-        && right.propertyNames.every((property) => visualProperties.has(property));
-      const canMerge = left.key === right.key || representableVisualHierarchy;
-      if (canMerge) continue;
+      if (!propertyGroupsConflict(left, right)) continue;
       for (const [event, counterpart] of [[left, right], [right, left]] as const) {
         for (const trackId of event.trackIds) {
           rejectedTrackIds.add(trackId);
@@ -540,6 +661,7 @@ export function buildCompilerSchedule(
             code: "TRACK_TRACK_COLLISION",
             message: `Property track intersects ${counterpart.trackIds[0]} on the same Manim hierarchy; both whole tracks were omitted.`,
             trackId,
+            conflictingTrackId: counterpart.trackIds[0],
           }, `track:${trackId}:${counterpart.trackIds[0]}`);
         }
       }
@@ -564,13 +686,22 @@ export function buildCompilerSchedule(
           message: `${boundaryKind === "enter" ? "Entrance" : "Exit"} lifetime edge crosses semantic animation ${animation.id} on ${leaf.id}'s hierarchy.`,
           objectId: leaf.id,
           animationId: animation.id,
+          lifetimeBoundary: boundaryKind,
         }, `lifetime-semantic:${boundaryKind}:${leaf.id}:${animation.id}`);
       }
       for (const authority of holdAuthoritySpans) {
-        if (rejectedTrackIds.has(authority.trackId)) continue;
         const targetsLifetimeHierarchy = authority.target.kind === "object"
           && shareHierarchy(authority.target.objectId, leaf.id);
         if (!targetsLifetimeHierarchy || !pointStrictlyInside(time, authority)) continue;
+        addAuthorityIssue({
+          severity: "error",
+          code: "TRACK_LIFETIME_COLLISION",
+          message: "",
+          objectId: leaf.id,
+          trackId: authority.trackId,
+          lifetimeBoundary: boundaryKind,
+        });
+        if (rejectedTrackIds.has(authority.trackId)) continue;
         rejectedTrackIds.add(authority.trackId);
         addDiagnostic({
           severity: "error",
@@ -578,7 +709,25 @@ export function buildCompilerSchedule(
           message: `Hold-owned ${authority.property} interval crosses ${leaf.id}'s ${boundaryKind} lifetime edge through the same Manim hierarchy; the whole track was omitted.`,
           objectId: leaf.id,
           trackId: authority.trackId,
+          lifetimeBoundary: boundaryKind,
         }, `lifetime-hold:${boundaryKind}:${leaf.id}:${authority.trackId}`);
+      }
+      for (const event of completeGroups) {
+        if (!eventTargetsObject(event, leaf.id, shareHierarchy) || event.point) continue;
+        const endsAtBoundary = compareTimelineTimes(event.start, time) < 0
+          && compareTimelineTimes(event.end, time) === 0;
+        const unsafeThereAndBackEndpoint = endsAtBoundary
+          && event.rateFunction.kind === "named"
+          && event.rateFunction.easing === "there-and-back";
+        if (!pointStrictlyInside(time, event) && !unsafeThereAndBackEndpoint) continue;
+        for (const trackId of event.trackIds) addAuthorityIssue({
+          severity: "error",
+          code: "TRACK_LIFETIME_COLLISION",
+          message: "",
+          objectId: leaf.id,
+          trackId,
+          lifetimeBoundary: boundaryKind,
+        });
       }
       for (const event of groups) {
         if (!eventTargetsObject(event, leaf.id, shareHierarchy) || event.point) continue;
@@ -596,6 +745,7 @@ export function buildCompilerSchedule(
             message: `Property track ${endsAtBoundary ? "ends at" : "crosses"} ${leaf.id}'s ${boundaryKind} lifetime edge through the same Manim hierarchy; the whole track was omitted.`,
             objectId: leaf.id,
             trackId,
+            lifetimeBoundary: boundaryKind,
           }, `lifetime-track:${boundaryKind}:${leaf.id}:${trackId}`);
         }
       }
@@ -711,6 +861,7 @@ export function buildCompilerSchedule(
     shot: { ...shot, propertyTracks: admittedTracks },
     events,
     diagnostics,
+    authorityIssues,
     rejectedTrackIds,
     workCount,
     helpers: { cubicBezier: propertyEvents.some(({ rateFunction }) => rateFunction.kind === "custom-bezier") },
