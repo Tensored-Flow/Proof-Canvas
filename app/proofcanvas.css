@@ -81,7 +81,7 @@
 .pc-align-actions { display: flex; gap: 3px; }
 .pc-align-actions button { padding: 3px 5px; font-size: 10px; }
 .pc-stage-wrap { position: relative; display: flex; align-items: center; justify-content: center; min-height: 0; margin: 12px 18px 8px; border: 1px solid #c8bea9; box-shadow: 0 7px 24px rgba(37, 39, 34, .14); }
-.pc-stage { display: block; width: 100%; max-height: 100%; aspect-ratio: 16 / 9; touch-action: none; user-select: none; }
+.pc-stage { display: block; width: 100%; max-height: 100%; aspect-ratio: var(--pc-stage-aspect, 16 / 9); touch-action: none; user-select: none; }
 .pc-stage-caption { position: absolute; right: 5px; bottom: 3px; left: 5px; display: flex; justify-content: space-between; border-top: 1px solid rgba(79, 83, 76, .28); background: rgba(243, 238, 223, .88); padding: 2px 4px; color: #4f534c; font-family: var(--font-mono), monospace; font-size: 10px; letter-spacing: .03em; pointer-events: none; }
 .pc-status { align-self: center; overflow: hidden; padding: 0 9px; color: var(--pc-muted); font-family: var(--font-mono), monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .pc-stage:focus-visible { outline: 3px solid var(--pc-cool); outline-offset: -3px; }

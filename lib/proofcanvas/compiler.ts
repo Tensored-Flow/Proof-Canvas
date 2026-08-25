@@ -1,24 +1,39 @@
 import {
   PROOFCANVAS_SCHEMA_LIMITS,
   PROOFCANVAS_RENDER_SOURCE_MAX_BYTES,
-  PROOFCANVAS_TIME_EPSILON,
   ProjectDocumentSchema,
   RestrictedExpressionSchema,
-  propertyTrackValueValid,
   objectTypeSupportsStyleProperty,
   utf8ByteLength,
   type ProjectDocument,
-  type PropertyTrack,
   type RestrictedExpression,
   type SceneAnimation,
   type SceneObject,
   type Shot,
   type StylePack,
 } from "./schema";
-import { firstVisibilityAnimationByTarget, initiallyHiddenByEntranceIds, previewShotAtAnimationEnd, previewShotAtTime } from "./preview";
+import { firstVisibilityAnimationByTarget, initiallyHiddenByEntranceIds, previewShotAtAnimationEnd, previewShotAtAnimationPeak, previewShotAtTime, previewShotBeforePointEventsAtTime } from "./preview";
 import { styledTransform } from "./styles";
-import { easingProgressBounds, manimRateFunctionName } from "./easing";
-import { objectExistsAtTime, orderedPropertyTracks } from "./timeline";
+import { manimRateFunctionName } from "./easing";
+import { effectiveObjectLifetime, objectExistsAtTime } from "./timeline";
+import {
+  addTimelineTimes,
+  compareTimelineEventStarts,
+  compareTimelineTimes,
+  editorLengthToManim,
+  editorPointToManim,
+  isCanonicalTimelineTime,
+  positiveTimelineIntervalsOverlap,
+  subtractTimelineTimes,
+} from "./frame";
+import { collectProjectIds } from "./ids";
+import {
+  buildCompilerSchedule,
+  compareCompilerEvents,
+  type CompilerEvent,
+  type CompilerRateFunction,
+  type CompilerSchedule,
+} from "./compilerSchedule";
 
 export interface CompilerDiagnostic {
   severity: "info" | "warning" | "error";
@@ -80,18 +95,44 @@ function pyNumber(value: number): string {
   return Number.isInteger(value) ? `${value}.0` : Number(value.toFixed(8)).toString();
 }
 
-// Generated source intentionally keeps numeric literals compact. Runtime
-// values need one extra invariant: every schema-valid positive animation must
-// remain positive after that eight-decimal serialization step.
-const MIN_EMITTED_POSITIVE_DURATION = 0.00000001;
-
 function emittedPositiveDuration(value: number): number {
-  const rounded = Number(value.toFixed(8));
-  return rounded > 0 ? rounded : MIN_EMITTED_POSITIVE_DURATION;
+  if (!(value > 0) || !isCanonicalTimelineTime(value)) {
+    throw new Error("Compiler duration must be a positive canonical timeline tick");
+  }
+  return value;
 }
 
 function pyDuration(value: number): string {
   return pyNumber(emittedPositiveDuration(value));
+}
+
+const PROOFCANVAS_CUBIC_BEZIER_HELPER = [
+  "def proofcanvas_cubic_bezier(x, x1, y1, x2, y2):",
+  "    x = min(1.0, max(0.0, x))",
+  "    if x == 0.0 or x == 1.0:",
+  "        return x",
+  "    lower = 0.0",
+  "    upper = 1.0",
+  "    for iteration in range(32):",
+  "        candidate = (lower + upper) / 2.0",
+  "        inverse = 1.0 - candidate",
+  "        value = 3.0 * inverse * inverse * candidate * x1 + 3.0 * inverse * candidate * candidate * x2 + candidate * candidate * candidate",
+  "        if value < x:",
+  "            lower = candidate",
+  "        else:",
+  "            upper = candidate",
+  "    candidate = (lower + upper) / 2.0",
+  "    inverse = 1.0 - candidate",
+  "    return 3.0 * inverse * inverse * candidate * y1 + 3.0 * inverse * candidate * candidate * y2 + candidate * candidate * candidate",
+].join("\n");
+
+function compilerRateExpression(rateFunction: CompilerRateFunction): string {
+  if (rateFunction.kind === "named") return easingName(rateFunction.easing);
+  // Pinned Manim 0.21 completes a zero-runtime Transform at alpha=1. Hold and
+  // delayed-first transitions therefore need no privileged renderer helper.
+  if (rateFunction.kind === "hold") return "linear";
+  const { x1, y1, x2, y2 } = rateFunction.curve;
+  return `(lambda x: proofcanvas_cubic_bezier(x, ${pyNumber(x1)}, ${pyNumber(y1)}, ${pyNumber(x2)}, ${pyNumber(y2)}))`;
 }
 
 const PYTHON_IDENTIFIER_LIMIT = 80;
@@ -147,7 +188,7 @@ function allocateVariable(base: string, used: Set<string>): string {
 function variableMaps(project: ProjectDocument): CompilerVariableMaps {
   const objects = new Map<string, string>();
   const references = new Map<string, string>();
-  const used = new Set<string>();
+  const used = new Set<string>(["proofcanvas_cubic_bezier"]);
   for (const shot of project.shots) {
     for (const object of shot.objects) {
       objects.set(object.id, allocateVariable(variableBase(object.name), used));
@@ -169,6 +210,12 @@ function variableMaps(project: ProjectDocument): CompilerVariableMaps {
     }
     for (const track of shot.propertyTracks) {
       if (track.target.kind === "object") addReferenceLeaves(track.target.objectId);
+    }
+    for (const object of shot.objects) {
+      const lifetime = effectiveObjectLifetime(shot, object.id);
+      if (lifetime && (compareTimelineTimes(lifetime.start, 0) > 0 || compareTimelineTimes(lifetime.end, shot.duration) < 0)) {
+        addReferenceLeaves(object.id);
+      }
     }
     for (const object of shot.objects) {
       if (!referenceTargetIds.has(object.id)) continue;
@@ -195,19 +242,12 @@ function restrictedExpression(expression: RestrictedExpression): string {
 }
 
 function coordinate(object: SceneObject, project: ProjectDocument): string {
-  const frameWidth = project.settings.aspectRatio === "16:9" ? 960 : project.settings.aspectRatio === "9:16" ? 540 : 720;
-  const frameHeight = project.settings.aspectRatio === "16:9" ? 540 : project.settings.aspectRatio === "9:16" ? 960 : 720;
-  const manimWidth = project.settings.aspectRatio === "16:9" ? 14.222222 : 8;
-  const scale = manimWidth / frameWidth;
-  const x = (object.transform.x - frameWidth / 2) * scale;
-  const y = (frameHeight / 2 - object.transform.y) * scale;
+  const { x, y } = editorPointToManim(project.settings.aspectRatio, object.transform);
   return `[${pyNumber(x)}, ${pyNumber(y)}, 0]`;
 }
 
 function size(value: number | undefined, project: ProjectDocument): number {
-  const frameWidth = project.settings.aspectRatio === "16:9" ? 960 : project.settings.aspectRatio === "9:16" ? 540 : 720;
-  const manimWidth = project.settings.aspectRatio === "16:9" ? 14.222222 : 8;
-  return Math.max(0.02, (value ?? 40) * manimWidth / frameWidth);
+  return Math.max(0.02, editorLengthToManim(project.settings.aspectRatio, value ?? 40));
 }
 
 function styleChain(object: SceneObject, style: StylePack): string {
@@ -485,11 +525,12 @@ function targetAnimation(
   variable: string,
   referenceVariable: string | undefined,
   project: ProjectDocument,
+  rate: string,
+  point: boolean,
   absoluteTarget?: string,
   hiddenAtStart = false,
 ): string {
-  const runTime = pyDuration(animation.duration);
-  const rate = easingName(animation.easing);
+  const runTime = point ? "0.0" : pyDuration(animation.duration);
   switch (animation.type) {
     case "appear": return absoluteTarget
       ? `Transform(${variable}, ${absoluteTarget}, run_time=${runTime}, rate_func=${rate})`
@@ -510,8 +551,8 @@ function targetAnimation(
     case "transform":
       return `Transform(${variable}, ${absoluteTarget ?? copyTransformTarget(object, referenceTransform, targetTransform, referenceVariable!, project)}, run_time=${runTime}, rate_func=${rate})`;
     case "emphasise":
-      if (hiddenAtStart) return `Wait(${runTime})`;
-      return `Indicate(${variable}, color=${pyString(project.styles.find(({ id }) => id === project.activeStyleId)!.colors.warmAccent)}, scale_factor=${pyNumber(finite(animation.properties.scale, 1.08))}, run_time=${runTime}, rate_func=rate_functions.there_and_back)`;
+      if (hiddenAtStart) return `Succession(Wait(${runTime}), group=Group(), run_time=${runTime})`;
+      return `Indicate(${variable}, color=${pyString(project.styles.find(({ id }) => id === project.activeStyleId)!.colors.warmAccent)}, scale_factor=${pyNumber(finite(animation.properties.scale, 1.08))}, run_time=${runTime}, rate_func=${rate})`;
     case "camera-focus":
       return "";
   }
@@ -557,9 +598,15 @@ function canUseNativeEntrance(
   firstVisibility: ReturnType<typeof firstVisibilityAnimationByTarget>,
 ): boolean {
   if (!ENTRANCE_ANIMATION_TYPES.has(animation.type)) return false;
+  // Isolated pinned-Manim probes reach the full there-and-back path peak and
+  // restore a hidden endpoint. However, the native path animation leaves a
+  // degenerate internal state that leaks visible pixels during a later hidden
+  // Move/Transform. Keep this combination fail-closed until that follow-up
+  // state can be represented exactly.
+  if (animation.easing === "there-and-back" && (animation.type === "write" || animation.type === "create")) return false;
   if (!renderableVisibilityFamilyIds(object, shot, objects).every((id) => firstVisibility.get(id)?.id === animation.id)) return false;
   return !shot.animations.some((candidate) => (
-    candidate.start < animation.start
+    compareTimelineTimes(candidate.start, animation.start) < 0
     && SPATIAL_ANIMATION_TYPES.has(candidate.type)
     && candidate.targetIds.some((targetId) => targetAffectsObjectFamily(targetId, object, objects))
   ));
@@ -579,7 +626,7 @@ function previewTargetIsHidden(
 }
 
 function animationExpression(
-  animation: SceneAnimation,
+  event: CompilerEvent,
   shot: Shot,
   project: ProjectDocument,
   variables: ReadonlyMap<string, string>,
@@ -589,26 +636,63 @@ function animationExpression(
   firstVisibility: ReturnType<typeof firstVisibilityAnimationByTarget>,
   previewAt: (time: number) => ReturnType<typeof previewShotAtTime>,
   previewAtEnd: (animation: SceneAnimation) => ReturnType<typeof previewShotAtAnimationEnd>,
+  previewBeforePointsAt: (time: number) => ReturnType<typeof previewShotBeforePointEventsAtTime>,
 ): string {
+  const animation = event.animation;
+  const point = event.start === event.end;
+  const rate = compilerRateExpression(event.rateFunction);
   diagnoseAnimationProperties(animation, diagnostics);
+  if (animation.type === "emphasise" && animation.easing !== "there-and-back") {
+    diagnostics.push({
+      severity: "error",
+      code: "SEMANTIC_EASING_UNSUPPORTED",
+      message: "Emphasise is an intrinsic pulse and requires there-and-back easing in preview and Manim.",
+      animationId: animation.id,
+    });
+  }
   // The preview reducer is the semantic authority for state at an animation's
   // start. Using that state keeps generated relative Manim operations correct
   // after earlier scale, transform, move, or camera animations.
   const stateAtStart = previewAt(animation.start);
+  const compilerOwnedTrack = event.kind === "property-span";
   const stateAtEnd = previewAtEnd(animation);
-  const compilerOwnedTrack = animation.id.startsWith("compiler-track-");
+  const stateBeforeEndpointPoints = point
+    ? stateAtEnd
+    : previewBeforePointsAt(addTimelineTimes(animation.start, animation.duration));
+  // A semantic there-and-back animation reaches its authored target halfway
+  // through and returns to its start state at the endpoint. Absolute group and
+  // visibility targets must therefore be built from the peak snapshot. A
+  // compiler-owned property span is different: it targets the right keyframe
+  // and is followed by an exact zero-time endpoint assignment.
+  const stateAtTarget = !compilerOwnedTrack && animation.easing === "there-and-back" && animation.duration > 0
+    ? previewShotAtAnimationPeak(shot, animation)
+    : compilerOwnedTrack && event.rateFunction.kind === "named" && event.rateFunction.easing === "there-and-back"
+      ? stateAtEnd
+      : stateBeforeEndpointPoints;
   if (animation.type === "camera-focus") {
-    const authoritative = compilerOwnedTrack ? stateAtEnd.camera : undefined;
+    const authoritative = compilerOwnedTrack
+      ? { ...stateBeforeEndpointPoints.camera }
+      : undefined;
+    if (authoritative && event.kind === "property-span" && event.target.kind === "camera") {
+      // The positive target owns only its grouped track properties. Foreign
+      // singleton/hold points at this exact endpoint run in the following
+      // schedule phase and must not leak into the preceding interpolation.
+      for (const property of event.propertyNames) {
+        if (property === "x" || property === "y" || property === "zoom" || property === "rotation") {
+          authoritative[property] = stateAtEnd.camera[property];
+        }
+      }
+    }
     const x = authoritative?.x ?? finite(animation.properties.x, stateAtStart.camera.x);
     const y = authoritative?.y ?? finite(animation.properties.y, stateAtStart.camera.y);
     const zoom = authoritative?.zoom ?? finite(animation.properties.zoom, stateAtStart.camera.zoom);
     const rotation = authoritative?.rotation ?? finite(animation.properties.rotation, stateAtStart.camera.rotation);
     const proxy: SceneObject = { id: "camera", type: "group", name: "Camera", locked: false, visible: true, transform: { x, y, rotation: 0, scaleX: 1, scaleY: 1 }, style: {}, properties: {} };
-    return `Transform(self.camera.frame, Rectangle(width=config.frame_width / ${pyNumber(zoom)}, height=config.frame_height / ${pyNumber(zoom)}).move_to(${coordinate(proxy, project)}).rotate(${pyNumber(rotation)} * DEGREES), run_time=${pyDuration(animation.duration)}, rate_func=${easingName(animation.easing)})`;
+    return `Transform(self.camera.frame, Rectangle(width=config.frame_width / ${pyNumber(zoom)}, height=config.frame_height / ${pyNumber(zoom)}).move_to(${coordinate(proxy, project)}).rotate(${pyNumber(rotation)} * DEGREES), run_time=${point ? "0.0" : pyDuration(animation.duration)}, rate_func=${rate})`;
   }
   const objectMap = new Map(shot.objects.map((object) => [object.id, object]));
   const previewObjectMap = new Map(stateAtStart.objects.map((object) => [object.id, object]));
-  const endObjectMap = new Map(stateAtEnd.objects.map((object) => [object.id, object]));
+  const targetObjectMap = new Map(stateAtTarget.objects.map((object) => [object.id, object]));
   const activeStyle = project.styles.find(({ id }) => id === project.activeStyleId)!;
   const visibleTargetIds = animation.targetIds.filter((targetId) => {
     const object = objectMap.get(targetId);
@@ -624,12 +708,33 @@ function animationExpression(
     }
     return false;
   });
-  if (visibleTargetIds.length === 0) return `Wait(${pyDuration(animation.duration)})`;
+  if (visibleTargetIds.length === 0) {
+    const runTime = point ? "0.0" : pyDuration(animation.duration);
+    return `Succession(Wait(${runTime}), group=Group(), run_time=${runTime})`;
+  }
+  if (animation.easing === "there-and-back" && (animation.type === "write" || animation.type === "create")) {
+    diagnostics.push({
+      severity: "error",
+      code: "SEMANTIC_EASING_UNSUPPORTED",
+      message: `${animation.type} with there-and-back is rejected because pinned Manim leaks native path state into hidden spatial follow-up animations.`,
+      animationId: animation.id,
+    });
+  }
+  if (event.kind === "lifetime-exit") {
+    // FadeOut restores the source mobject's opacity before removal in pinned
+    // Manim 0.21. A persistent exact-state Transform keeps an expired leaf at
+    // opacity zero if a later ancestor animation re-adds its family.
+    const expressions = visibleTargetIds.map((targetId) => {
+      const variable = variables.get(targetId)!;
+      return `Transform(${variable}, ${variable}.copy().set_opacity(0.0), run_time=0.0, rate_func=linear)`;
+    });
+    return expressions.length === 1 ? expressions[0] : `AnimationGroup(${expressions.join(", ")}, lag_ratio=0, run_time=0.0)`;
+  }
   const expressions = visibleTargetIds.map((targetId) => {
     const object = objectMap.get(targetId)!;
     const semanticStart = previewObjectMap.get(targetId)?.transform ?? object.transform;
     const semanticTarget = compilerOwnedTrack
-      ? endObjectMap.get(targetId)?.transform ?? semanticStart
+      ? targetObjectMap.get(targetId)?.transform ?? semanticStart
       : semanticAnimationTarget(animation, semanticStart);
     const referenceTransform = referenceTransforms.get(object.id)
       ?? safeDerivedTransform(styledTransform(object, activeStyle), object.transform, diagnostics, object.id);
@@ -642,6 +747,10 @@ function animationExpression(
       referenceTransform,
     );
     const variable = variables.get(targetId)!;
+    if (event.kind === "lifetime-enter") {
+      const exactTarget = `${copyTransformTarget(object, referenceTransform, targetTransform, references.get(targetId)!, project)}${visualTargetChain(targetObjectMap.get(targetId) ?? object, activeStyle)}`;
+      return `Succession(Transform(${variable}, ${exactTarget}, run_time=0.0, rate_func=linear), FadeIn(${variable}, run_time=0.0, rate_func=linear), group=Group(), run_time=0.0)`;
+    }
     const nativeEntrance = canUseNativeEntrance(animation, object, shot, objectMap, firstVisibility);
     if (object.type === "group" && groupClass(object, shot) === "Group" && (animation.type === "create" || animation.type === "write")) {
       diagnostics.push({
@@ -653,7 +762,7 @@ function animationExpression(
         objectId: object.id,
         animationId: animation.id,
       });
-      if (nativeEntrance) return `FadeIn(${variable}, run_time=${pyDuration(animation.duration)}, rate_func=${easingName(animation.easing)})`;
+      if (nativeEntrance) return `FadeIn(${variable}, run_time=${point ? "0.0" : pyDuration(animation.duration)}, rate_func=${rate})`;
     }
     const needsAbsoluteTarget = SPATIAL_ANIMATION_TYPES.has(animation.type)
       || animation.type === "fade-out"
@@ -668,11 +777,11 @@ function animationExpression(
           activeStyle,
           references,
           referenceTransforms,
-          stateAtEnd,
+          stateAtTarget,
           diagnostics,
           animation.id,
         )
-        : `${copyTransformTarget(object, referenceTransform, targetTransform, references.get(targetId)!, project)}${visualTargetChain(endObjectMap.get(targetId) ?? object, activeStyle)}`;
+        : `${copyTransformTarget(object, referenceTransform, targetTransform, references.get(targetId)!, project)}${visualTargetChain(targetObjectMap.get(targetId) ?? object, activeStyle)}`;
     }
     const hiddenAtStart = previewTargetIsHidden(object, shot, objectMap, previewObjectMap);
     return targetAnimation(
@@ -683,11 +792,16 @@ function animationExpression(
       variable,
       references.get(targetId),
       project,
+      rate,
+      point,
       absoluteTarget,
       hiddenAtStart,
     );
   });
-  return expressions.length === 1 ? expressions[0] : `AnimationGroup(${expressions.join(", ")}, lag_ratio=0)`;
+  const runTime = point ? "0.0" : pyDuration(animation.duration);
+  return expressions.length === 1
+    ? expressions[0]
+    : `AnimationGroup(${expressions.join(", ")}, lag_ratio=0, run_time=${runTime})`;
 }
 
 function ancestorIds(object: SceneObject, objects: ReadonlyMap<string, SceneObject>): string[] {
@@ -733,350 +847,139 @@ function groupClass(group: SceneObject, shot: Shot): "Group" | "VGroup" {
 }
 
 interface AnimationComponent {
-  animations: SceneAnimation[];
+  events: CompilerEvent[];
   start: number;
   end: number;
 }
 
 function timeRangesOverlap(left: { start: number; end: number }, right: { start: number; end: number }): boolean {
-  return left.start < right.end - PROOFCANVAS_TIME_EPSILON && right.start < left.end - PROOFCANVAS_TIME_EPSILON;
+  return positiveTimelineIntervalsOverlap(left, right);
 }
 
-interface CompilerTrackPlan {
-  shot: Shot;
-  animations: SceneAnimation[];
-  diagnostics: CompilerDiagnostic[];
+function eventsTemporallyConnected(left: CompilerEvent, right: CompilerEvent): boolean {
+  const leftPoint = left.start === left.end;
+  const rightPoint = right.start === right.end;
+  if (leftPoint && rightPoint) return compareTimelineTimes(left.start, right.start) === 0;
+  if (leftPoint) {
+    return compareTimelineTimes(left.start, right.start) >= 0 && compareTimelineTimes(left.start, right.end) <= 0;
+  }
+  if (rightPoint) {
+    return compareTimelineTimes(right.start, left.start) >= 0 && compareTimelineTimes(right.start, left.end) <= 0;
+  }
+  return timeRangesOverlap(left, right);
 }
 
-const MAX_TRACK_CONFLICT_DIAGNOSTICS = 64;
-const VISUAL_TRACK_PROPERTIES = new Set<PropertyTrack["property"]>(["fill", "stroke", "strokeWidth", "opacity"]);
+function animationComponents(events: readonly CompilerEvent[]): AnimationComponent[] {
+  const ordered = [...events].sort(compareCompilerEvents);
+  const parents = ordered.map((_, index) => index);
+  const find = (index: number): number => parents[index] === index ? index : (parents[index] = find(parents[index]));
+  const union = (left: number, right: number) => {
+    const leftRoot = find(left);
+    const rightRoot = find(right);
+    if (leftRoot !== rightRoot) parents[rightRoot] = leftRoot;
+  };
+  for (let left = 0; left < ordered.length; left += 1) {
+    for (let right = left + 1; right < ordered.length; right += 1) {
+      if (eventsTemporallyConnected(ordered[left], ordered[right])) union(left, right);
+    }
+  }
+  const grouped = new Map<number, CompilerEvent[]>();
+  ordered.forEach((event, index) => grouped.set(find(index), [...(grouped.get(find(index)) ?? []), event]));
+  return [...grouped.values()].map((componentEvents) => ({
+    events: componentEvents.sort(compareCompilerEvents),
+    start: Math.min(...componentEvents.map(({ start }) => start)),
+    end: Math.max(...componentEvents.map(({ end }) => end)),
+  })).sort((left, right) => compareTimelineEventStarts(left, right) || compareTimelineTimes(left.end, right.end) || compareCompilerEvents(left.events[0], right.events[0]));
+}
 
-function compilerTrackPlan(shot: Shot): CompilerTrackPlan {
-  interface GroupedSegment {
-    key: string;
-    target: PropertyTrack["target"];
-    start: number;
-    end: number;
-    easing: SceneAnimation["easing"];
-    properties: Record<string, number>;
-    trackIds: string[];
-    propertyNames: string[];
-  }
-  interface TrackSegment {
-    key: string;
-    target: PropertyTrack["target"];
-    start: number;
-    end: number;
-    easing: SceneAnimation["easing"];
-    trackId: string;
-    property: PropertyTrack["property"];
-    rightValue: PropertyTrack["keyframes"][number]["value"];
-  }
-  const grouped = new Map<string, GroupedSegment>();
-  const trackSegments: TrackSegment[] = [];
-  const diagnostics: CompilerDiagnostic[] = [];
-  const rejectedTrackIds = new Set<string>();
+function eventTargetIds(event: CompilerEvent): string[] {
+  return event.animation.type === "camera-focus" ? ["camera"] : event.animation.targetIds;
+}
+
+function eventLanes(component: AnimationComponent, shot: Shot): CompilerEvent[][] {
   const objects = new Map(shot.objects.map((object) => [object.id, object]));
-  const ancestorCache = new Map<string, ReadonlySet<string>>();
-  const ancestorsOf = (objectId: string): ReadonlySet<string> => {
-    const cached = ancestorCache.get(objectId);
-    if (cached) return cached;
-    const ancestors = new Set<string>();
-    let cursor = objects.get(objectId);
-    while (cursor?.parentId && !ancestors.has(cursor.parentId)) {
-      ancestors.add(cursor.parentId);
+  const ancestors = (id: string) => {
+    const result = new Set([id]);
+    let cursor = objects.get(id);
+    while (cursor?.parentId && !result.has(cursor.parentId)) {
+      result.add(cursor.parentId);
       cursor = objects.get(cursor.parentId);
     }
-    ancestorCache.set(objectId, ancestors);
-    return ancestors;
+    return result;
   };
-  const targetsShareHierarchy = (leftId: string, rightId: string) => (
-    leftId === rightId || ancestorsOf(leftId).has(rightId) || ancestorsOf(rightId).has(leftId)
-  );
-  for (const track of orderedPropertyTracks(shot)) {
-    if (track.keyframes[0].time > PROOFCANVAS_TIME_EPSILON) {
-      diagnostics.push({ severity: "error", code: "TRACK_DELAYED_INITIAL_STATE_UNSUPPORTED", message: "Tracks whose first keyframe is after time zero require an exact discontinuous renderer assignment and are rejected until final timeline/compiler support.", trackId: track.id });
-      rejectedTrackIds.add(track.id);
-      continue;
-    }
-    if (track.target.kind === "audio") {
-      diagnostics.push({ severity: "error", code: "AUDIO_TRACK_RENDER_UNSUPPORTED", message: "Audio property tracks cannot be transported or muxed by the current renderer and are rejected until Slice 4.", trackId: track.id });
-      rejectedTrackIds.add(track.id);
-      continue;
-    }
-    for (let index = 0; index + 1 < track.keyframes.length; index += 1) {
-      const left = track.keyframes[index];
-      const right = track.keyframes[index + 1];
-      if (left.interpolation.kind === "hold" || left.interpolation.kind === "custom-bezier") {
-        diagnostics.push({
-          severity: "error",
-          code: "TRACK_INTERPOLATION_UNSUPPORTED",
-          message: `${left.interpolation.kind} interpolation is exact in preview but is outside the current fail-closed Manim rate-function policy.`,
-          trackId: track.id,
-        });
-        rejectedTrackIds.add(track.id);
-        continue;
-      }
-      if (typeof left.value === "number" && typeof right.value === "number") {
-        const easing = left.interpolation.kind === "linear" ? "linear" : left.interpolation.easing;
-        const [minimumProgress, maximumProgress] = easingProgressBounds(easing);
-        const candidates = [minimumProgress, maximumProgress].map((progress) => left.value as number + ((right.value as number) - (left.value as number)) * progress);
-        const isScale = ["scale", "scaleX", "scaleY"].includes(track.property);
-        const endpointSign = left.value > 0 && right.value > 0 ? 1 : left.value < 0 && right.value < 0 ? -1 : 0;
-        const crossesInvalidScale = isScale && (endpointSign === 0 || candidates.some((value) => (
-          value * endpointSign < PROOFCANVAS_SCHEMA_LIMITS.animationScaleMinMagnitude
-          || Math.abs(value) > PROOFCANVAS_SCHEMA_LIMITS.animationScaleMaxMagnitude
-        )));
-        if (crossesInvalidScale || candidates.some((value) => !propertyTrackValueValid(track.property, value))) {
-          diagnostics.push({
-            severity: "error",
-            code: "TRACK_EASING_DOMAIN_UNSAFE",
-            message: `${easing} interpolation would leave the validated ${track.property} domain; preview clamps the unsafe state and Manim export is rejected until an exact bounded renderer rate function is supported.`,
-            trackId: track.id,
-          });
-          rejectedTrackIds.add(track.id);
-          continue;
-        }
-      } else if (typeof left.value === "string" && typeof right.value === "string") {
-        const easing = left.interpolation.kind === "linear" ? "linear" : left.interpolation.easing;
-        const [minimumProgress, maximumProgress] = easingProgressBounds(easing);
-        if (minimumProgress < 0 || maximumProgress > 1) {
-          diagnostics.push({
-            severity: "error",
-            code: "TRACK_EASING_DOMAIN_UNSAFE",
-            message: `${easing} interpolation would leave the validated ${track.property} color interpolation domain; preview clamps the unsafe state and Manim export is rejected until an exact bounded renderer rate function is supported.`,
-            trackId: track.id,
-          });
-          rejectedTrackIds.add(track.id);
-          continue;
-        }
-      }
-      const easing = left.interpolation.kind === "linear" ? "linear" : left.interpolation.easing;
-      const targetKey = track.target.kind === "camera" ? "camera" : `object:${track.target.objectId}`;
-      const key = `${targetKey}:${left.time}:${right.time}:${easing}`;
-      trackSegments.push({ key, target: track.target, start: left.time, end: right.time, easing, trackId: track.id, property: track.property, rightValue: right.value });
-      const segment = grouped.get(key) ?? {
-        key,
-        target: track.target,
-        start: left.time,
-        end: right.time,
-        easing,
-        properties: {},
-        trackIds: [],
-        propertyNames: [],
-      };
-      segment.trackIds.push(track.id);
-      segment.propertyNames.push(track.property);
-      if (typeof right.value === "number") {
-        if (track.property === "scale") {
-          segment.properties.scaleX = right.value;
-          segment.properties.scaleY = right.value;
-        } else if (!["opacity", "strokeWidth"].includes(track.property)) segment.properties[track.property] = right.value;
-      }
-      grouped.set(key, segment);
-    }
-  }
-
-  const result: SceneAnimation[] = [];
-  const buildSurvivingGroups = (): GroupedSegment[] => {
-    const survivingGroups = new Map<string, GroupedSegment>();
-    for (const raw of trackSegments.filter(({ trackId }) => !rejectedTrackIds.has(trackId))) {
-      const segment = survivingGroups.get(raw.key) ?? {
-        key: raw.key,
-        target: raw.target,
-        start: raw.start,
-        end: raw.end,
-        easing: raw.easing,
-        properties: {},
-        trackIds: [],
-        propertyNames: [],
-      };
-      segment.trackIds.push(raw.trackId);
-      segment.propertyNames.push(raw.property);
-      if (typeof raw.rightValue === "number") {
-        if (raw.property === "scale") {
-          segment.properties.scaleX = raw.rightValue;
-          segment.properties.scaleY = raw.rightValue;
-        } else if (!["opacity", "strokeWidth"].includes(raw.property)) segment.properties[raw.property] = raw.rightValue;
-      }
-      survivingGroups.set(raw.key, segment);
-    }
-    return [...survivingGroups.values()].sort((left, right) => left.start - right.start || left.key.localeCompare(right.key));
+  const sharesTarget = (left: CompilerEvent, right: CompilerEvent) => eventTargetIds(left).some((leftId) => (
+    eventTargetIds(right).some((rightId) => (
+      leftId === "camera" || rightId === "camera"
+        ? leftId === rightId
+        : ancestors(leftId).has(rightId) || ancestors(rightId).has(leftId)
+    ))
+  ));
+  const events = component.events;
+  const parents = events.map((_, index) => index);
+  const find = (index: number): number => parents[index] === index ? index : (parents[index] = find(parents[index]));
+  const union = (left: number, right: number) => {
+    const leftRoot = find(left);
+    const rightRoot = find(right);
+    if (leftRoot !== rightRoot) parents[rightRoot] = leftRoot;
   };
-  const allSegments = buildSurvivingGroups();
-  const diagnosedSemanticConflicts = new Set<string>();
-  let omittedConflictDiagnostics = 0;
-  for (const segment of allSegments) {
-    const targetId = segment.target.kind === "object" ? segment.target.objectId : undefined;
-    const collision = shot.animations.find((animation) => {
-      if (segment.target.kind === "camera") {
-        if (animation.type !== "camera-focus") return false;
-      } else {
-        if (animation.type === "camera-focus") return false;
-        if (!animation.targetIds.some((animationTargetId) => targetsShareHierarchy(targetId!, animationTargetId))) return false;
-      }
-      return timeRangesOverlap(segment, { start: animation.start, end: animation.start + animation.duration });
-    });
-    if (!collision) continue;
-    for (const trackId of segment.trackIds) {
-      rejectedTrackIds.add(trackId);
-      const diagnosticKey = `${trackId}:${collision.id}`;
-      if (diagnosedSemanticConflicts.has(diagnosticKey)) continue;
-      diagnosedSemanticConflicts.add(diagnosticKey);
-      if (diagnosedSemanticConflicts.size <= MAX_TRACK_CONFLICT_DIAGNOSTICS) diagnostics.push({
-        severity: "error",
-        code: "TRACK_SEMANTIC_COLLISION",
-        message: `Property track overlaps semantic animation ${collision.id} on the same effective Manim object hierarchy; semantic animation was preserved and the whole conflicting track was omitted.`,
-        trackId,
-        animationId: collision.id,
-      });
-      else omittedConflictDiagnostics += 1;
+  for (let left = 0; left < events.length; left += 1) {
+    for (let right = left + 1; right < events.length; right += 1) {
+      const leftPoint = events[left].start === events[left].end;
+      const rightPoint = events[right].start === events[right].end;
+      if (!(leftPoint || rightPoint) || !sharesTarget(events[left], events[right])) continue;
+      const pointTime = leftPoint ? events[left].start : events[right].start;
+      const interval = leftPoint ? events[right] : events[left];
+      const connects = compareTimelineTimes(pointTime, interval.start) >= 0
+        && compareTimelineTimes(pointTime, interval.end) <= 0;
+      if (connects) union(left, right);
     }
   }
-  // Semantic/renderer-unsupported rejection has precedence: those tracks are
-  // absent before track-track admission so they cannot evict an otherwise
-  // admissible lane merely by being present in the input document.
-  const segments = buildSurvivingGroups();
-  const conflictedKeys = new Set<string>();
-  const conflictedTrackIds = new Set<string>();
-  const diagnosedTrackConflicts = new Set<string>();
-  for (let leftIndex = 0; leftIndex < segments.length; leftIndex += 1) {
-    const left = segments[leftIndex];
-    for (let rightIndex = leftIndex + 1; rightIndex < segments.length; rightIndex += 1) {
-      const right = segments[rightIndex];
-      if (right.start >= left.end - PROOFCANVAS_TIME_EPSILON) break;
-      if (!timeRangesOverlap(left, right)) continue;
-      const sharesMobject = left.target.kind === "camera" && right.target.kind === "camera"
-        || left.target.kind === "object" && right.target.kind === "object"
-          && targetsShareHierarchy(left.target.objectId, right.target.objectId);
-      if (!sharesMobject) continue;
-      const representableVisualHierarchy = left.target.kind === "object" && right.target.kind === "object"
-        && left.start === right.start && left.end === right.end && left.easing === right.easing
-        && left.propertyNames.every((property) => VISUAL_TRACK_PROPERTIES.has(property as PropertyTrack["property"]))
-        && right.propertyNames.every((property) => VISUAL_TRACK_PROPERTIES.has(property as PropertyTrack["property"]));
-      if (representableVisualHierarchy) continue;
-      conflictedKeys.add(left.key);
-      conflictedKeys.add(right.key);
-      const leftTracks = [...new Set(left.trackIds)];
-      const rightTracks = [...new Set(right.trackIds)];
-      for (const trackId of [...leftTracks, ...rightTracks]) {
-        conflictedTrackIds.add(trackId);
-        const counterpartTrackId = leftTracks.includes(trackId) ? rightTracks[0] : leftTracks[0];
-        const diagnosticKey = `${trackId}:${counterpartTrackId}`;
-        if (diagnosedTrackConflicts.has(diagnosticKey)) continue;
-        diagnosedTrackConflicts.add(diagnosticKey);
-        if (diagnosedSemanticConflicts.size + diagnosedTrackConflicts.size <= MAX_TRACK_CONFLICT_DIAGNOSTICS) diagnostics.push({
-          severity: "error",
-          code: "TRACK_TRACK_COLLISION",
-          message: `Property track overlaps ${counterpartTrackId} on the same effective Manim object hierarchy; only same-target segments with identical interval and easing can be merged.`,
-          trackId,
-        });
-        else omittedConflictDiagnostics += 1;
-      }
-    }
-  }
-
-  conflictedTrackIds.forEach((id) => rejectedTrackIds.add(id));
-
-  if (omittedConflictDiagnostics > 0) diagnostics.push({
-    severity: "error",
-    code: "TRACK_CONFLICT_DIAGNOSTICS_TRUNCATED",
-    message: `${omittedConflictDiagnostics} additional track conflict diagnostics were deterministically omitted. All affected tracks remain rejected.`,
-  });
-
-  // Admission is deliberately whole-track. Rebuild from the grouped segments
-  // only after every unsupported interpolation and collision is known, so an
-  // earlier valid segment of a later-rejected track cannot leak into Python.
-  const orderedSurvivingGroups = buildSurvivingGroups();
-  for (const segment of orderedSurvivingGroups) {
-    if (segment.trackIds.some((id) => rejectedTrackIds.has(id))) continue;
-    const isVisual = segment.target.kind === "object" && segment.propertyNames.every((property) => VISUAL_TRACK_PROPERTIES.has(property as PropertyTrack["property"]));
-    const representedByAncestor = isVisual && orderedSurvivingGroups.some((candidate) => (
-      candidate !== segment
-      && candidate.target.kind === "object"
-      && candidate.start === segment.start && candidate.end === segment.end && candidate.easing === segment.easing
-      && candidate.propertyNames.every((property) => VISUAL_TRACK_PROPERTIES.has(property as PropertyTrack["property"]))
-      && ancestorsOf(segment.target.kind === "object" ? segment.target.objectId : "").has(candidate.target.objectId)
-    ));
-    if (representedByAncestor) continue;
-    const targetId = segment.target.kind === "object" ? segment.target.objectId : undefined;
-    result.push({
-      id: `compiler-track-${stableIdentifierHash(segment.key)}`,
-      type: segment.target.kind === "camera" ? "camera-focus" : "transform",
-      targetIds: targetId ? [targetId] : [],
-      start: segment.start,
-      duration: segment.end - segment.start,
-      easing: segment.easing,
-      properties: segment.properties,
-    });
-  }
-  const admittedTrackIds = new Set(shot.propertyTracks.filter((track) => !rejectedTrackIds.has(track.id)).map(({ id }) => id));
-  return {
-    shot: { ...shot, propertyTracks: shot.propertyTracks.filter((track) => admittedTrackIds.has(track.id)) },
-    animations: result,
-    diagnostics,
-  };
-}
-
-function animationComponents(animations: readonly SceneAnimation[]): AnimationComponent[] {
-  const ordered = [...animations].sort((a, b) => a.start - b.start || a.id.localeCompare(b.id));
-  const components: AnimationComponent[] = [];
-  for (const animation of ordered) {
-    const end = animation.start + animation.duration;
-    const current = components.at(-1);
-    if (!current || animation.start >= current.end - PROOFCANVAS_TIME_EPSILON) {
-      components.push({ animations: [animation], start: animation.start, end });
-      continue;
-    }
-    current.animations.push(animation);
-    current.end = Math.max(current.end, end);
-  }
-  return components;
+  const grouped = new Map<number, CompilerEvent[]>();
+  events.forEach((event, index) => grouped.set(find(index), [...(grouped.get(find(index)) ?? []), event]));
+  return [...grouped.values()]
+    .map((lane) => lane.sort(compareCompilerEvents))
+    .sort((left, right) => compareCompilerEvents(left[0], right[0]));
 }
 
 /**
- * Conservative decoded-video duration for the exact sequence of self.play /
- * self.wait calls emitted below. Manim renders every positive call for at
- * least one whole frame, so authored duration alone is not an admission bound
- * for timelines containing many sub-frame components.
+ * Conservative decoded-video duration for the exact sequence of explicit-
+ * runtime self.play calls emitted below. Manim samples non-static plays with
+ * ceil(run_time * fps) frames, so authored duration alone is not an admission
+ * bound for timelines containing many sub-frame components.
  */
 export function estimateManimTimelineDurationUpperBound(project: ProjectDocument, frameRate: number): number {
   if (!Number.isFinite(frameRate) || frameRate <= 0) throw new Error("Frame rate must be a positive finite number");
-  const quantizedEmittedRuntime = (duration: number) => Math.max(1, Math.ceil(duration * frameRate)) / frameRate;
-  let total = 0;
+  const quantizedEmittedFrames = (duration: number) => Math.max(1, Math.ceil(emittedPositiveDuration(duration) * frameRate));
+  let totalFrames = 0;
+  const reservedIds = collectProjectIds(project);
   for (const shot of project.shots) {
-    const plan = compilerTrackPlan(shot);
+    const schedule = buildCompilerSchedule(shot, project.settings.frameRate, reservedIds);
     let timelineCursor = 0;
-    const compiledAnimations = [...shot.animations, ...plan.animations];
-    for (const component of animationComponents(compiledAnimations)) {
-      const gap = component.start - timelineCursor;
-      if (gap > PROOFCANVAS_TIME_EPSILON) {
-        total += quantizedEmittedRuntime(emittedPositiveDuration(gap));
+    for (const component of animationComponents(schedule.events)) {
+      const gap = subtractTimelineTimes(component.start, timelineCursor);
+      if (compareTimelineTimes(component.start, timelineCursor) > 0) {
+        totalFrames += quantizedEmittedFrames(gap);
       }
-      // Manim derives the outer AnimationGroup runtime from its longest lane.
-      // Each delayed lane is an emitted Wait(offset) plus an emitted animation
-      // duration, so model those rounded Python literals rather than the
-      // authored component span.
-      const componentRuntime = Math.max(...component.animations.map((animation) => {
-        const offset = animation.start - component.start;
-        return (offset > PROOFCANVAS_TIME_EPSILON ? emittedPositiveDuration(offset) : 0)
-          + emittedPositiveDuration(animation.duration);
-      }));
-      total += quantizedEmittedRuntime(componentRuntime);
+      // Every positive component and inferred child aggregate is emitted with
+      // an explicit canonical runtime. This prevents Python float child sums
+      // such as 0.1 + 0.2 from silently adding a decoded frame.
+      const componentRuntime = subtractTimelineTimes(component.end, component.start);
+      if (componentRuntime > 0) totalFrames += quantizedEmittedFrames(componentRuntime);
       timelineCursor = Math.max(timelineCursor, component.end);
     }
-    const finalHold = shot.duration - timelineCursor;
-    if (finalHold > PROOFCANVAS_TIME_EPSILON || (compiledAnimations.length === 0 && finalHold > 0)) {
-      total += quantizedEmittedRuntime(emittedPositiveDuration(finalHold));
+    const finalHold = subtractTimelineTimes(shot.duration, timelineCursor);
+    if (compareTimelineTimes(shot.duration, timelineCursor) > 0) {
+      totalFrames += quantizedEmittedFrames(finalHold);
     }
   }
-  return total;
+  return totalFrames / frameRate;
 }
 
 export function compileManim(input: ProjectDocument): CompileResult {
   const parsedProject = ProjectDocumentSchema.parse(input);
-  const trackPlans = parsedProject.shots.map(compilerTrackPlan);
-  const project: ProjectDocument = { ...parsedProject, shots: trackPlans.map(({ shot }) => shot) };
+  const reservedIds = collectProjectIds(parsedProject);
+  const schedules = parsedProject.shots.map((shot) => buildCompilerSchedule(shot, parsedProject.settings.frameRate, reservedIds));
+  const project: ProjectDocument = { ...parsedProject, shots: schedules.map(({ shot }) => shot) };
   const diagnostics: CompilerDiagnostic[] = [];
   diagnostics.push({
     severity: "info",
@@ -1091,48 +994,69 @@ export function compileManim(input: ProjectDocument): CompileResult {
       objectId: clip.id,
     });
   }
+  const totalScheduleWork = schedules.reduce((sum, schedule) => sum + schedule.workCount, 0);
+  const scheduleOverBudget = totalScheduleWork > PROOFCANVAS_SCHEMA_LIMITS.compilerExpandedTargetsPerProject;
+  if (scheduleOverBudget) diagnostics.push({
+    severity: "error",
+    code: "COMPILER_WORK_LIMIT_EXCEEDED",
+    message: `Chronological schedule expands to ${totalScheduleWork} target events, above the project limit of ${PROOFCANVAS_SCHEMA_LIMITS.compilerExpandedTargetsPerProject}; compiler-owned events were not emitted.`,
+  });
+  const emittedSchedules: CompilerSchedule[] = scheduleOverBudget
+    ? schedules.map((schedule) => ({ ...schedule, events: schedule.events.filter(({ kind }) => kind === "semantic"), helpers: { cubicBezier: false } }))
+    : schedules;
   const { objects: variables, references } = variableMaps(project);
+  const needsCubicBezierHelper = emittedSchedules.some(({ helpers }) => helpers.cubicBezier);
   const lines: string[] = [
     "from manim import *",
     "import math",
     `# ProofCanvas settings: ${project.settings.aspectRatio}, ${project.settings.resolution.width}x${project.settings.resolution.height}, ${project.settings.frameRate}fps, ${project.settings.renderPreset}, preview=${project.settings.previewQuality}`,
     "",
-    "",
-    "class GeneratedScene(MovingCameraScene):",
-    "    def construct(self):",
   ];
+  if (needsCubicBezierHelper) lines.push(PROOFCANVAS_CUBIC_BEZIER_HELPER, "");
+  lines.push("", "class GeneratedScene(MovingCameraScene):", "    def construct(self):");
 
   project.shots.forEach((shot, shotIndex) => {
     const style = project.styles.find(({ id }) => id === project.activeStyleId)!;
     const objectMap = new Map(shot.objects.map((object) => [object.id, object]));
-    const trackPlan = trackPlans[shotIndex];
-    diagnostics.push(...trackPlan.diagnostics);
-    const compiledAnimations = [...shot.animations, ...trackPlan.animations];
+    const schedule = emittedSchedules[shotIndex];
+    diagnostics.push(...schedules[shotIndex].diagnostics);
+    const compiledAnimations = schedule.events.map(({ animation }) => animation);
     const compiledScheduleShot: Shot = { ...shot, animations: compiledAnimations };
+    // Initial visibility is authored semantic authority. Compiler-owned
+    // lifetime edges/property points must not replace a future entrance as a
+    // leaf's first visibility event (for example, an expiry before a later
+    // group FadeIn), or the leaf can be added visibly at frame zero.
     const entering = new Set(
-      [...initiallyHiddenByEntranceIds(compiledScheduleShot)].filter((id) => {
+      [...initiallyHiddenByEntranceIds(shot)].filter((id) => {
         const object = objectMap.get(id);
         return object ? isRenderableObject(object, shot, objectMap) : false;
       }),
     );
     const firstVisibility = firstVisibilityAnimationByTarget(compiledScheduleShot);
-    const previewCache = new Map<string, ReturnType<typeof previewShotAtTime>>();
+    const authoredFirstVisibility = firstVisibilityAnimationByTarget(shot);
+    const previewCache = new Map<number, ReturnType<typeof previewShotAtTime>>();
+    const beforePointPreviewCache = new Map<number, ReturnType<typeof previewShotBeforePointEventsAtTime>>();
     const endPreviewCache = new Map<string, ReturnType<typeof previewShotAtAnimationEnd>>();
     const previewAt = (time: number) => {
-      const key = time.toFixed(9);
-      const cached = previewCache.get(key);
+      const cached = previewCache.get(time);
       if (cached) return cached;
       const preview = previewShotAtTime(shot, time);
-      previewCache.set(key, preview);
+      previewCache.set(time, preview);
+      return preview;
+    };
+    const previewBeforePointsAt = (time: number) => {
+      const cached = beforePointPreviewCache.get(time);
+      if (cached) return cached;
+      const preview = previewShotBeforePointEventsAtTime(shot, time);
+      beforePointPreviewCache.set(time, preview);
       return preview;
     };
     const previewAtEnd = (animation: SceneAnimation) => {
-      const end = animation.start + animation.duration;
+      const end = addTimelineTimes(animation.start, animation.duration);
       const hasAdjacentInstantEntrance = shot.animations.some((candidate) => (
         candidate.id !== animation.id
         && candidate.type === "appear"
-        && candidate.start <= end
-        && candidate.start >= end - PROOFCANVAS_TIME_EPSILON
+        && compareTimelineTimes(candidate.start, end) === 0
       ));
       if (!hasAdjacentInstantEntrance) return previewAt(end);
       const cached = endPreviewCache.get(animation.id);
@@ -1142,13 +1066,14 @@ export function compileManim(input: ProjectDocument): CompileResult {
       return preview;
     };
     const preparedHiddenLeaves = new Set<string>();
-    for (const animation of shot.animations.filter(({ type }) => ENTRANCE_ANIMATION_TYPES.has(type))) {
+    for (const event of schedule.events.filter(({ animation }) => ENTRANCE_ANIMATION_TYPES.has(animation.type))) {
+      const animation = event.animation;
       for (const targetId of animation.targetIds) {
         const object = objectMap.get(targetId);
         if (!object || !isRenderableObject(object, shot, objectMap) || canUseNativeEntrance(animation, object, compiledScheduleShot, objectMap, firstVisibility)) continue;
         for (const familyId of renderableVisibilityFamilyIds(object, shot, objectMap)) {
           const member = objectMap.get(familyId);
-          if (member?.type !== "group" && entering.has(familyId) && firstVisibility.get(familyId)?.id === animation.id) {
+          if (member?.type !== "group" && entering.has(familyId) && authoredFirstVisibility.get(familyId)?.id === animation.id) {
             preparedHiddenLeaves.add(familyId);
           }
         }
@@ -1156,19 +1081,15 @@ export function compileManim(input: ProjectDocument): CompileResult {
     }
     const emitted = new Set<string>();
     const referenceTransforms = new Map<string, SceneObject["transform"]>();
+    const delayedLifetimeLeaves = new Set(shot.objects.filter((object) => (
+      object.type !== "group" && (effectiveObjectLifetime(shot, object.id)?.start ?? 0) > 0
+    )).map(({ id }) => id));
     lines.push(`        # Shot ${shotIndex + 1}: ${pyComment(shot.name)}`);
     lines.push(`        self.next_section(${pyString(shot.name)})`);
     lines.push(`        self.camera.background_color = ${pyString(style.colors.background)}`);
     const initialPreview = previewAt(0);
     const shotCamera: SceneObject = { id: "camera", type: "group", name: "Camera", locked: false, visible: true, transform: { x: initialPreview.camera.x, y: initialPreview.camera.y, rotation: 0, scaleX: 1, scaleY: 1 }, style: {}, properties: {} };
     lines.push(`        self.camera.frame.become(Rectangle(width=config.frame_width / ${pyNumber(initialPreview.camera.zoom)}, height=config.frame_height / ${pyNumber(initialPreview.camera.zoom)}).move_to(${coordinate(shotCamera, project)}).rotate(${pyNumber(initialPreview.camera.rotation)} * DEGREES))`);
-
-    for (const object of shot.objects) {
-      const lifetime = object.lifetime ?? { start: 0, end: shot.duration };
-      if (lifetime.start > PROOFCANVAS_TIME_EPSILON || lifetime.end < shot.duration - PROOFCANVAS_TIME_EPSILON) {
-        diagnostics.push({ severity: "error", code: "OBJECT_LIFETIME_RENDER_UNSUPPORTED", message: "Object lifetime boundaries are enforced in preview but require an explicit renderer visibility-event extension.", objectId: object.id });
-      }
-    }
 
     const emit = (object: SceneObject) => {
       if (emitted.has(object.id)) return;
@@ -1200,7 +1121,7 @@ export function compileManim(input: ProjectDocument): CompileResult {
       }
       const reference = references.get(object.id);
       if (reference) lines.push(`        ${reference} = ${variable}.copy()`);
-      if (object.type !== "group" && preparedHiddenLeaves.has(object.id)) lines.push(`        ${variable}.set_opacity(0.0)`);
+      if (object.type !== "group" && (preparedHiddenLeaves.has(object.id) || delayedLifetimeLeaves.has(object.id))) lines.push(`        ${variable}.set_opacity(0.0)`);
       emitted.add(object.id);
     };
     shot.objects.forEach(emit);
@@ -1213,31 +1134,62 @@ export function compileManim(input: ProjectDocument): CompileResult {
       .map(({ id }) => id);
     if (initialIds.length) lines.push(`        self.add(${initialIds.map((id) => variables.get(id)).join(", ")})`);
 
-    const components = animationComponents(compiledAnimations);
+    const components = animationComponents(schedule.events);
     let timelineCursor = 0;
     components.forEach((component, componentIndex) => {
-      const gap = component.start - timelineCursor;
+      const gap = subtractTimelineTimes(component.start, timelineCursor);
+      const pointOnly = component.events.every((event) => event.start === event.end);
       lines.push(`        # Animation component ${componentIndex + 1}: ${pyNumber(component.start)}s to ${pyNumber(component.end)}s`);
-      if (gap > PROOFCANVAS_TIME_EPSILON) lines.push(`        self.wait(${pyDuration(gap)})`);
-      const lanes = component.animations.map((animation) => {
-        const expression = animationExpression(animation, compiledScheduleShot, project, variables, references, referenceTransforms, diagnostics, firstVisibility, previewAt, previewAtEnd);
-        const offset = animation.start - component.start;
-        return offset > PROOFCANVAS_TIME_EPSILON ? `Succession(Wait(${pyDuration(offset)}), ${expression}, group=Group())` : expression;
+      const lanes = eventLanes(component, compiledScheduleShot).map((lane) => {
+        const parts: string[] = [];
+        let laneCursor = component.start;
+        for (const event of lane) {
+          const gap = subtractTimelineTimes(event.start, laneCursor);
+          if (compareTimelineTimes(event.start, laneCursor) > 0) parts.push(`Wait(${pyDuration(gap)})`);
+          parts.push(animationExpression(event, compiledScheduleShot, project, variables, references, referenceTransforms, diagnostics, firstVisibility, previewAt, previewAtEnd, previewBeforePointsAt));
+          laneCursor = Math.max(laneCursor, event.end);
+        }
+        const laneRuntime = subtractTimelineTimes(lane.at(-1)!.end, component.start);
+        return parts.length === 1
+          ? parts[0]
+          : `Succession(${parts.join(", ")}, group=Group(), run_time=${compareTimelineTimes(laneRuntime, 0) === 0 ? "0.0" : pyDuration(laneRuntime)})`;
       });
-      if (lanes.length === 1) {
-        lines.push(`        self.play(${lanes[0]})`);
+      const componentRuntime = subtractTimelineTimes(component.end, component.start);
+      const componentExpression = lanes.length === 1
+        ? lanes[0]
+        : `AnimationGroup(${lanes.join(", ")}, group=Group(), lag_ratio=0, run_time=${compareTimelineTimes(componentRuntime, 0) === 0 ? "0.0" : pyDuration(componentRuntime)})`;
+      if (pointOnly) {
+        if (compareTimelineTimes(component.start, timelineCursor) > 0) {
+          // Manim 0.21 rejects a zero-total-runtime Scene.play. Folding the
+          // preceding authored gap into the same positive Succession preserves
+          // the exact event timestamp without inventing an epsilon animation.
+          lines.push(`        self.play(Succession(Wait(${pyDuration(gap)}), ${componentExpression}, group=Group(), run_time=${pyDuration(gap)}))`);
+        } else {
+          const nextStart = components[componentIndex + 1]?.start ?? shot.duration;
+          const followingGap = subtractTimelineTimes(nextStart, component.end);
+          if (compareTimelineTimes(nextStart, component.end) > 0) {
+            lines.push(`        self.play(Succession(${componentExpression}, Wait(${pyDuration(followingGap)}), group=Group(), run_time=${pyDuration(followingGap)}))`);
+            timelineCursor = nextStart;
+          } else {
+            diagnostics.push({
+              severity: "error",
+              code: "ZERO_EVENT_WITHOUT_POSITIVE_ENVELOPE",
+              message: "A compiler-owned point event had no positive timeline interval to contain it and was omitted.",
+              animationId: component.events[0].id,
+            });
+          }
+        }
       } else {
-        lines.push("        self.play(AnimationGroup(");
-        lanes.forEach((lane) => lines.push(`            ${lane},`));
-        lines.push("            group=Group(),");
-        lines.push("            lag_ratio=0,");
-        lines.push("        ))");
+        if (compareTimelineTimes(component.start, timelineCursor) > 0) {
+          lines.push(`        self.play(Succession(Wait(${pyDuration(gap)}), group=Group(), run_time=${pyDuration(gap)}))`);
+        }
+        lines.push(`        self.play(${componentExpression})`);
       }
       timelineCursor = Math.max(timelineCursor, component.end);
     });
-    const finalHold = shot.duration - timelineCursor;
-    if (finalHold > PROOFCANVAS_TIME_EPSILON || (components.length === 0 && finalHold > 0)) {
-      lines.push(`        self.wait(${pyDuration(finalHold)})`);
+    const finalHold = subtractTimelineTimes(shot.duration, timelineCursor);
+    if (compareTimelineTimes(shot.duration, timelineCursor) > 0) {
+      lines.push(`        self.play(Succession(Wait(${pyDuration(finalHold)}), group=Group(), run_time=${pyDuration(finalHold)}))`);
     }
     if (shotIndex < project.shots.length - 1) {
       lines.push("        self.clear()");

@@ -120,3 +120,39 @@ test("fails closed when parsed provider output does not match the strict schema"
     /no valid structured operation proposal/,
   );
 });
+
+test.each([
+  { type: "emphasise", easing: "editorial", properties: [{ key: "scale", value: { kind: "number", value: 1.1 } }] },
+  { type: "write", easing: "there-and-back", properties: [] },
+] as const)("rejects newly provider-authored unsupported $type easing combinations", async ({ type, easing, properties }) => {
+  const { client } = clientReturning({
+    intention: "Add an unsupported animation.",
+    summary: ["Unsupported animation."],
+    operations: [{
+      type: "add-animation",
+      animation: {
+        id: `animation-provider-${type}`,
+        type,
+        targetIds: ["object-title"],
+        start: 1,
+        duration: 1,
+        easing,
+        properties,
+      },
+    }],
+  });
+  await expect(proposeWithOpenAi(request(), CONFIGURATION, client)).rejects.toThrow(/no valid structured operation proposal/);
+});
+
+test("rejects a configured-provider patch that would turn a supported animation into a legacy-only combination", async () => {
+  const { client } = clientReturning({
+    intention: "Make the title write return.",
+    summary: ["Change easing."],
+    operations: [{
+      type: "update-animation",
+      animationId: "animation-title-write",
+      patch: [{ field: "easing", value: "there-and-back" }],
+    }],
+  });
+  await expect(proposeWithOpenAi(request(), CONFIGURATION, client)).rejects.toThrow(/there-and-back|not valid/);
+});

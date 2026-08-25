@@ -1,6 +1,7 @@
 import { createCantorDemoProject } from "./demo";
-import { ProjectDocumentSchema, cloneSerializable, type ProjectDocument } from "./schema";
+import { PROJECT_SCHEMA_VERSION, ProjectDocumentSchema, cloneSerializable, type ProjectDocument } from "./schema";
 import { DEFAULT_STYLE_PACKS, EDITORIAL_INK_STYLE_ID } from "./styles";
+import { logicalFrameFor, resolutionFor } from "./frame";
 
 export type ProjectTemplateKind = "blank" | "sample";
 
@@ -22,13 +23,14 @@ export function createProjectTemplate(
     sample.metadata = { id: projectId, title: safeTitle, createdAt: now, updatedAt: now };
     return ProjectDocumentSchema.parse(sample);
   }
+  const frame = logicalFrameFor("16:9");
   return ProjectDocumentSchema.parse({
-    schemaVersion: 2,
+    schemaVersion: PROJECT_SCHEMA_VERSION,
     metadata: { id: projectId, title: safeTitle, createdAt: now, updatedAt: now },
     settings: {
       aspectRatio: "16:9",
       frameRate: 30,
-      resolution: { width: 1280, height: 720 },
+      resolution: resolutionFor("16:9", "720p"),
       renderPreset: "720p",
       previewQuality: "standard",
     },
@@ -46,7 +48,7 @@ export function createProjectTemplate(
       audioClips: [],
       captionClips: [],
       markers: [],
-      camera: { x: 480, y: 270, zoom: 1, rotation: 0 },
+      camera: { x: frame.centerX, y: frame.centerY, zoom: 1, rotation: 0 },
     }],
   });
 }

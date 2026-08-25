@@ -1,4 +1,5 @@
 import { allocateId } from "./ids";
+import { logicalFrameFor, type ProofCanvasAspectRatio } from "./frame";
 import {
   ProjectDocumentSchema,
   cloneSerializable,
@@ -58,8 +59,11 @@ function object(
 export function instantiateSemanticComponent(
   componentId: SemanticComponentId,
   existingIds: ReadonlySet<string>,
-  origin: Point = { x: 480, y: 270 },
+  origin?: Point,
+  aspectRatio: ProofCanvasAspectRatio = "16:9",
 ): SceneObject[] {
+  const frame = logicalFrameFor(aspectRatio);
+  const resolvedOrigin = origin ?? { x: frame.centerX, y: frame.centerY };
   const reserved = new Set(existingIds);
   const id = (hint: string, prefix: string = "object") => {
     const next = allocateId(prefix, reserved, hint);
@@ -67,7 +71,9 @@ export function instantiateSemanticComponent(
     return next;
   };
   const groupId = id(componentId, "group");
-  const group = object(groupId, "group", SEMANTIC_COMPONENTS.find(({ id: candidate }) => candidate === componentId)?.name ?? componentId, origin.x, origin.y, 360, 150, {});
+  const group = object(groupId, "group", SEMANTIC_COMPONENTS.find(({ id: candidate }) => candidate === componentId)?.name ?? componentId, resolvedOrigin.x, resolvedOrigin.y, 360, 150, {});
+
+  origin = resolvedOrigin;
 
   switch (componentId) {
     case "mathematical-title":
@@ -134,7 +140,7 @@ export function insertSemanticComponent(
   const shotIndex = project.shots.findIndex(({ id }) => id === shotId);
   if (shotIndex < 0) throw new Error(`Shot not found: ${shotId}`);
   const ids = new Set(project.shots.flatMap((shot) => shot.objects.map(({ id }) => id)));
-  const objects = instantiateSemanticComponent(componentId, ids, origin);
+  const objects = instantiateSemanticComponent(componentId, ids, origin, project.settings.aspectRatio);
   const next = cloneSerializable(project);
   next.shots[shotIndex].objects.push(...objects);
   return ProjectDocumentSchema.parse(next);

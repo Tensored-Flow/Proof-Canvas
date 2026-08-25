@@ -9,6 +9,7 @@ import {
   type SceneOperation,
 } from "./schema";
 import { EDITORIAL_INK_STYLE_ID } from "./styles";
+import { addTimelineTimes, logicalFrameFor, subtractTimelineTimes } from "./frame";
 
 export const REQUIRED_AI_COMMANDS = Object.freeze([
   "Move the title into the upper-left margin, but do not move the interval diagram.",
@@ -107,12 +108,15 @@ export function interpretDemoCommand(request: AiCommandRequest): AiProposal {
   const selected = selectedObjects(project, request.shotId, request.selectedObjectIds);
   const instruction = normalized(request.instruction);
   const ids = collectProjectIds(project);
+  const frame = logicalFrameFor(project.settings.aspectRatio);
+  const xScale = frame.width / 960;
+  const yScale = frame.height / 540;
 
   if (instruction.includes("title") && instruction.includes("upper-left") && instruction.includes("interval diagram")) {
     const title = byRole(shot.objects, "title") ?? byName(shot.objects, /title/i);
     if (!title) throw new Error("The current shot has no title");
     return proposal(project, shot.id, "Move only the title to the upper-left editorial margin.", [
-      { type: "update-object", objectId: title.id, patch: { transform: { x: 250, y: 70 }, style: { textAlign: "left" } } },
+      { type: "update-object", objectId: title.id, patch: { transform: { x: 250 * xScale, y: 70 * yScale }, style: { textAlign: "left" } } },
     ]);
   }
 
@@ -121,12 +125,12 @@ export function interpretDemoCommand(request: AiCommandRequest): AiProposal {
     const removalAnimation = animationByName(shot.animations, /second-removal/i);
     if (!removal || !removalAnimation) throw new Error("The current shot has no second-removal moment");
     const emphasisId = allocateId("animation", ids, "second-removal-emphasis");
-    const slowerDuration = Math.min(Math.max(removalAnimation.duration * 1.8, 1.8), shot.duration - removalAnimation.start);
+    const slowerDuration = Math.min(Math.max(removalAnimation.duration * 1.8, 1.8), subtractTimelineTimes(shot.duration, removalAnimation.start));
     const emphasisDuration = Math.min(1.2, Math.max(0.4, removalAnimation.start));
     const emphasisStart = Math.max(0, removalAnimation.start - emphasisDuration - 0.15);
     return proposal(project, shot.id, "Slow the second removal and make it the focal beat.", [
       { type: "update-animation", animationId: removalAnimation.id, patch: { duration: slowerDuration, easing: "ease-in-out" } },
-      { type: "add-animation", animation: { id: emphasisId, type: "emphasise", targetIds: [removal.id], start: emphasisStart, duration: emphasisDuration, easing: "editorial", properties: { scale: 1.16 } } },
+      { type: "add-animation", animation: { id: emphasisId, type: "emphasise", targetIds: [removal.id], start: emphasisStart, duration: emphasisDuration, easing: "there-and-back", properties: { scale: 1.16 } } },
     ]);
   }
 
@@ -138,7 +142,10 @@ export function interpretDemoCommand(request: AiCommandRequest): AiProposal {
     ids.add(braceId);
     const animationId = allocateId("animation", ids, "brace-reveal");
     const afterSplit = animationByName(shot.animations, /third-removals/i) ?? split;
-    const revealStart = Math.min(afterSplit.start + afterSplit.duration + 0.15, shot.duration - 0.8);
+    const revealStart = Math.min(
+      addTimelineTimes(addTimelineTimes(afterSplit.start, afterSplit.duration), 0.15),
+      subtractTimelineTimes(shot.duration, 0.8),
+    );
     return proposal(project, shot.id, "Add an editable brace after the third split.", [
       {
         type: "add-object",
@@ -149,7 +156,7 @@ export function interpretDemoCommand(request: AiCommandRequest): AiProposal {
           parentId: diagram.id,
           locked: false,
           visible: true,
-          transform: { x: 480, y: 355, width: 570, height: 34, rotation: 0, scaleX: 1, scaleY: 1 },
+          transform: { x: frame.centerX, y: 355 * yScale, width: 570 * xScale, height: 34 * yScale, rotation: 0, scaleX: 1, scaleY: 1 },
           style: { stroke: "#71402d", fontSize: 20 },
           semanticRole: "surviving-intervals-brace",
           properties: { label: "2^n pieces", orientation: "below" },
@@ -164,11 +171,11 @@ export function interpretDemoCommand(request: AiCommandRequest): AiProposal {
     const operations: SceneOperation[] = [{ type: "set-style", styleId: EDITORIAL_INK_STYLE_ID }];
     movable.forEach((object, index) => {
       const direction = index % 2 === 0 ? -1 : 1;
-      operations.push({ type: "update-object", objectId: object.id, patch: { transform: { x: Math.max(70, Math.min(890, object.transform.x + direction * (32 + index * 7))) }, style: { textAlign: "left" } } });
+      operations.push({ type: "update-object", objectId: object.id, patch: { transform: { x: Math.max(70 * xScale, Math.min(frame.width - 70 * xScale, object.transform.x + direction * (32 + index * 7) * xScale)) }, style: { textAlign: "left" } } });
     });
     const title = byRole(shot.objects, "title");
     if (title && !effectiveLockOwner(shot, title) && !operations.some((operation) => operation.type === "update-object" && operation.objectId === title.id)) {
-      operations.push({ type: "update-object", objectId: title.id, patch: { transform: { x: 250, y: 70 }, style: { textAlign: "left" } } });
+      operations.push({ type: "update-object", objectId: title.id, patch: { transform: { x: 250 * xScale, y: 70 * yScale }, style: { textAlign: "left" } } });
     }
     return proposal(project, shot.id, "Apply Editorial Ink and introduce quiet asymmetry without changing object content.", operations);
   }

@@ -4,7 +4,8 @@ import { createHash } from "node:crypto";
 import { ReadableStream as NodeReadableStream } from "node:stream/web";
 import { TextDecoder, TextEncoder } from "node:util";
 import { compileManim, estimateManimTimelineDurationUpperBound } from "./compiler";
-import { PROOFCANVAS_PROJECT_MAX_BYTES, PROOFCANVAS_RENDER_SOURCE_MAX_BYTES, PROOFCANVAS_TIME_EPSILON, ProjectDocumentSchema, type ProjectDocument } from "./schema";
+import { compareTimelineTimes } from "./frame";
+import { PROOFCANVAS_PROJECT_MAX_BYTES, PROOFCANVAS_RENDER_SOURCE_MAX_BYTES, ProjectDocumentSchema, projectDurationSeconds, type ProjectDocument } from "./schema";
 
 export type RenderQuality = "preview" | "production";
 export type RenderJobStatus = "pending" | "running" | "succeeded" | "failed";
@@ -310,12 +311,12 @@ export async function submitRender(input: SubmitRenderRequest): Promise<RenderJo
     if (!shot) throw new RenderClientError(400, "invalid_request", "Requested shot does not exist.");
     compileProject = ProjectDocumentSchema.parse({ ...project, shots: [shot] });
   }
-  const selectedDuration = compileProject.shots.reduce((total, shot) => total + shot.duration, 0);
+  const selectedDuration = projectDurationSeconds(compileProject);
   const frameRate = input.quality === "preview" ? 15 : 30;
   const estimatedVideoDuration = estimateManimTimelineDurationUpperBound(compileProject, frameRate);
   if (
-    selectedDuration > MAX_SELECTED_RENDER_DURATION_SECONDS + PROOFCANVAS_TIME_EPSILON
-    || estimatedVideoDuration > MAX_SELECTED_RENDER_DURATION_SECONDS + PROOFCANVAS_TIME_EPSILON
+    compareTimelineTimes(selectedDuration, MAX_SELECTED_RENDER_DURATION_SECONDS) > 0
+    || estimatedVideoDuration > MAX_SELECTED_RENDER_DURATION_SECONDS
   ) {
     throw new RenderClientError(
       422,

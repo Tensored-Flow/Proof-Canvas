@@ -56,17 +56,36 @@ creative state is serialized.
 
 ## Document and mutation boundary
 
-Schema version 2 describes metadata, aspect ratio, output styles, ordered shots, scene objects,
+Schema version 3 describes metadata, aspect ratio, output styles, ordered shots, scene objects,
 groups, typed animations and property tracks, object lifetimes, portable asset metadata, audio and
 caption metadata, markers, custom easings, and camera state. The registered V1-to-V2 migration is
-deterministic and its output crosses the same current schema. Validation is global: it rejects duplicate IDs,
+deterministic; V2 remains a frozen float-time compatibility format, while the loss-aware V2-to-V3
+migration establishes one bounded 10 ns tick as the persisted and compiler time authority. It
+rewrites only documents whose positive spans, equality classes, strict ordering, containment,
+overlap/touching relations, event chronology, and frozen compiler-work admission remain lossless.
+Validation is global: it rejects duplicate IDs,
 missing or cyclic parents, invalid targets and timing, overlapping animation families, invalid
 style references, unsafe LaTeX or assets, unrestricted graph expressions, and values outside the
 compiler dialect. Future schema versions are rejected; registered migrations are parsed through
 the current schema before publication.
 
+Persistence migration is per document. Exact canonical V2 bytes and their SHA-256 are stored in an
+immutable archive before either a project or checkpoint is rewritten. A loss-prone current project
+is quarantined from editor, AI, render, and mutation paths and receives an authenticated no-store
+byte-exact export. A loss-prone checkpoint leaves its current project editable but cannot be
+recovered; its exact export remains addressable after parent soft deletion. Migration SQL, the
+versioned data-transform tag, archive writes, counters, and a complete integrity pass commit in one
+IMMEDIATE transaction. Invalid or noncanonical V2 data rolls the migration back rather than being
+reclassified as recoverable.
+
 Canonical serialization recursively sorts object keys while preserving meaningful array order.
 This gives persistence, export, tests, and source hashing the same deterministic representation.
+
+The broad document schema retains two legacy easing combinations so persisted V2 material can be
+opened and repaired. New add/update operations, full-document saves, structural duplication, and
+configured-provider output enforce the narrower authoring vocabulary. An unsupported legacy
+animation may remain exactly unchanged during unrelated edits, be deleted, or receive only the
+easing change that makes it render-supported; no ingress can silently create another copy.
 
 `applyOperations` clones the project, resolves stable IDs, enforces direct and inherited locks,
 applies every operation, repairs dependent references where the operation contract requires it,
@@ -184,6 +203,13 @@ staged database over the still-present target. This lease governs only code usin
 supported database module; it is not a mandatory lock against a raw SQLite writer. Local filesystem
 locking semantics are required, raw-module bypasses are unsupported, and operators must still stop
 the application before restore.
+
+Old backups are upgraded only on a private copy. The source database bytes, inode/link target,
+mode, mtime, directory listing, and sidecars are not mutated by validation; restore publishes the
+fully migrated private copy. Ready V3 rows remain canonical and strict, while recovery archives
+retain the exact V2 source bytes. Every supported row mutation rewrites project-duration metadata
+from an integer-tick sum, including compatibility cleanup of older binary-dust counters.
+
 The dashboard returns at most the 500 newest active projects and recovery lists the 100 newest
 checkpoints; pagination and retention policy are deferred to later storage work.
 Render requests do not yet package trusted assets, so checked-in image paths require a future asset

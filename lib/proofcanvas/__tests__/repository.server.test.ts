@@ -1,12 +1,15 @@
 /** @jest-environment node */
 
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createHash } from "node:crypto";
+import Database from "better-sqlite3";
 import {
   chmodSync,
   copyFileSync,
   existsSync,
   linkSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   rmSync,
   statSync,
@@ -30,7 +33,7 @@ import {
   openProofCanvasDatabase,
 } from "../database.server";
 import { ProjectRepositoryError, SqliteProjectRepository } from "../repository.server";
-import { canonicalProjectJson, cloneSerializable } from "../schema";
+import { PROOFCANVAS_PROJECT_MAX_BYTES, canonicalProjectJson, cloneSerializable } from "../schema";
 
 const temporaryDirectories: string[] = [];
 const leaseWorkers: LeaseWorker[] = [];
@@ -56,6 +59,35 @@ function harness(directory = temporaryDirectory()) {
     randomId: (prefix) => `${prefix}-${(++ids).toString(16).padStart(24, "0")}`,
   });
   return { directory, path, database, repository };
+}
+
+function canonicalLegacyJson(value: unknown): string {
+  const canonical = (candidate: unknown): unknown => {
+    if (Array.isArray(candidate)) return candidate.map(canonical);
+    if (candidate && typeof candidate === "object") {
+      return Object.fromEntries(Object.keys(candidate as Record<string, unknown>).sort().map((key) => [key, canonical((candidate as Record<string, unknown>)[key])]));
+    }
+    return candidate;
+  };
+  return `${JSON.stringify(canonical(value), null, 2)}\n`;
+}
+
+function schemaV2Json(document: unknown, mutate?: (candidate: Record<string, unknown>) => void): string {
+  const candidate = cloneSerializable(document) as Record<string, unknown>;
+  candidate.schemaVersion = 2;
+  mutate?.(candidate);
+  return canonicalLegacyJson(candidate);
+}
+
+function downgradeDatabaseSchemaToV1(database: Database.Database): void {
+  database.exec(`
+    DROP TRIGGER legacy_document_archive_no_update;
+    DROP TRIGGER legacy_document_archive_no_delete;
+    DROP TABLE legacy_document_archive;
+    ALTER TABLE checkpoints DROP COLUMN document_state;
+    ALTER TABLE projects DROP COLUMN document_state;
+    DELETE FROM schema_migrations WHERE version = 2;
+  `);
 }
 
 interface LeaseWorker {
@@ -228,6 +260,10 @@ afterEach(async () => {
 
 test("runs checksummed STRICT migrations and required durability pragmas on reopen", () => {
   const first = harness();
+  expect(databaseMigrationManifest()).toEqual([
+    { version: 1, name: "private-owner-project-store", checksum: "313de39642d6ae4c4df0a2f1ab06366ee1c236ce8468c69eaae0cd3f8e2f4c9d" },
+    { version: 2, name: "loss-aware-v3-timeline-and-recovery-archive", checksum: "2f7cdbbadcd1b0c22e948b0c0111b9bf6756b8c054554b21e209f7add91fe348" },
+  ]);
   expect(first.database.pragma("journal_mode", { simple: true })).toBe("wal");
   expect(first.database.pragma("foreign_keys", { simple: true })).toBe(1);
   expect(first.database.pragma("synchronous", { simple: true })).toBe(2);
@@ -235,11 +271,248 @@ test("runs checksummed STRICT migrations and required durability pragmas on reop
   expect(first.database.pragma("trusted_schema", { simple: true })).toBe(0);
   expect(first.database.prepare("SELECT strict FROM pragma_table_list WHERE name = 'projects'").get()).toEqual({ strict: 1 });
   expect(first.database.prepare("SELECT version, name, checksum FROM schema_migrations").all()).toEqual(databaseMigrationManifest());
+  expect(() => first.database.prepare(`INSERT INTO legacy_document_archive(
+    owner_type, owner_id, project_id, schema_version, document_json, document_sha256,
+    migration_status, reason, archived_at
+  ) VALUES ('project', ?, ?, 2, '{}', ?, 'migrated', 'forged', ?)`)
+    .run("project-ffffffffffffffffffffffff", "project-ffffffffffffffffffffffff", "f".repeat(64), new Date().toISOString()))
+    .toThrow(/sealed after migration/);
   first.database.close();
 
   const reopened = openProofCanvasDatabase({ path: first.path });
-  expect(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({ count: 1 });
+  expect(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({ count: 2 });
   reopened.close();
+});
+
+test("migrates lossless V2 rows and independently quarantines lossy projects and checkpoints with exact archives", () => {
+  const first = harness();
+  const readyCreated = first.repository.createProject({ kind: "blank", title: "Lossless V2", mutationId: "mutation-create-v2-ready" });
+  const ready = first.repository.getProject(readyCreated.value.projectId);
+  const readyCheckpoint = first.repository.createCheckpoint({
+    projectId: ready.id,
+    expectedRevision: ready.revision,
+    mutationId: "mutation-checkpoint-v2-ready",
+    label: "Legacy checkpoint",
+  });
+  const readyAfterCheckpoint = first.repository.getProject(ready.id);
+  const readyDuplicateReceipt = first.repository.duplicateProject({
+    projectId: ready.id,
+    expectedRevision: readyAfterCheckpoint.revision,
+    mutationId: "mutation-duplicate-v2-ready",
+    title: "Loss-prone duplicate",
+  });
+  const readyDuplicate = first.repository.getProject(readyDuplicateReceipt.value.projectId);
+  const blockedCreated = first.repository.createProject({ kind: "blank", title: "Blocked V2", mutationId: "mutation-create-v2-blocked" });
+  const renamedBlocked = first.repository.renameProject({
+    projectId: blockedCreated.value.projectId,
+    expectedRevision: blockedCreated.value.revision,
+    mutationId: "mutation-rename-v2-blocked",
+    title: "Blocked legacy V2",
+  });
+  const blocked = first.repository.getProject(blockedCreated.value.projectId);
+
+  const readyRaw = schemaV2Json(readyAfterCheckpoint.document, (candidate) => {
+    const shot = (candidate.shots as Array<Record<string, unknown>>)[0];
+    shot.duration = 5.000000004;
+  });
+  const blockedRaw = schemaV2Json(blocked.document, (candidate) => {
+    const shot = (candidate.shots as Array<Record<string, unknown>>)[0];
+    shot.markers = [
+      { id: "marker-legacy-a", time: 1, name: "A", color: "#315866" },
+      { id: "marker-legacy-b", time: 1.000000001, name: "B", color: "#71402d" },
+    ];
+  });
+  const checkpointRow = first.database.prepare("SELECT document_json FROM checkpoints WHERE id = ?").get(readyCheckpoint.value.checkpointId) as { document_json: string };
+  const blockedCheckpointRaw = schemaV2Json(JSON.parse(checkpointRow.document_json), (candidate) => {
+    const shot = (candidate.shots as Array<Record<string, unknown>>)[0];
+    shot.markers = [
+      { id: "marker-checkpoint-a", time: 2, name: "A", color: "#315866" },
+      { id: "marker-checkpoint-b", time: 2.000000001, name: "B", color: "#71402d" },
+    ];
+  });
+  const duplicateBlockedRaw = schemaV2Json(readyDuplicate.document, (candidate) => {
+    const shot = (candidate.shots as Array<Record<string, unknown>>)[0];
+    shot.markers = [
+      { id: "marker-duplicate-a", time: 3, name: "A", color: "#315866" },
+      { id: "marker-duplicate-b", time: 3.000000001, name: "B", color: "#71402d" },
+    ];
+  });
+  first.database.prepare("UPDATE projects SET document_json = ?, duration_seconds = ? WHERE id = ?").run(readyRaw, 5.000000004, ready.id);
+  first.database.prepare("UPDATE projects SET document_json = ? WHERE id = ?").run(blockedRaw, blocked.id);
+  first.database.prepare("UPDATE checkpoints SET document_json = ? WHERE id = ?").run(blockedCheckpointRaw, readyCheckpoint.value.checkpointId);
+  first.database.prepare("UPDATE projects SET document_json = ? WHERE id = ?").run(duplicateBlockedRaw, readyDuplicate.id);
+  downgradeDatabaseSchemaToV1(first.database);
+  first.database.close();
+
+  const reopened = openProofCanvasDatabase({ path: first.path });
+  const repository = new SqliteProjectRepository(reopened);
+  expect(reopened.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }]);
+  expect(repository.getProject(ready.id).document.schemaVersion).toBe(3);
+  expect(repository.getProject(ready.id).durationSeconds).toBe(5);
+  expect(repository.listProjects()).toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: ready.id, recoveryRequired: false, durationSeconds: 5 }),
+    expect.objectContaining({ id: blocked.id, recoveryRequired: true }),
+  ]));
+  expect(() => repository.getProject(blocked.id)).toThrow(expect.objectContaining({ code: "project_recovery_required" }));
+  expect(repository.listCheckpoints(ready.id)).toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: readyCheckpoint.value.checkpointId, recoveryRequired: true }),
+  ]));
+  expect(() => repository.recoverCheckpoint({
+    projectId: ready.id,
+    checkpointId: readyCheckpoint.value.checkpointId,
+    expectedRevision: readyCheckpoint.value.revision,
+    mutationId: "mutation-recover-blocked-checkpoint",
+  })).toThrow(expect.objectContaining({ code: "project_recovery_required" }));
+  expect(() => repository.createCheckpoint({
+    projectId: ready.id,
+    expectedRevision: ready.revision,
+    mutationId: "mutation-checkpoint-v2-ready",
+    label: "Legacy checkpoint",
+  })).toThrow(expect.objectContaining({ code: "project_recovery_required" }));
+  expect(() => repository.duplicateProject({
+    projectId: ready.id,
+    expectedRevision: readyAfterCheckpoint.revision,
+    mutationId: "mutation-duplicate-v2-ready",
+    title: "Loss-prone duplicate",
+  })).toThrow(expect.objectContaining({ code: "project_recovery_required" }));
+
+  const projectRecovery = repository.legacyRecoveryDocument({ projectId: blocked.id });
+  expect(projectRecovery.documentJson).toBe(blockedRaw);
+  expect(projectRecovery.sha256).toBe(createHash("sha256").update(blockedRaw, "utf8").digest("hex"));
+  const checkpointRecovery = repository.legacyRecoveryDocument({ projectId: ready.id, checkpointId: readyCheckpoint.value.checkpointId });
+  expect(checkpointRecovery.documentJson).toBe(blockedCheckpointRaw);
+  expect(() => repository.renameProject({
+    projectId: blocked.id,
+    expectedRevision: blockedCreated.value.revision,
+    mutationId: "mutation-rename-v2-blocked",
+    title: "Blocked legacy V2",
+  })).toThrow(expect.objectContaining({ code: "project_recovery_required" }));
+  expect(() => repository.createProject({
+    kind: "blank",
+    title: "Blocked V2",
+    mutationId: "mutation-create-v2-blocked",
+  })).toThrow(expect.objectContaining({ code: "project_recovery_required" }));
+
+  expect(() => reopened.prepare("UPDATE legacy_document_archive SET reason = 'tampered' WHERE owner_id = ?").run(blocked.id)).toThrow(/immutable/);
+  expect(() => reopened.prepare("DELETE FROM legacy_document_archive WHERE owner_id = ?").run(blocked.id)).toThrow(/immutable/);
+  const renamedReady = repository.renameProject({
+    projectId: ready.id,
+    expectedRevision: readyCheckpoint.value.revision,
+    mutationId: "mutation-rename-migrated-ready",
+    title: "Migrated and editable",
+  });
+  expect(renamedReady.value.revision).toBe(readyCheckpoint.value.revision + 1);
+  expect(() => assertProofCanvasPersistenceIntegrity(reopened)).not.toThrow();
+  repository.deleteProject({
+    projectId: ready.id,
+    expectedRevision: renamedReady.value.revision,
+    mutationId: "mutation-delete-ready-with-archive",
+  });
+  expect(() => repository.getProject(ready.id)).toThrow(expect.objectContaining({ code: "project_not_found" }));
+  expect(repository.legacyRecoveryDocument({ projectId: ready.id, checkpointId: readyCheckpoint.value.checkpointId }).documentJson).toBe(blockedCheckpointRaw);
+  expect(() => assertProofCanvasPersistenceIntegrity(reopened)).not.toThrow();
+  reopened.close();
+  expect(renamedBlocked.value.revision).toBe(2);
+});
+
+test("rolls back V3 migration for noncanonical or baseline-invalid V2 rows", () => {
+  for (const defect of ["missing-default", "overlap"] as const) {
+    const first = harness();
+    const created = first.repository.createProject({ kind: "sample", title: `Invalid ${defect}`, mutationId: `mutation-create-invalid-${defect}` });
+    const durable = first.repository.getProject(created.value.projectId);
+    const raw = schemaV2Json(durable.document, (candidate) => {
+      const shot = (candidate.shots as Array<Record<string, unknown>>)[0];
+      if (defect === "missing-default") delete shot.propertyTracks;
+      else {
+        const animations = shot.animations as Array<Record<string, unknown>>;
+        animations.push({ ...cloneSerializable(animations[0]), id: "animation-invalid-overlap" });
+      }
+    });
+    first.database.prepare("UPDATE projects SET document_json = ? WHERE id = ?").run(raw, durable.id);
+    downgradeDatabaseSchemaToV1(first.database);
+    first.database.close();
+    expect(() => openProofCanvasDatabase({ path: first.path })).toThrow(/canonical|valid schema-v2|frozen schema-v2|overlap|redundant/);
+    const rawDatabase = new Database(first.path, { readonly: true });
+    expect(rawDatabase.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({ count: 1 });
+    expect((rawDatabase.prepare("PRAGMA table_info(projects)").all() as Array<{ name: string }>).some(({ name }) => name === "document_state")).toBe(false);
+    rawDatabase.close();
+  }
+});
+
+test("atomically rejects schema-v2 rows whose metadata, counters, or checkpoint binding diverge", () => {
+  for (const defect of [
+    "project-id", "project-title", "project-created", "project-updated", "counter",
+    "checkpoint-project", "checkpoint-created", "checkpoint-id",
+  ] as const) {
+    const first = harness();
+    const created = first.repository.createProject({ kind: "sample", title: `Binding ${defect}`, mutationId: `mutation-create-binding-${defect}` });
+    const durable = first.repository.getProject(created.value.projectId);
+    let checkpointId: string | undefined;
+    if (defect.startsWith("checkpoint")) {
+      checkpointId = first.repository.createCheckpoint({
+        projectId: durable.id,
+        expectedRevision: durable.revision,
+        mutationId: `mutation-checkpoint-${defect}`,
+        label: "Binding probe",
+      }).value.checkpointId;
+    }
+    if (defect.startsWith("project-")) {
+      const raw = schemaV2Json(first.repository.getProject(durable.id).document, (candidate) => {
+        const metadata = candidate.metadata as Record<string, unknown>;
+        if (defect === "project-id") metadata.id = "project-ffffffffffffffffffffffff";
+        else if (defect === "project-title") metadata.title = "Divergent document title";
+        else if (defect === "project-created") metadata.createdAt = "2026-08-23T00:00:00.000Z";
+        else metadata.updatedAt = "2026-08-23T00:00:00.000Z";
+      });
+      first.database.prepare("UPDATE projects SET document_json = ? WHERE id = ?").run(raw, durable.id);
+    } else if (defect === "counter") {
+      const raw = schemaV2Json(first.repository.getProject(durable.id).document);
+      first.database.prepare("UPDATE projects SET document_json = ?, shot_count = shot_count + 1 WHERE id = ?").run(raw, durable.id);
+    } else {
+      const checkpoint = first.database.prepare("SELECT document_json FROM checkpoints WHERE id = ?").get(checkpointId) as { document_json: string };
+      const raw = schemaV2Json(JSON.parse(checkpoint.document_json), (candidate) => {
+        const metadata = candidate.metadata as Record<string, unknown>;
+        if (defect === "checkpoint-project") metadata.id = "project-ffffffffffffffffffffffff";
+        else if (defect === "checkpoint-created") metadata.createdAt = "2026-08-23T00:00:00.000Z";
+      });
+      first.database.prepare("UPDATE checkpoints SET document_json = ? WHERE id = ?").run(raw, checkpointId);
+      if (defect === "checkpoint-id") first.database.prepare("UPDATE checkpoints SET id = 'bogus' WHERE id = ?").run(checkpointId);
+    }
+    downgradeDatabaseSchemaToV1(first.database);
+    first.database.close();
+
+    expect(() => openProofCanvasDatabase({ path: first.path })).toThrow(/metadata|counter|checkpoint|integrity|invalid id/i);
+    const rawDatabase = new Database(first.path, { readonly: true });
+    expect(rawDatabase.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({ count: 1 });
+    expect((rawDatabase.prepare("PRAGMA table_info(projects)").all() as Array<{ name: string }>).some(({ name }) => name === "document_state")).toBe(false);
+    expect(() => rawDatabase.prepare("SELECT * FROM legacy_document_archive").all()).toThrow(/no such table/);
+    rawDatabase.close();
+  }
+});
+
+test("rolls back migration before oversized V2 bytes can be laundered by tick normalization", () => {
+  const first = harness();
+  const created = first.repository.createProject({ kind: "sample", title: "Oversized legacy", mutationId: "mutation-create-oversized-v2" });
+  const durable = first.repository.getProject(created.value.projectId);
+  const candidate = cloneSerializable(durable.document) as unknown as Record<string, unknown>;
+  candidate.schemaVersion = 2;
+  const shot = (candidate.shots as Array<Record<string, unknown>>)[0];
+  shot.duration = 21.000000004;
+  const object = (shot.objects as Array<Record<string, unknown>>)[0];
+  (object.properties as Record<string, unknown>).migrationPadding = "";
+  const emptyBytes = Buffer.byteLength(canonicalLegacyJson(candidate), "utf8");
+  (object.properties as Record<string, unknown>).migrationPadding = "x".repeat(PROOFCANVAS_PROJECT_MAX_BYTES + 5 - emptyBytes);
+  const raw = canonicalLegacyJson(candidate);
+  expect(Buffer.byteLength(raw, "utf8")).toBe(PROOFCANVAS_PROJECT_MAX_BYTES + 5);
+  first.database.prepare("UPDATE projects SET document_json = ?, duration_seconds = ? WHERE id = ?").run(raw, 28.000000004, durable.id);
+  downgradeDatabaseSchemaToV1(first.database);
+  first.database.close();
+
+  expect(() => openProofCanvasDatabase({ path: first.path })).toThrow(/UTF-8 bytes/);
+  const rawDatabase = new Database(first.path, { readonly: true });
+  expect(rawDatabase.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({ count: 1 });
+  expect((rawDatabase.prepare("SELECT document_json FROM projects WHERE id = ?").get(durable.id) as { document_json: string }).document_json).toBe(raw);
+  rawDatabase.close();
 });
 
 test("fails closed on an unknown newer migration and a changed known checksum", () => {
@@ -293,6 +566,259 @@ test("persists derived dashboard metadata and validates documents only when read
   database.prepare("UPDATE projects SET document_json = 'not-json' WHERE id = ?").run(created.value.projectId);
   expect(repository.listProjects()).toHaveLength(1);
   expect(() => repository.getProject(created.value.projectId)).toThrow(expect.objectContaining({ code: "repository_corrupt" }));
+  database.close();
+});
+
+test("persists canonical tick sums through save, list, duplicate, checkpoint recovery, and integrity", () => {
+  const { database, repository } = harness();
+  const created = repository.createProject({ kind: "blank", title: "Tick aggregate", mutationId: "mutation-create-tick-sum-01" });
+  const initial = repository.getProject(created.value.projectId);
+  const document = cloneSerializable(initial.document);
+  const firstShot = cloneSerializable(document.shots[0]);
+  const secondShot = cloneSerializable(document.shots[0]);
+  for (const shot of [firstShot, secondShot]) {
+    shot.objects = [];
+    shot.animations = [];
+    shot.propertyTracks = [];
+    shot.audioClips = [];
+    shot.captionClips = [];
+    shot.markers = [];
+  }
+  firstShot.id = "shot-tick-sum-a";
+  firstShot.name = "Tick sum A";
+  firstShot.duration = 0.1;
+  secondShot.id = "shot-tick-sum-b";
+  secondShot.name = "Tick sum B";
+  secondShot.duration = 0.2;
+  document.shots = [firstShot, secondShot];
+  const saved = repository.saveProject({
+    projectId: initial.id,
+    expectedRevision: 1,
+    mutationId: "mutation-save-tick-sum-001",
+    document,
+  });
+  expect(saved.value.revision).toBe(2);
+  expect(repository.getProject(initial.id).durationSeconds).toBe(0.3);
+  expect(repository.listProjects().find(({ id }) => id === initial.id)?.durationSeconds).toBe(0.3);
+  expect((database.prepare("SELECT duration_seconds FROM projects WHERE id = ?").get(initial.id) as { duration_seconds: number }).duration_seconds).toBe(0.3);
+  database.prepare("UPDATE projects SET duration_seconds = ? WHERE id = ?").run(0.1 + 0.2, initial.id);
+  expect((database.prepare("SELECT duration_seconds FROM projects WHERE id = ?").get(initial.id) as { duration_seconds: number }).duration_seconds).toBe(0.30000000000000004);
+  expect(repository.getProject(initial.id).durationSeconds).toBe(0.3);
+  expect(repository.listProjects().find(({ id }) => id === initial.id)?.durationSeconds).toBe(0.3);
+  expect(() => assertProofCanvasPersistenceIntegrity(database)).not.toThrow();
+
+  const duplicated = repository.duplicateProject({
+    projectId: initial.id,
+    expectedRevision: 2,
+    mutationId: "mutation-duplicate-tick-sum",
+  });
+  expect(repository.getProject(duplicated.value.projectId).durationSeconds).toBe(0.3);
+
+  const checkpoint = repository.createCheckpoint({
+    projectId: initial.id,
+    expectedRevision: 2,
+    mutationId: "mutation-checkpoint-tick-sum",
+    label: "Canonical 0.3 seconds",
+  });
+  const changed = cloneSerializable(repository.getProject(initial.id).document);
+  changed.shots[0].duration = 0.2;
+  changed.shots[1].duration = 0.2;
+  const changedSave = repository.saveProject({
+    projectId: initial.id,
+    expectedRevision: checkpoint.value.revision,
+    mutationId: "mutation-change-tick-sum-01",
+    document: changed,
+  });
+  expect(repository.getProject(initial.id).durationSeconds).toBe(0.4);
+  expect((database.prepare("SELECT duration_seconds FROM projects WHERE id = ?").get(initial.id) as { duration_seconds: number }).duration_seconds).toBe(0.4);
+  repository.recoverCheckpoint({
+    projectId: initial.id,
+    checkpointId: checkpoint.value.checkpointId,
+    expectedRevision: changedSave.value.revision,
+    mutationId: "mutation-recover-tick-sum-1",
+  });
+  expect(repository.getProject(initial.id).durationSeconds).toBe(0.3);
+  expect((database.prepare("SELECT duration_seconds FROM projects WHERE id = ?").get(initial.id) as { duration_seconds: number }).duration_seconds).toBe(0.3);
+  expect(() => assertProofCanvasPersistenceIntegrity(database)).not.toThrow();
+
+  const extreme = cloneSerializable(repository.getProject(initial.id).document);
+  extreme.shots[0].duration = Number.MAX_VALUE;
+  expect(() => repository.saveProject({
+    projectId: initial.id,
+    expectedRevision: repository.getProject(initial.id).revision,
+    mutationId: "mutation-reject-extreme-timeline",
+    document: extreme,
+  })).toThrow(expect.objectContaining({ status: 400, code: "invalid_project" }));
+  database.close();
+});
+
+test("physically rewrites canonical duration counters on every existing-row mutation", () => {
+  const { database, repository } = harness();
+  const created = repository.createProject({ kind: "blank", title: "Mutation counters", mutationId: "mutation-create-counter-path" });
+  const durable = repository.getProject(created.value.projectId);
+  const document = cloneSerializable(durable.document);
+  const second = cloneSerializable(document.shots[0]);
+  document.shots[0].id = "shot-counter-a";
+  document.shots[0].duration = 0.1;
+  second.id = "shot-counter-b";
+  second.duration = 0.2;
+  document.shots.push(second);
+  const saved = repository.saveProject({ projectId: durable.id, expectedRevision: 1, mutationId: "mutation-save-counter-path", document });
+  const rawDuration = () => (database.prepare("SELECT duration_seconds FROM projects WHERE id = ?").get(durable.id) as { duration_seconds: number }).duration_seconds;
+  expect(rawDuration()).toBe(0.3);
+
+  database.prepare("UPDATE projects SET duration_seconds = ? WHERE id = ?").run(0.1 + 0.2, durable.id);
+  const renamed = repository.renameProject({ projectId: durable.id, expectedRevision: saved.value.revision, mutationId: "mutation-rename-counter-path", title: "Renamed counters" });
+  expect(rawDuration()).toBe(0.3);
+
+  database.prepare("UPDATE projects SET duration_seconds = ? WHERE id = ?").run(0.1 + 0.2, durable.id);
+  const checkpoint = repository.createCheckpoint({ projectId: durable.id, expectedRevision: renamed.value.revision, mutationId: "mutation-checkpoint-counter-path", label: "Counter checkpoint" });
+  expect(rawDuration()).toBe(0.3);
+
+  database.prepare("UPDATE projects SET duration_seconds = ? WHERE id = ?").run(0.1 + 0.2, durable.id);
+  repository.deleteProject({ projectId: durable.id, expectedRevision: checkpoint.value.revision, mutationId: "mutation-delete-counter-path" });
+  expect(rawDuration()).toBe(0.3);
+  expect(() => assertProofCanvasPersistenceIntegrity(database)).not.toThrow();
+  database.close();
+});
+
+test("checkpoints and recovers previously valid V2 easing without silently rewriting it", () => {
+  const source = harness();
+  const created = source.repository.createProject({ kind: "sample", title: "Legacy V2 easing", mutationId: "mutation-create-legacy-v2-easing" });
+  const initialV3 = source.repository.getProject(created.value.projectId);
+  const emphasisId = "animation-limit-emphasis";
+  const legacyRaw = schemaV2Json(initialV3.document, (candidate) => {
+    const shot = (candidate.shots as Array<Record<string, unknown>>)[0];
+    const emphasis = (shot.animations as Array<Record<string, unknown>>).find(({ id }) => id === emphasisId)!;
+    emphasis.easing = "editorial";
+  });
+  source.database.prepare("UPDATE projects SET document_json = ? WHERE id = ?").run(legacyRaw, initialV3.id);
+  downgradeDatabaseSchemaToV1(source.database);
+  source.database.close();
+
+  const database = openProofCanvasDatabase({ path: source.path });
+  const repository = new SqliteProjectRepository(database);
+  const initial = repository.getProject(initialV3.id);
+  expect(initial.document.shots[0].animations.find(({ id }) => id === emphasisId)?.easing).toBe("editorial");
+  expect(() => repository.duplicateProject({
+    projectId: initial.id,
+    expectedRevision: initial.revision,
+    mutationId: "mutation-reject-legacy-duplicate",
+  })).toThrow(expect.objectContaining({ status: 400, code: "invalid_project" }));
+  const checkpoint = repository.createCheckpoint({
+    projectId: initial.id,
+    expectedRevision: initial.revision,
+    mutationId: "mutation-checkpoint-legacy-v2-easing",
+    label: "Persisted V2 easing",
+  });
+
+  const illegalMutation = cloneSerializable(repository.getProject(initial.id).document);
+  illegalMutation.shots[0].animations.find(({ id }) => id === emphasisId)!.duration = 1;
+  expect(() => repository.saveProject({
+    projectId: initial.id,
+    expectedRevision: checkpoint.value.revision,
+    mutationId: "mutation-reject-legacy-edit-01",
+    document: illegalMutation,
+  })).toThrow(expect.objectContaining({ status: 400, code: "invalid_project" }));
+
+  const newlyUnsupported = cloneSerializable(repository.getProject(initial.id).document);
+  const supportedWrite = newlyUnsupported.shots[0].animations.find(({ id }) => id === "animation-title-write")!;
+  supportedWrite.easing = "there-and-back";
+  expect(() => repository.saveProject({
+    projectId: initial.id,
+    expectedRevision: checkpoint.value.revision,
+    mutationId: "mutation-reject-new-unsupported",
+    document: newlyUnsupported,
+  })).toThrow(expect.objectContaining({ status: 400, code: "invalid_project" }));
+
+  const unrelated = cloneSerializable(repository.getProject(initial.id).document);
+  unrelated.shots[0].objects.find(({ id }) => id === "object-title")!.name = "Unrelated autosave remains allowed";
+  const unrelatedSave = repository.saveProject({
+    projectId: initial.id,
+    expectedRevision: checkpoint.value.revision,
+    mutationId: "mutation-save-unrelated-legacy",
+    document: unrelated,
+  });
+  const repaired = cloneSerializable(repository.getProject(initial.id).document);
+  repaired.shots[0].animations.find(({ id }) => id === emphasisId)!.easing = "there-and-back";
+  const repairedSave = repository.saveProject({
+    projectId: initial.id,
+    expectedRevision: unrelatedSave.value.revision,
+    mutationId: "mutation-repair-legacy-v2-easing",
+    document: repaired,
+  });
+  repository.recoverCheckpoint({
+    projectId: initial.id,
+    checkpointId: checkpoint.value.checkpointId,
+    expectedRevision: repairedSave.value.revision,
+    mutationId: "mutation-recover-legacy-v2-easing",
+  });
+  expect(repository.getProject(initial.id).document.shots[0].animations.find(({ id }) => id === emphasisId)?.easing).toBe("editorial");
+
+  const removed = cloneSerializable(repository.getProject(initial.id).document);
+  removed.shots[0].animations = removed.shots[0].animations.filter(({ id }) => id !== emphasisId);
+  expect(() => repository.saveProject({
+    projectId: initial.id,
+    expectedRevision: repository.getProject(initial.id).revision,
+    mutationId: "mutation-delete-legacy-animation",
+    document: removed,
+  })).not.toThrow();
+  expect(() => assertProofCanvasPersistenceIntegrity(database)).not.toThrow();
+  database.close();
+});
+
+test("rejects recovery replay when its pre-restore checkpoint was independently quarantined", () => {
+  const source = harness();
+  const created = source.repository.createProject({ kind: "blank", title: "Recovery replay", mutationId: "mutation-create-recover-replay" });
+  const initial = source.repository.getProject(created.value.projectId);
+  const checkpoint = source.repository.createCheckpoint({
+    projectId: initial.id,
+    expectedRevision: initial.revision,
+    mutationId: "mutation-checkpoint-recover-replay",
+    label: "Replay source",
+  });
+  const changed = cloneSerializable(source.repository.getProject(initial.id).document);
+  changed.shots[0].name = "Changed before recovery";
+  const saved = source.repository.saveProject({
+    projectId: initial.id,
+    expectedRevision: checkpoint.value.revision,
+    mutationId: "mutation-save-recover-replay",
+    document: changed,
+  });
+  const recovered = source.repository.recoverCheckpoint({
+    projectId: initial.id,
+    checkpointId: checkpoint.value.checkpointId,
+    expectedRevision: saved.value.revision,
+    mutationId: "mutation-recover-replay-001",
+  });
+  const current = source.repository.getProject(initial.id);
+  source.database.prepare("UPDATE projects SET document_json = ? WHERE id = ?").run(schemaV2Json(current.document), initial.id);
+  const checkpointRows = source.database.prepare("SELECT id, document_json FROM checkpoints WHERE project_id = ?").all(initial.id) as Array<{ id: string; document_json: string }>;
+  for (const row of checkpointRows) {
+    const raw = schemaV2Json(JSON.parse(row.document_json), row.id === recovered.value.preRestoreCheckpointId ? (candidate) => {
+      const shot = (candidate.shots as Array<Record<string, unknown>>)[0];
+      shot.markers = [
+        { id: "marker-replay-a", time: 1, name: "A", color: "#315866" },
+        { id: "marker-replay-b", time: 1.000000001, name: "B", color: "#71402d" },
+      ];
+    } : undefined);
+    source.database.prepare("UPDATE checkpoints SET document_json = ? WHERE id = ?").run(raw, row.id);
+  }
+  downgradeDatabaseSchemaToV1(source.database);
+  source.database.close();
+
+  const database = openProofCanvasDatabase({ path: source.path });
+  const repository = new SqliteProjectRepository(database);
+  expect(repository.listCheckpoints(initial.id)).toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: recovered.value.preRestoreCheckpointId, recoveryRequired: true }),
+    expect.objectContaining({ id: checkpoint.value.checkpointId, recoveryRequired: false }),
+  ]));
+  expect(() => repository.recoverCheckpoint({
+    projectId: initial.id,
+    checkpointId: checkpoint.value.checkpointId,
+    expectedRevision: saved.value.revision,
+    mutationId: "mutation-recover-replay-001",
+  })).toThrow(expect.objectContaining({ code: "project_recovery_required" }));
   database.close();
 });
 
@@ -436,6 +962,73 @@ test("validates standalone backups from readonly storage without changing source
     chmodSync(valid, 0o600);
     chmodSync(invalid, 0o600);
   }
+});
+
+test("upgrades an old backup only on the private snapshot before validation and restore", () => {
+  const source = harness();
+  const created = source.repository.createProject({ kind: "blank", title: "Old backup", mutationId: "mutation-create-old-backup" });
+  const durable = source.repository.getProject(created.value.projectId);
+  const legacyRaw = schemaV2Json(durable.document, (candidate) => {
+    ((candidate.shots as Array<Record<string, unknown>>)[0]).duration = 5.000000004;
+  });
+  source.database.prepare("UPDATE projects SET document_json = ?, duration_seconds = ? WHERE id = ?").run(legacyRaw, 5.000000004, durable.id);
+  downgradeDatabaseSchemaToV1(source.database);
+  source.database.close();
+  const beforeStats = statSync(source.path);
+  const beforeHash = createHash("sha256").update(readFileSync(source.path)).digest("hex");
+  const beforeListing = readdirSync(source.directory).sort();
+
+  expect(() => validateProofCanvasBackup(source.path)).not.toThrow();
+  const afterStats = statSync(source.path);
+  expect(createHash("sha256").update(readFileSync(source.path)).digest("hex")).toBe(beforeHash);
+  expect(afterStats.ino).toBe(beforeStats.ino);
+  expect(afterStats.mode).toBe(beforeStats.mode);
+  expect(afterStats.mtimeMs).toBe(beforeStats.mtimeMs);
+  expect(readdirSync(source.directory).sort()).toEqual(beforeListing);
+
+  const destination = temporaryDirectory();
+  restoreOfflineBackup(source.path, { dataDirectory: destination });
+  const restored = openProofCanvasDatabase({ path: join(destination, "proofcanvas.sqlite3") });
+  expect(new SqliteProjectRepository(restored).getProject(durable.id).document.schemaVersion).toBe(3);
+  expect(() => assertProofCanvasPersistenceIntegrity(restored)).not.toThrow();
+  restored.close();
+  expect(createHash("sha256").update(readFileSync(source.path)).digest("hex")).toBe(beforeHash);
+  expect(readdirSync(source.directory).sort()).toEqual(beforeListing);
+});
+
+test("privately upgrades a loss-prone old backup while preserving its exact recovery bytes", () => {
+  const source = harness();
+  const created = source.repository.createProject({ kind: "blank", title: "Loss-prone backup", mutationId: "mutation-create-lossy-backup" });
+  const durable = source.repository.getProject(created.value.projectId);
+  const legacyRaw = schemaV2Json(durable.document, (candidate) => {
+    const shot = (candidate.shots as Array<Record<string, unknown>>)[0];
+    shot.markers = [
+      { id: "marker-backup-collapse-a", time: 1, name: "A", color: "#315866" },
+      { id: "marker-backup-collapse-b", time: 1.000000001, name: "B", color: "#71402d" },
+    ];
+  });
+  source.database.prepare("UPDATE projects SET document_json = ? WHERE id = ?").run(legacyRaw, durable.id);
+  downgradeDatabaseSchemaToV1(source.database);
+  source.database.close();
+  const beforeBytes = readFileSync(source.path);
+  const beforeStats = statSync(source.path);
+
+  expect(() => validateProofCanvasBackup(source.path)).not.toThrow();
+  expect(readFileSync(source.path)).toEqual(beforeBytes);
+  expect(statSync(source.path).ino).toBe(beforeStats.ino);
+  expect(statSync(source.path).mode).toBe(beforeStats.mode);
+  expect(statSync(source.path).mtimeMs).toBe(beforeStats.mtimeMs);
+
+  const destination = temporaryDirectory();
+  restoreOfflineBackup(source.path, { dataDirectory: destination });
+  const restored = openProofCanvasDatabase({ path: join(destination, "proofcanvas.sqlite3") });
+  const repository = new SqliteProjectRepository(restored);
+  expect(repository.listProjects()).toEqual([expect.objectContaining({ id: durable.id, recoveryRequired: true })]);
+  expect(repository.legacyRecoveryDocument({ projectId: durable.id }).documentJson).toBe(legacyRaw);
+  expect(() => repository.getProject(durable.id)).toThrow(expect.objectContaining({ code: "project_recovery_required" }));
+  expect(() => assertProofCanvasPersistenceIntegrity(restored)).not.toThrow();
+  restored.close();
+  expect(readFileSync(source.path)).toEqual(beforeBytes);
 });
 
 test("invalid restore input leaves a preexisting target directory mode and listing untouched", () => {

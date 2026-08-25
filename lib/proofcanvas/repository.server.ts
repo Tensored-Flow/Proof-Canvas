@@ -4,12 +4,16 @@ import { z } from "zod";
 import { proofCanvasDatabase } from "./database.server";
 import {
   ProjectDocumentSchema,
+  animationAuthoringCompatibilityIssue,
   canonicalProjectJson,
   cloneSerializable,
   parseProjectDocument,
+  projectAnimationAuthoringTransitionIssue,
+  projectDurationSeconds,
   type ProjectDocument,
 } from "./schema";
 import { createProjectTemplate, type ProjectTemplateKind } from "./templates";
+import { canonicalTimelineTime } from "./frame";
 
 export const PROJECT_LIST_LIMIT = 500;
 export const CHECKPOINT_LIST_LIMIT = 100;
@@ -33,7 +37,7 @@ export type ThumbnailMetadata = z.infer<typeof ThumbnailMetadataSchema>;
 export class ProjectRepositoryError extends Error {
   constructor(
     public readonly status: number,
-    public readonly code: "project_not_found" | "revision_conflict" | "idempotency_conflict" | "invalid_project" | "repository_corrupt",
+    public readonly code: "project_not_found" | "project_recovery_required" | "revision_conflict" | "idempotency_conflict" | "invalid_project" | "repository_corrupt",
     message: string,
     public readonly currentRevision?: number,
   ) {
@@ -52,6 +56,7 @@ export interface ProjectSummary {
   shotCount: number;
   objectCount: number;
   durationSeconds: number;
+  recoveryRequired: boolean;
 }
 
 export interface DurableProject extends ProjectSummary {
@@ -64,6 +69,16 @@ export interface ProjectCheckpoint {
   revision: number;
   label: string;
   createdAt: string;
+  recoveryRequired: boolean;
+}
+
+export interface LegacyRecoveryDocument {
+  ownerType: "project" | "checkpoint";
+  ownerId: string;
+  projectId: string;
+  sha256: string;
+  reason: string;
+  documentJson: string;
 }
 
 export interface MutationReceipt {
@@ -101,6 +116,7 @@ export interface ProjectRepository {
   listCheckpoints(projectId: string): ProjectCheckpoint[];
   createCheckpoint(input: { projectId: string; expectedRevision: number; mutationId: string; label: string }): IdempotentResult<CheckpointReceipt>;
   recoverCheckpoint(input: { projectId: string; checkpointId: string; expectedRevision: number; mutationId: string }): IdempotentResult<RecoveryReceipt>;
+  legacyRecoveryDocument(input: { projectId: string; checkpointId?: string }): LegacyRecoveryDocument;
 }
 
 interface ProjectRow {
@@ -120,6 +136,7 @@ interface ProjectRow {
   thumbnail_width: number | null;
   thumbnail_height: number | null;
   thumbnail_updated_at: string | null;
+  document_state: "ready" | "recovery-required";
 }
 
 type ProjectSummaryRow = Omit<ProjectRow, "document_json">;
@@ -174,7 +191,20 @@ function thumbnailFromRow(row: ProjectSummaryRow | ProjectRow): ThumbnailMetadat
   return parsed.data;
 }
 
+function canonicalStoredDuration(value: number): number {
+  try {
+    const canonical = canonicalTimelineTime(value);
+    if (canonical <= 0) throw new Error("duration must be positive");
+    return canonical;
+  } catch {
+    throw new ProjectRepositoryError(500, "repository_corrupt", "Stored project duration is outside the authored timeline domain");
+  }
+}
+
 function durableFromRow(row: ProjectRow): DurableProject {
+  if (row.document_state === "recovery-required") {
+    throw new ProjectRepositoryError(409, "project_recovery_required", "This schema-v2 project cannot be migrated losslessly; export its exact legacy JSON for recovery");
+  }
   let document: ProjectDocument;
   try {
     document = parseProjectDocument(row.document_json);
@@ -188,8 +218,8 @@ function durableFromRow(row: ProjectRow): DurableProject {
     || document.metadata.updatedAt !== row.updated_at
   ) throw new ProjectRepositoryError(500, "repository_corrupt", "Stored project metadata does not match its repository row");
   const objectCount = document.shots.reduce((sum, shot) => sum + shot.objects.length, 0);
-  const durationSeconds = document.shots.reduce((sum, shot) => sum + shot.duration, 0);
-  if (row.shot_count !== document.shots.length || row.object_count !== objectCount || row.duration_seconds !== durationSeconds) {
+  const durationSeconds = projectDurationSeconds(document);
+  if (row.shot_count !== document.shots.length || row.object_count !== objectCount || canonicalStoredDuration(row.duration_seconds) !== durationSeconds) {
     throw new ProjectRepositoryError(500, "repository_corrupt", "Stored project counters do not match its document");
   }
   return {
@@ -202,6 +232,7 @@ function durableFromRow(row: ProjectRow): DurableProject {
     shotCount: document.shots.length,
     objectCount,
     durationSeconds,
+    recoveryRequired: false,
     document,
   };
 }
@@ -216,7 +247,8 @@ function summaryFromMetadataRow(row: ProjectSummaryRow): ProjectSummary {
     thumbnail: thumbnailFromRow(row),
     shotCount: row.shot_count,
     objectCount: row.object_count,
-    durationSeconds: row.duration_seconds,
+    durationSeconds: canonicalStoredDuration(row.duration_seconds),
+    recoveryRequired: row.document_state === "recovery-required",
   };
 }
 
@@ -240,6 +272,21 @@ export class SqliteProjectRepository implements ProjectRepository {
     return row;
   }
 
+  private readyActiveRow(projectId: string): ProjectRow {
+    const row = this.activeRow(projectId);
+    if (row.document_state === "recovery-required") {
+      throw new ProjectRepositoryError(409, "project_recovery_required", "This schema-v2 project is read-only until its exact legacy JSON is recovered");
+    }
+    return row;
+  }
+
+  private assertProjectNotRecoveryRequired(projectId: string): void {
+    const state = this.database.prepare("SELECT document_state FROM projects WHERE id = ?").get(projectId) as { document_state: "ready" | "recovery-required" } | undefined;
+    if (state?.document_state === "recovery-required") {
+      throw new ProjectRepositoryError(409, "project_recovery_required", "This schema-v2 project is read-only until its exact legacy JSON is recovered");
+    }
+  }
+
   private replay<T>(mutationId: string, action: string, hash: string): T | undefined {
     const row = this.database.prepare("SELECT action, request_hash, response_json FROM project_mutations WHERE mutation_id = ?").get(mutationId) as MutationRow | undefined;
     if (!row) return undefined;
@@ -247,8 +294,28 @@ export class SqliteProjectRepository implements ProjectRepository {
       throw new ProjectRepositoryError(409, "idempotency_conflict", "Mutation ID was already used for a different request");
     }
     try {
-      return JSON.parse(row.response_json) as T;
-    } catch {
+      const value = JSON.parse(row.response_json) as T;
+      const receipt = value && typeof value === "object" ? value as Record<string, unknown> : undefined;
+      if (receipt) {
+        if (typeof receipt.projectId === "string") {
+          const project = this.database.prepare("SELECT document_state FROM projects WHERE id = ?").get(receipt.projectId) as { document_state: "ready" | "recovery-required" } | undefined;
+          if (!project) throw new ProjectRepositoryError(500, "repository_corrupt", "Stored mutation receipt references a missing project");
+          if (project.document_state === "recovery-required") {
+            throw new ProjectRepositoryError(409, "project_recovery_required", "Stored mutation receipt references a schema-v2 project that requires exact recovery");
+          }
+        }
+        for (const key of ["checkpointId", "preRestoreCheckpointId"] as const) {
+          if (typeof receipt[key] !== "string") continue;
+          const checkpoint = this.database.prepare("SELECT document_state FROM checkpoints WHERE id = ?").get(receipt[key]) as { document_state: "ready" | "recovery-required" } | undefined;
+          if (!checkpoint) throw new ProjectRepositoryError(500, "repository_corrupt", "Stored mutation receipt references a missing checkpoint");
+          if (checkpoint.document_state === "recovery-required") {
+            throw new ProjectRepositoryError(409, "project_recovery_required", "Stored mutation receipt references a schema-v2 checkpoint that requires exact recovery");
+          }
+        }
+      }
+      return value;
+    } catch (error) {
+      if (error instanceof ProjectRepositoryError) throw error;
       throw new ProjectRepositoryError(500, "repository_corrupt", "Stored mutation response is invalid");
     }
   }
@@ -266,7 +333,7 @@ export class SqliteProjectRepository implements ProjectRepository {
 
   listProjects(): ProjectSummary[] {
     const rows = this.database.prepare(`SELECT
-      id, title, revision, created_at, updated_at, deleted_at, shot_count, object_count, duration_seconds,
+      id, title, revision, created_at, updated_at, deleted_at, shot_count, object_count, duration_seconds, document_state,
       thumbnail_mime, thumbnail_sha256, thumbnail_bytes, thumbnail_width, thumbnail_height, thumbnail_updated_at
       FROM projects WHERE deleted_at IS NULL ORDER BY updated_at DESC, id LIMIT ?`)
       .all(PROJECT_LIST_LIMIT) as ProjectSummaryRow[];
@@ -274,7 +341,7 @@ export class SqliteProjectRepository implements ProjectRepository {
   }
 
   getProject(projectId: string): DurableProject {
-    return durableFromRow(this.activeRow(projectId));
+    return durableFromRow(this.readyActiveRow(projectId));
   }
 
   createProject(input: { kind: ProjectTemplateKind; title: string; mutationId: string }): IdempotentResult<MutationReceipt> {
@@ -300,7 +367,7 @@ export class SqliteProjectRepository implements ProjectRepository {
           now,
           document.shots.length,
           document.shots.reduce((sum, shot) => sum + shot.objects.length, 0),
-          document.shots.reduce((sum, shot) => sum + shot.duration, 0),
+          projectDurationSeconds(document),
         );
       const receipt = { projectId, revision: 1, updatedAt: now } satisfies MutationReceipt;
       this.recordMutation(projectId, mutationId, "create", hash, receipt, now);
@@ -322,10 +389,13 @@ export class SqliteProjectRepository implements ProjectRepository {
     const thumbnail = input.thumbnail === undefined ? undefined : input.thumbnail === null ? null : ThumbnailMetadataSchema.parse(input.thumbnail);
     const hash = requestHash({ projectId, expectedRevision, document: canonicalProjectJson(supplied), thumbnail });
     return this.database.transaction(() => {
+      this.assertProjectNotRecoveryRequired(projectId);
       const replayed = this.replay<MutationReceipt>(mutationId, "save", hash);
       if (replayed) return { value: replayed, replayed: true };
-      const row = this.activeRow(projectId);
+      const row = this.readyActiveRow(projectId);
       this.checkRevision(row, expectedRevision);
+      const authoringIssue = projectAnimationAuthoringTransitionIssue(durableFromRow(row).document, supplied);
+      if (authoringIssue) throw new ProjectRepositoryError(400, "invalid_project", authoringIssue);
       const now = this.isoNow();
       const document = ProjectDocumentSchema.parse({
         ...cloneSerializable(supplied),
@@ -345,7 +415,7 @@ export class SqliteProjectRepository implements ProjectRepository {
           now,
           document.shots.length,
           document.shots.reduce((sum, shot) => sum + shot.objects.length, 0),
-          document.shots.reduce((sum, shot) => sum + shot.duration, 0),
+          projectDurationSeconds(document),
           currentThumbnail?.mimeType ?? null,
           currentThumbnail?.sha256 ?? null,
           currentThumbnail?.bytes ?? null,
@@ -369,16 +439,17 @@ export class SqliteProjectRepository implements ProjectRepository {
     const title = TitleSchema.parse(input.title);
     const hash = requestHash({ projectId, expectedRevision, title });
     return this.database.transaction(() => {
+      this.assertProjectNotRecoveryRequired(projectId);
       const replayed = this.replay<MutationReceipt>(mutationId, "rename", hash);
       if (replayed) return { value: replayed, replayed: true };
-      const row = this.activeRow(projectId);
+      const row = this.readyActiveRow(projectId);
       this.checkRevision(row, expectedRevision);
       const current = durableFromRow(row).document;
       const now = this.isoNow();
       const document = ProjectDocumentSchema.parse({ ...cloneSerializable(current), metadata: { ...current.metadata, title, updatedAt: now } });
       const receipt = { projectId, revision: row.revision + 1, updatedAt: now } satisfies MutationReceipt;
-      this.database.prepare("UPDATE projects SET title = ?, document_json = ?, revision = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL AND revision = ?")
-        .run(title, canonicalProjectJson(document), receipt.revision, now, projectId, expectedRevision);
+      this.database.prepare("UPDATE projects SET title = ?, document_json = ?, revision = ?, updated_at = ?, duration_seconds = ? WHERE id = ? AND deleted_at IS NULL AND revision = ?")
+        .run(title, canonicalProjectJson(document), receipt.revision, now, projectDurationSeconds(document), projectId, expectedRevision);
       this.recordMutation(projectId, mutationId, "rename", hash, receipt, now);
       return { value: receipt, replayed: false };
     }).immediate();
@@ -391,11 +462,15 @@ export class SqliteProjectRepository implements ProjectRepository {
     const requestedTitle = input.title === undefined ? undefined : TitleSchema.parse(input.title);
     const hash = requestHash({ projectId, expectedRevision, title: requestedTitle });
     return this.database.transaction(() => {
+      this.assertProjectNotRecoveryRequired(projectId);
       const replayed = this.replay<MutationReceipt>(mutationId, "duplicate", hash);
       if (replayed) return { value: replayed, replayed: true };
-      const source = this.activeRow(projectId);
+      const source = this.readyActiveRow(projectId);
       this.checkRevision(source, expectedRevision);
       const sourceDocument = durableFromRow(source).document;
+      if (sourceDocument.shots.some((shot) => shot.animations.some((animation) => animationAuthoringCompatibilityIssue(animation)))) {
+        throw new ProjectRepositoryError(400, "invalid_project", "Repair or delete legacy render-unsupported animations before duplicating this project");
+      }
       const now = this.isoNow();
       const duplicateId = parseProjectId(this.randomId("project"));
       const title = requestedTitle ?? `${source.title} copy`.slice(0, 160);
@@ -415,7 +490,7 @@ export class SqliteProjectRepository implements ProjectRepository {
           now,
           document.shots.length,
           document.shots.reduce((sum, shot) => sum + shot.objects.length, 0),
-          document.shots.reduce((sum, shot) => sum + shot.duration, 0),
+          projectDurationSeconds(document),
           source.thumbnail_mime,
           source.thumbnail_sha256,
           source.thumbnail_bytes,
@@ -435,9 +510,10 @@ export class SqliteProjectRepository implements ProjectRepository {
     const mutationId = parseMutationId(input.mutationId);
     const hash = requestHash({ projectId, expectedRevision });
     return this.database.transaction(() => {
+      this.assertProjectNotRecoveryRequired(projectId);
       const replayed = this.replay<DeleteReceipt>(mutationId, "delete", hash);
       if (replayed) return { value: replayed, replayed: true };
-      const row = this.activeRow(projectId);
+      const row = this.readyActiveRow(projectId);
       this.checkRevision(row, expectedRevision);
       const now = this.isoNow();
       const current = durableFromRow(row).document;
@@ -446,8 +522,8 @@ export class SqliteProjectRepository implements ProjectRepository {
         metadata: { ...current.metadata, updatedAt: now },
       });
       const receipt = { projectId, revision: row.revision + 1, updatedAt: now, deletedAt: now } satisfies DeleteReceipt;
-      const changed = this.database.prepare("UPDATE projects SET document_json = ?, revision = ?, updated_at = ?, deleted_at = ? WHERE id = ? AND deleted_at IS NULL AND revision = ?")
-        .run(canonicalProjectJson(document), receipt.revision, now, now, projectId, expectedRevision);
+      const changed = this.database.prepare("UPDATE projects SET document_json = ?, revision = ?, updated_at = ?, deleted_at = ?, duration_seconds = ? WHERE id = ? AND deleted_at IS NULL AND revision = ?")
+        .run(canonicalProjectJson(document), receipt.revision, now, now, projectDurationSeconds(document), projectId, expectedRevision);
       if (changed.changes !== 1) throw new ProjectRepositoryError(409, "revision_conflict", "Project changed while it was being deleted");
       this.recordMutation(projectId, mutationId, "delete", hash, receipt, now);
       return { value: receipt, replayed: false };
@@ -457,15 +533,17 @@ export class SqliteProjectRepository implements ProjectRepository {
   listCheckpoints(projectId: string): ProjectCheckpoint[] {
     const id = parseProjectId(projectId);
     this.activeRow(id);
-    const rows = this.database.prepare("SELECT id, project_id, revision, label, document_json, created_at FROM checkpoints WHERE project_id = ? ORDER BY created_at DESC, id DESC LIMIT ?")
-      .all(id, CHECKPOINT_LIST_LIMIT) as Array<{ id: string; project_id: string; revision: number; label: string; document_json: string; created_at: string }>;
+    const rows = this.database.prepare("SELECT id, project_id, revision, label, document_json, created_at, document_state FROM checkpoints WHERE project_id = ? ORDER BY created_at DESC, id DESC LIMIT ?")
+      .all(id, CHECKPOINT_LIST_LIMIT) as Array<{ id: string; project_id: string; revision: number; label: string; document_json: string; created_at: string; document_state: "ready" | "recovery-required" }>;
     return rows.map((row) => {
-      try {
-        parseProjectDocument(row.document_json);
-      } catch {
-        throw new ProjectRepositoryError(500, "repository_corrupt", "Stored checkpoint document is invalid");
+      if (row.document_state === "ready") {
+        try {
+          parseProjectDocument(row.document_json);
+        } catch {
+          throw new ProjectRepositoryError(500, "repository_corrupt", "Stored checkpoint document is invalid");
+        }
       }
-      return { id: row.id, projectId: row.project_id, revision: row.revision, label: row.label, createdAt: row.created_at };
+      return { id: row.id, projectId: row.project_id, revision: row.revision, label: row.label, createdAt: row.created_at, recoveryRequired: row.document_state === "recovery-required" };
     });
   }
 
@@ -476,9 +554,10 @@ export class SqliteProjectRepository implements ProjectRepository {
     const label = CheckpointLabelSchema.parse(input.label);
     const hash = requestHash({ projectId, expectedRevision, label });
     return this.database.transaction(() => {
+      this.assertProjectNotRecoveryRequired(projectId);
       const replayed = this.replay<CheckpointReceipt>(mutationId, "checkpoint", hash);
       if (replayed) return { value: replayed, replayed: true };
-      const row = this.activeRow(projectId);
+      const row = this.readyActiveRow(projectId);
       this.checkRevision(row, expectedRevision);
       const current = durableFromRow(row).document;
       const now = this.isoNow();
@@ -487,8 +566,8 @@ export class SqliteProjectRepository implements ProjectRepository {
         .run(checkpointId, projectId, row.revision, label, canonicalProjectJson(current), now);
       const document = ProjectDocumentSchema.parse({ ...cloneSerializable(current), metadata: { ...current.metadata, updatedAt: now } });
       const receipt = { projectId, revision: row.revision + 1, updatedAt: now, checkpointId } satisfies CheckpointReceipt;
-      this.database.prepare("UPDATE projects SET document_json = ?, revision = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL AND revision = ?")
-        .run(canonicalProjectJson(document), receipt.revision, now, projectId, expectedRevision);
+      this.database.prepare("UPDATE projects SET document_json = ?, revision = ?, updated_at = ?, duration_seconds = ? WHERE id = ? AND deleted_at IS NULL AND revision = ?")
+        .run(canonicalProjectJson(document), receipt.revision, now, projectDurationSeconds(document), projectId, expectedRevision);
       this.recordMutation(projectId, mutationId, "checkpoint", hash, receipt, now);
       return { value: receipt, replayed: false };
     }).immediate();
@@ -501,13 +580,21 @@ export class SqliteProjectRepository implements ProjectRepository {
     const checkpointId = z.string().regex(/^checkpoint-[a-f0-9]{24}$/).parse(input.checkpointId);
     const hash = requestHash({ projectId, checkpointId, expectedRevision });
     return this.database.transaction(() => {
+      this.assertProjectNotRecoveryRequired(projectId);
+      const checkpointState = this.database.prepare("SELECT document_state FROM checkpoints WHERE id = ? AND project_id = ?").get(checkpointId, projectId) as { document_state: "ready" | "recovery-required" } | undefined;
+      if (checkpointState?.document_state === "recovery-required") {
+        throw new ProjectRepositoryError(409, "project_recovery_required", "This schema-v2 checkpoint cannot be recovered losslessly; export its exact legacy JSON instead");
+      }
       const replayed = this.replay<RecoveryReceipt>(mutationId, "recover", hash);
       if (replayed) return { value: replayed, replayed: true };
-      const row = this.activeRow(projectId);
+      const row = this.readyActiveRow(projectId);
       this.checkRevision(row, expectedRevision);
       const current = durableFromRow(row).document;
-      const checkpoint = this.database.prepare("SELECT document_json FROM checkpoints WHERE id = ? AND project_id = ?").get(checkpointId, projectId) as { document_json: string } | undefined;
+      const checkpoint = this.database.prepare("SELECT document_json, document_state FROM checkpoints WHERE id = ? AND project_id = ?").get(checkpointId, projectId) as { document_json: string; document_state: "ready" | "recovery-required" } | undefined;
       if (!checkpoint) throw new ProjectRepositoryError(404, "project_not_found", "Checkpoint was not found");
+      if (checkpoint.document_state === "recovery-required") {
+        throw new ProjectRepositoryError(409, "project_recovery_required", "This schema-v2 checkpoint cannot be recovered losslessly; export its exact legacy JSON instead");
+      }
       let restored: ProjectDocument;
       try {
         restored = parseProjectDocument(checkpoint.document_json);
@@ -537,7 +624,7 @@ export class SqliteProjectRepository implements ProjectRepository {
           now,
           document.shots.length,
           document.shots.reduce((sum, shot) => sum + shot.objects.length, 0),
-          document.shots.reduce((sum, shot) => sum + shot.duration, 0),
+          projectDurationSeconds(document),
           projectId,
           expectedRevision,
         );
@@ -545,6 +632,39 @@ export class SqliteProjectRepository implements ProjectRepository {
       this.recordMutation(projectId, mutationId, "recover", hash, receipt, now);
       return { value: receipt, replayed: false };
     }).immediate();
+  }
+
+  legacyRecoveryDocument(input: { projectId: string; checkpointId?: string }): LegacyRecoveryDocument {
+    const projectId = parseProjectId(input.projectId);
+    // Exact legacy checkpoint export remains available by its authenticated,
+    // unguessable URL even after the containing ready project is soft-deleted.
+    // Normal project reads/listing continue to hide deleted projects.
+    const projectExists = this.database.prepare("SELECT 1 AS present FROM projects WHERE id = ?").get(projectId) as { present: 1 } | undefined;
+    if (!projectExists) throw new ProjectRepositoryError(404, "project_not_found", "Project was not found");
+    const ownerType = input.checkpointId === undefined ? "project" : "checkpoint";
+    const ownerId = input.checkpointId === undefined
+      ? projectId
+      : z.string().regex(/^checkpoint-[a-f0-9]{24}$/).parse(input.checkpointId);
+    const row = this.database.prepare(`SELECT owner_type, owner_id, project_id, document_json, document_sha256, reason
+      FROM legacy_document_archive
+      WHERE owner_type = ? AND owner_id = ? AND project_id = ? AND migration_status = 'recovery-required'`)
+      .get(ownerType, ownerId, projectId) as {
+        owner_type: "project" | "checkpoint";
+        owner_id: string;
+        project_id: string;
+        document_json: string;
+        document_sha256: string;
+        reason: string;
+      } | undefined;
+    if (!row) throw new ProjectRepositoryError(404, "project_not_found", "Legacy recovery document was not found");
+    return {
+      ownerType: row.owner_type,
+      ownerId: row.owner_id,
+      projectId: row.project_id,
+      sha256: row.document_sha256,
+      reason: row.reason,
+      documentJson: row.document_json,
+    };
   }
 }
 

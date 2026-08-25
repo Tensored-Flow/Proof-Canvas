@@ -1,7 +1,8 @@
-import { render } from '@testing-library/react'
+import { fireEvent, render } from '@testing-library/react'
 import CanvasStage from '../CanvasStage'
 import { compileManim } from '@/lib/proofcanvas/compiler'
 import { createCantorDemoProject } from '@/lib/proofcanvas/demo'
+import { logicalFrameFor, resolutionFor, type ProofCanvasAspectRatio } from '@/lib/proofcanvas/frame'
 import { ProjectDocumentSchema, cloneSerializable, type SceneObject } from '@/lib/proofcanvas/schema'
 
 test('text and math glyph color follows nested/keyframed fill with fill over color precedence', () => {
@@ -79,4 +80,73 @@ test('graph stroke width uses the object override', () => {
     onNotice={jest.fn()}
   />)
   expect(view.container.querySelector('polyline')).toHaveAttribute('stroke-width', '11')
+})
+
+test.each([
+  ['16:9', '0 0 960 540', 'translate(480 270)', '960 / 540'],
+  ['9:16', '0 0 540 960', 'translate(270 480)', '540 / 960'],
+  ['1:1', '0 0 720 720', 'translate(360 360)', '720 / 720'],
+] as const)('uses the shared %s frame for the SVG viewport, container ratio, and camera pivot', (aspectRatio, viewBox, pivot, aspectRatioStyle) => {
+  const project = cloneSerializable(createCantorDemoProject())
+  const frame = logicalFrameFor(aspectRatio)
+  project.settings.aspectRatio = aspectRatio
+  project.settings.resolution = resolutionFor(aspectRatio, project.settings.renderPreset)
+  project.shots = [project.shots[1]]
+  project.shots[0].camera = { x: frame.centerX, y: frame.centerY, zoom: 1, rotation: 0 }
+  project.shots[0].animations = []
+  project.shots[0].propertyTracks = []
+  const parsed = ProjectDocumentSchema.parse(project)
+  const view = render(<CanvasStage
+    project={parsed}
+    shot={parsed.shots[0]}
+    playhead={0}
+    previewStyle={parsed.styles.find(({ id }) => id === parsed.activeStyleId)!}
+    selectedIds={[]}
+    onSelect={jest.fn()}
+    onCommitTransforms={jest.fn()}
+    onNotice={jest.fn()}
+  />)
+  expect(view.container.querySelector('svg.pc-stage')).toHaveAttribute('viewBox', viewBox)
+  expect(view.container.querySelector('svg.pc-stage')).toHaveStyle(`--pc-stage-aspect: ${aspectRatioStyle}`)
+  expect(view.container.querySelector('[data-pc-camera-transform]')).toHaveAttribute('transform', expect.stringContaining(pivot))
+})
+
+test('snaps portrait movement to the portrait frame centre and spans portrait guides', () => {
+  Object.defineProperty(window, 'PointerEvent', { configurable: true, value: MouseEvent })
+  const project = cloneSerializable(createCantorDemoProject())
+  const aspectRatio: ProofCanvasAspectRatio = '9:16'
+  const frame = logicalFrameFor(aspectRatio)
+  project.settings.aspectRatio = aspectRatio
+  project.settings.resolution = resolutionFor(aspectRatio, project.settings.renderPreset)
+  const shot = project.shots[1]
+  project.shots = [shot]
+  shot.camera = { x: frame.centerX, y: frame.centerY, zoom: 1, rotation: 0 }
+  shot.animations = []
+  shot.propertyTracks = []
+  shot.objects = [shot.objects[0]]
+  shot.objects[0].transform = { ...shot.objects[0].transform, x: 100, y: 100 }
+  const parsed = ProjectDocumentSchema.parse(project)
+  const view = render(<CanvasStage
+    project={parsed}
+    shot={parsed.shots[0]}
+    playhead={0}
+    previewStyle={parsed.styles.find(({ id }) => id === parsed.activeStyleId)!}
+    selectedIds={[]}
+    onSelect={jest.fn()}
+    onCommitTransforms={jest.fn()}
+    onNotice={jest.fn()}
+  />)
+  const svg = view.container.querySelector('svg.pc-stage') as SVGSVGElement
+  Object.defineProperty(svg, 'createSVGPoint', { configurable: true, value: () => {
+    const point = { x: 0, y: 0, matrixTransform: () => ({ x: point.x, y: point.y }) }
+    return point
+  } })
+  Object.defineProperty(svg, 'getScreenCTM', { configurable: true, value: () => ({ inverse: () => ({}) }) })
+  const object = view.container.querySelector('[data-object-id]')!
+  fireEvent.pointerDown(object, { button: 0, clientX: 100, clientY: 100 })
+  fireEvent.pointerMove(svg, { clientX: frame.centerX - 2, clientY: frame.centerY - 2 })
+  expect(view.container.querySelector('[data-guide-axis="x"]')).toHaveAttribute('x1', String(frame.centerX))
+  expect(view.container.querySelector('[data-guide-axis="x"]')).toHaveAttribute('y2', String(frame.height))
+  expect(view.container.querySelector('[data-guide-axis="y"]')).toHaveAttribute('y1', String(frame.centerY))
+  expect(view.container.querySelector('[data-guide-axis="y"]')).toHaveAttribute('x2', String(frame.width))
 })

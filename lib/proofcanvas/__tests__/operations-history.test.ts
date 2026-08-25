@@ -2,7 +2,7 @@ import { createCantorDemoProject } from "../demo";
 import { insertSemanticComponent } from "../components";
 import { canRedo, canUndo, commitOperations, commitProject, createHistory, redo, undo } from "../history";
 import { applyOperations, duplicateObjects, effectiveLockOwner, validateOperations } from "../operations";
-import { PROOFCANVAS_SCHEMA_LIMITS, cloneProject, type SceneObject, type SceneOperation } from "../schema";
+import { PROOFCANVAS_SCHEMA_LIMITS, ProjectDocumentSchema, cloneProject, cloneSerializable, type SceneAnimation, type SceneObject, type SceneOperation } from "../schema";
 import { styleById, styledDisplayBounds, styledTransform } from "../styles";
 
 const SHOT = "shot-cantor-construction";
@@ -78,6 +78,98 @@ describe("atomic scene operations", () => {
       patch: { properties: { zoom: 2 } },
     }]).project;
     expect(updated.shots[0].animations.find(({ id }) => id === "animation-camera-focus")?.properties.zoom).toBe(2);
+  });
+
+  test("loads legacy V2 easing and permits an easing-only repair through locked targets", () => {
+    const legacy = cloneSerializable(createCantorDemoProject());
+    const shot = legacy.shots.find(({ id }) => id === SHOT)!;
+    const emphasis = shot.animations.find(({ id }) => id === "animation-limit-emphasis")!;
+    emphasis.easing = "editorial";
+    const valid = ProjectDocumentSchema.parse(legacy);
+    expect(effectiveLockOwner(valid.shots[0], "object-equation-limit")?.id).toBe("object-equation-limit");
+
+    const repair: SceneOperation = {
+      type: "update-animation",
+      animationId: emphasis.id,
+      patch: { easing: "there-and-back" },
+    };
+    expect(validateOperations(valid, SHOT, [repair])).toMatchObject({ valid: true });
+    const repaired = applyOperations(valid, SHOT, [repair]).project;
+    expect(repaired.shots[0].animations.find(({ id }) => id === emphasis.id)?.easing).toBe("there-and-back");
+    expect(() => applyOperations(valid, SHOT, [{
+      type: "update-animation",
+      animationId: emphasis.id,
+      patch: { duration: 1 },
+    }])).toThrow(/read-only except for its exact easing repair/);
+
+    const unrelated = applyOperations(valid, SHOT, [{
+      type: "update-object",
+      objectId: "object-title",
+      patch: { name: "Unrelated V2 edit" },
+    }]).project;
+    expect(unrelated.shots[0].objects.find(({ id }) => id === "object-title")?.name).toBe("Unrelated V2 edit");
+
+    const unsafeEntrance = cloneSerializable(valid);
+    const write = unsafeEntrance.shots[0].animations.find(({ id }) => id === "animation-equation-write")!;
+    write.easing = "there-and-back";
+    const unsafeValid = ProjectDocumentSchema.parse(unsafeEntrance);
+    expect(validateOperations(unsafeValid, SHOT, [{
+      type: "update-animation",
+      animationId: write.id,
+      patch: { easing: "editorial" },
+    }])).toMatchObject({ valid: true });
+
+    const unlockedLegacy = cloneSerializable(valid);
+    unlockedLegacy.shots[0].objects.find(({ id }) => id === "object-equation-limit")!.locked = false;
+    unlockedLegacy.shots[0].objects.find(({ id }) => id === "object-equation-chain")!.locked = false;
+    expect(validateOperations(unlockedLegacy, SHOT, [{
+      type: "update-animation",
+      animationId: emphasis.id,
+      patch: { duration: 0.9 },
+    }])).toMatchObject({ valid: false, error: expect.objectContaining({ message: expect.stringContaining("exact easing repair") }) });
+
+    expect(validateOperations(createCantorDemoProject(), SHOT, [{
+      type: "update-animation",
+      animationId: "animation-title-write",
+      patch: { easing: "there-and-back" },
+    }])).toMatchObject({ valid: false, error: expect.objectContaining({ message: expect.stringContaining("cannot use there-and-back") }) });
+  });
+
+  test("canonicalizes add and combined update animation timing from the same absolute endpoints", () => {
+    const base = cloneSerializable(createCantorDemoProject());
+    const shot = base.shots.find(({ id }) => id === SHOT)!;
+    shot.animations = [];
+    const rawTiming = { start: 1 / 30, duration: 1 / 30 };
+    const rawAnimation: SceneAnimation = {
+      id: "animation-tick-add",
+      type: "move",
+      targetIds: ["object-title"],
+      ...rawTiming,
+      easing: "linear",
+      properties: { deltaX: 10 },
+    };
+    const added = applyOperations(ProjectDocumentSchema.parse(base), SHOT, [{ type: "add-animation", animation: rawAnimation }]).project;
+    const addedTiming = added.shots[0].animations[0];
+    expect(addedTiming).toEqual(expect.objectContaining({ start: 0.03333333, duration: 0.03333334 }));
+
+    const updateBase = cloneSerializable(base);
+    updateBase.shots[0].animations = [{ ...rawAnimation, id: "animation-tick-update", start: 0, duration: 0.1 }];
+    const updated = applyOperations(ProjectDocumentSchema.parse(updateBase), SHOT, [{
+      type: "update-animation",
+      animationId: "animation-tick-update",
+      patch: rawTiming,
+    }]).project;
+    expect(updated.shots[0].animations[0]).toEqual(expect.objectContaining({
+      start: addedTiming.start,
+      duration: addedTiming.duration,
+    }));
+
+    const durationOnly = applyOperations(updated, SHOT, [{
+      type: "update-animation",
+      animationId: "animation-tick-update",
+      patch: { duration: 1 / 30 },
+    }]).project.shots[0].animations[0];
+    expect(durationOnly).toEqual(expect.objectContaining({ start: 0.03333333, duration: 0.03333333 }));
   });
 
   test("enforces transform and object-style numeric bounds at the operation seam", () => {
@@ -220,15 +312,14 @@ describe("atomic scene operations", () => {
     expect(() => duplicateObjects(project, SHOT, hierarchy)).toThrow(/ancestor .* descendant/);
   });
 
-  test("applies style motion while preserving animation state owned by locked families", () => {
+  test("switches output style without rewriting authored animation state", () => {
     const project = createCantorDemoProject();
     const raw = applyOperations(project, SHOT, [{ type: "set-style", styleId: "style-raw-manim" }]).project;
     expect(raw.activeStyleId).toBe("style-raw-manim");
-    expect(raw.shots[0].animations.find(({ id }) => id === "animation-title-write")?.easing).toBe("linear");
-    expect(raw.shots[0].animations.find(({ id }) => id === "animation-equation-write")?.easing).toBe("editorial");
+    expect(raw.shots.map(({ animations }) => animations)).toEqual(project.shots.map(({ animations }) => animations));
 
     const editorial = applyOperations(raw, SHOT, [{ type: "set-style", styleId: "style-editorial-ink" }]).project;
-    expect(new Set(editorial.shots.flatMap(({ animations }) => animations.map(({ easing }) => easing)))).toEqual(new Set(["editorial"]));
+    expect(editorial.shots.map(({ animations }) => animations)).toEqual(project.shots.map(({ animations }) => animations));
   });
 
   test("deletion removes descendants and safely repairs dependent animation targets", () => {

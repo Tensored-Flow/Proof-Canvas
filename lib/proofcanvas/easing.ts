@@ -26,6 +26,7 @@ export function easingProgress(easing: Easing, progress: number): number {
     case "ease-in": return 2 * manimSmooth(t / 2);
     case "ease-out": return 2 * manimSmooth(t / 2 + 0.5) - 1;
     case "ease-in-out": return manimSmooth(t);
+    case "there-and-back": return manimSmooth(t < 0.5 ? t * 2 : (1 - t) * 2);
     case "editorial": return 1 - (1 - t) ** 4;
     case "spring-soft": {
       const c1 = 1.70158;
@@ -41,6 +42,7 @@ export function manimRateFunctionName(easing: Easing): string {
     case "ease-in": return "rush_into";
     case "ease-out": return "rush_from";
     case "ease-in-out": return "smooth";
+    case "there-and-back": return "rate_functions.there_and_back";
     case "editorial": return "rate_functions.ease_out_quart";
     case "spring-soft": return "rate_functions.ease_out_back";
   }

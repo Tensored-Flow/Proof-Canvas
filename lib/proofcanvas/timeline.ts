@@ -1,6 +1,5 @@
 import {
   PROOFCANVAS_SCHEMA_LIMITS,
-  PROOFCANVAS_TIME_EPSILON,
   type KeyframeInterpolation,
   type ObjectLifetime,
   type PropertyKeyframe,
@@ -8,6 +7,7 @@ import {
   type PropertyTrackTarget,
   type Shot,
 } from "./schema";
+import { compareTimelineTimes, timelineTickFor } from "./frame";
 import { easingProgress } from "./easing";
 
 export type PropertyValue = PropertyKeyframe["value"];
@@ -120,15 +120,18 @@ function interpolateColor(from: string, to: string, progress: number): string {
 
 export function samplePropertyTrack(track: PropertyTrack, time: number): PropertyValue {
   const frames = track.keyframes;
-  if (time <= frames[0].time + PROOFCANVAS_TIME_EPSILON) return frames[0].value;
+  if (compareTimelineTimes(time, frames[0].time) <= 0) return frames[0].value;
   const last = frames[frames.length - 1];
-  if (time >= last.time - PROOFCANVAS_TIME_EPSILON) return last.value;
+  if (compareTimelineTimes(time, last.time) >= 0) return last.value;
   let rightIndex = 1;
-  while (rightIndex < frames.length && time > frames[rightIndex].time + PROOFCANVAS_TIME_EPSILON) rightIndex += 1;
+  while (rightIndex < frames.length && compareTimelineTimes(time, frames[rightIndex].time) > 0) rightIndex += 1;
   const left = frames[rightIndex - 1];
   const right = frames[rightIndex];
-  if (Math.abs(time - right.time) <= PROOFCANVAS_TIME_EPSILON) return right.value;
-  const progress = interpolationProgress(left.interpolation, (time - left.time) / (right.time - left.time));
+  if (compareTimelineTimes(time, right.time) === 0) return right.value;
+  const progress = interpolationProgress(
+    left.interpolation,
+    (timelineTickFor(time) - timelineTickFor(left.time)) / (timelineTickFor(right.time) - timelineTickFor(left.time)),
+  );
   if (typeof left.value === "number" && typeof right.value === "number") {
     return clampNumericProperty(track.property, left.value + (right.value - left.value) * progress, left.value, right.value);
   }
@@ -198,5 +201,11 @@ export function effectiveObjectLifetime(shot: Pick<Shot, "duration" | "objects">
 
 export function objectExistsAtTime(shot: Pick<Shot, "duration" | "objects">, objectId: string, time: number): boolean {
   const lifetime = effectiveObjectLifetime(shot, objectId);
-  return Boolean(lifetime && time >= lifetime.start - PROOFCANVAS_TIME_EPSILON && time <= lifetime.end + PROOFCANVAS_TIME_EPSILON);
+  if (!lifetime || compareTimelineTimes(time, lifetime.start) < 0) return false;
+  // Lifetimes are half-open inside a shot so adjacent split identities cannot
+  // both exist on the exact boundary. The shot endpoint remains inspectable:
+  // a lifetime that reaches the shot duration is visible at that terminal
+  // scrubber position even though no rendered frame begins there.
+  return compareTimelineTimes(time, lifetime.end) < 0
+    || (compareTimelineTimes(lifetime.end, shot.duration) === 0 && compareTimelineTimes(time, lifetime.end) <= 0);
 }

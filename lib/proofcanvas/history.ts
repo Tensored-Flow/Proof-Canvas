@@ -1,5 +1,6 @@
-import { applyOperations } from "./operations";
-import { canonicalProjectJson, cloneProject, type ProjectDocument, type SceneOperation } from "./schema";
+import { applyOperations, type ManualSceneOperation } from "./operations";
+import { canonicalProjectJson, cloneProject, type ProjectDocument } from "./schema";
+import { applyDocumentOperations, type DocumentOperation } from "./documentOperations";
 
 export interface HistoryEntry {
   label: string;
@@ -29,10 +30,19 @@ export function commitProject(history: ProjectHistory, nextProject: ProjectDocum
 export function commitOperations(
   history: ProjectHistory,
   shotId: string,
-  operations: readonly SceneOperation[],
+  operations: readonly ManualSceneOperation[],
   label: string,
 ): ProjectHistory {
   const result = applyOperations(history.present, shotId, operations);
+  return commitProject(history, result.project, label);
+}
+
+export function commitDocumentOperations(
+  history: ProjectHistory,
+  operations: readonly DocumentOperation[],
+  label: string,
+): ProjectHistory {
+  const result = applyDocumentOperations(history.present, operations);
   return commitProject(history, result.project, label);
 }
 

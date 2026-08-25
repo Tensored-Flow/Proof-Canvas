@@ -1,8 +1,9 @@
 'use client'
 
 import katex from 'katex'
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { previewShotAtTime } from '@/lib/proofcanvas/preview'
+import { addTimelineTimes, compareTimelineTimes, logicalFrameFor, type LogicalFrame } from '@/lib/proofcanvas/frame'
 import { applyOperations, effectiveLockOwner } from '@/lib/proofcanvas/operations'
 import { objectTypeSupportsStyleProperty, type ProjectDocument, type SceneObject, type Shot, type StylePack } from '@/lib/proofcanvas/schema'
 import { styledDisplayTransform, styledTransform } from '@/lib/proofcanvas/styles'
@@ -37,9 +38,9 @@ function svgPoint(svg: SVGSVGElement, event: Pick<PointerEvent, 'clientX' | 'cli
   return { x: transformed.x, y: transformed.y }
 }
 
-function cameraPoint(point: { x: number; y: number }, camera: ShotPreviewCamera) {
-  const translatedX = (point.x - 480) / camera.zoom
-  const translatedY = (point.y - 270) / camera.zoom
+function cameraPoint(point: { x: number; y: number }, camera: ShotPreviewCamera, frame: Pick<LogicalFrame, 'centerX' | 'centerY'>) {
+  const translatedX = (point.x - frame.centerX) / camera.zoom
+  const translatedY = (point.y - frame.centerY) / camera.zoom
   const radians = camera.rotation * Math.PI / 180
   return {
     x: camera.x + translatedX * Math.cos(radians) - translatedY * Math.sin(radians),
@@ -63,8 +64,12 @@ export function temporallyTransformsObject(shot: Shot, objectId: string, time: n
   }
   return shot.animations.some((animation) => {
     if (!animation.targetIds.some((id) => targetFamily.has(id))) return false
-    if (animation.type === 'move' || animation.type === 'scale' || animation.type === 'transform') return time > animation.start + 1e-9
-    return animation.type === 'emphasise' && time > animation.start + 1e-9 && time < animation.start + animation.duration - 1e-9
+    if (animation.type === 'move' || animation.type === 'scale' || animation.type === 'transform') {
+      return compareTimelineTimes(time, animation.start) > 0
+    }
+    return animation.type === 'emphasise'
+      && compareTimelineTimes(time, animation.start) > 0
+      && compareTimelineTimes(time, addTimelineTimes(animation.start, animation.duration)) < 0
   })
 }
 
@@ -132,6 +137,7 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, sel
   const [gesture, setGesture] = useState<Gesture | null>(null)
   const [previewTransforms, setPreviewTransforms] = useState<Map<string, SceneObject['transform']>>(new Map())
   const [guides, setGuides] = useState<{ x?: number; y?: number }>({})
+  const frame = useMemo(() => logicalFrameFor(project.settings.aspectRatio), [project.settings.aspectRatio])
   const preview = useMemo(() => previewShotAtTime(shot, playhead), [shot, playhead])
   const objects = preview.objects.map((object) => previewTransforms.has(object.id) ? { ...object, transform: previewTransforms.get(object.id)! } : object)
   const visibleObjects = objects.filter((object) => object.preview.opacity > 0.001)
@@ -233,13 +239,13 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, sel
       const candidate = shot.objects.find((item) => item.id === id)
       if (candidate && !effectiveLockOwner(shot, candidate)) originals.set(id, { ...candidate.transform })
     }
-    setGesture({ kind, pointerId: event.pointerId, start: cameraPoint(svgPoint(svgRef.current, event.nativeEvent), preview.camera), objectId: object.id, displayOriginal: styledDisplayTransform(object, shot, previewStyle, visibleObjects), originals, commitIds })
+    setGesture({ kind, pointerId: event.pointerId, start: cameraPoint(svgPoint(svgRef.current, event.nativeEvent), preview.camera, frame), objectId: object.id, displayOriginal: styledDisplayTransform(object, shot, previewStyle, visibleObjects), originals, commitIds })
     setPreviewTransforms(new Map(originals))
   }
 
   const onPointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
     if (!gesture || !svgRef.current || event.pointerId !== gesture.pointerId) return
-    const point = cameraPoint(svgPoint(svgRef.current, event.nativeEvent), preview.camera)
+    const point = cameraPoint(svgPoint(svgRef.current, event.nativeEvent), preview.camera, frame)
     const dx = point.x - gesture.start.x
     const dy = point.y - gesture.start.y
     const next = new Map(gesture.originals)
@@ -257,8 +263,8 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, sel
       const candidateX = gesture.displayOriginal.x + dx
       const candidateY = gesture.displayOriginal.y + dy
       const snapObjects = visibleObjects.filter(({ id }) => !gesture.originals.has(id))
-      const xTargets = [480, ...snapObjects.map((object) => styledDisplayTransform(object, shot, previewStyle, visibleObjects).x)]
-      const yTargets = [270, ...snapObjects.map((object) => styledDisplayTransform(object, shot, previewStyle, visibleObjects).y)]
+      const xTargets = [frame.centerX, ...snapObjects.map((object) => styledDisplayTransform(object, shot, previewStyle, visibleObjects).x)]
+      const yTargets = [frame.centerY, ...snapObjects.map((object) => styledDisplayTransform(object, shot, previewStyle, visibleObjects).y)]
       snapX = xTargets.find((target) => Math.abs(target - candidateX) <= 6)
       snapY = yTargets.find((target) => Math.abs(target - candidateY) <= 6)
       const correctionX = snapX === undefined ? 0 : rawDeltaForStyledDelta(candidateObject, previewStyle, 'x', snapX - candidateX)
@@ -383,11 +389,11 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, sel
   const motionExceptionCount = shot.animations.filter(({ easing }) => easing !== previewStyle.motion.easing).length
   return (
     <div className="pc-stage-wrap" data-testid="proofcanvas-stage" style={{ background: previewStyle.colors.background }}>
-      <svg ref={svgRef} className="pc-stage" viewBox="0 0 960 540" role="group" tabIndex={0} aria-label={`${shot.name} canvas at ${playhead.toFixed(1)} seconds`} onPointerDown={(event) => { if (event.target === event.currentTarget) { event.currentTarget.focus({ preventScroll: true }); onSelect([]) } }} onPointerMove={onPointerMove} onPointerUp={endGesture} onPointerCancel={cancelGesture}>
+      <svg ref={svgRef} className="pc-stage" viewBox={`0 0 ${frame.width} ${frame.height}`} style={{ '--pc-stage-aspect': `${frame.width} / ${frame.height}` } as CSSProperties} role="group" tabIndex={0} aria-label={`${shot.name} canvas at ${playhead.toFixed(1)} seconds`} onPointerDown={(event) => { if (event.target === event.currentTarget) { event.currentTarget.focus({ preventScroll: true }); onSelect([]) } }} onPointerMove={onPointerMove} onPointerUp={endGesture} onPointerCancel={cancelGesture}>
         <defs><marker id="pc-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill={previewStyle.colors.ink}/></marker></defs>
-        <g data-pc-camera-transform transform={`translate(480 270) scale(${preview.camera.zoom}) rotate(${-preview.camera.rotation}) translate(${-preview.camera.x} ${-preview.camera.y})`}>
-          {guides.x !== undefined && <line className="pc-snap-guide" data-guide-axis="x" x1={guides.x} x2={guides.x} y1={0} y2={540}/>}
-          {guides.y !== undefined && <line className="pc-snap-guide" data-guide-axis="y" x1={0} x2={960} y1={guides.y} y2={guides.y}/>}
+        <g data-pc-camera-transform transform={`translate(${frame.centerX} ${frame.centerY}) scale(${preview.camera.zoom}) rotate(${-preview.camera.rotation}) translate(${-preview.camera.x} ${-preview.camera.y})`}>
+          {guides.x !== undefined && <line className="pc-snap-guide" data-guide-axis="x" x1={guides.x} x2={guides.x} y1={0} y2={frame.height}/>}
+          {guides.y !== undefined && <line className="pc-snap-guide" data-guide-axis="y" x1={0} x2={frame.width} y1={guides.y} y2={guides.y}/>}
           {visibleObjects.map((object) => <RenderObject key={object.id} object={object} style={previewStyle} selected={selectedIds.includes(object.id)} effectivelyLocked={Boolean(effectiveLockOwner(shot, object))} temporallyTransformed={temporalPoseIds.has(object.id)} onPointerDown={beginGesture}/>) }
           {primary?.type === 'group' && primaryTransform && <rect
             data-group-move-target={primary.id}

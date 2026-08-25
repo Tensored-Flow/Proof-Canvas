@@ -65,7 +65,17 @@ describe("schema V2 timeline foundation", () => {
       })),
       styles: migratedRetained.styles.map(({ origin: _origin, ...style }) => style),
     };
-    expect(semanticProjection).toEqual(retained);
+    const expectedMigratedProjection = cloneSerializable(retained) as typeof retained & {
+      shots: Array<{ animations: Array<{ type: string; easing: string }> }>;
+    };
+    for (const shot of expectedMigratedProjection.shots) {
+      for (const animation of shot.animations) {
+        if (animation.type === "emphasise") animation.easing = "there-and-back";
+      }
+    }
+    expect(semanticProjection).toEqual(expectedMigratedProjection);
+    expect(migratedRetained.shots.flatMap(({ animations }) => animations).find(({ type }) => type === "emphasise")?.easing)
+      .toBe("there-and-back");
     const canonicalRoundTrip = parseProjectDocument(canonicalProjectJson(migratedRetained));
     expect(canonicalRoundTrip).toEqual(migratedRetained);
     expect(compileManim(canonicalRoundTrip).python).toBe(compileManim(migratedRetained).python);
@@ -588,11 +598,6 @@ describe("timeline operations and compiler", () => {
     const admittedSource = compileManim(ProjectDocumentSchema.parse(base)).python;
 
     const rejectedTracks: PropertyTrack[] = [
-      numericTrack({ id: "track-rejected-hold", target: { kind: "object", objectId: object.id }, property: "x", keyframes: [
-        { id: "keyframe-rejected-hold-a", time: 0, value: object.transform.x + 999, interpolation: { kind: "linear" } },
-        { id: "keyframe-rejected-hold-b", time: 1, value: object.transform.x + 500, interpolation: { kind: "hold" } },
-        { id: "keyframe-rejected-hold-c", time: 2, value: object.transform.x + 400, interpolation: { kind: "linear" } },
-      ] }),
       numericTrack({ id: "track-rejected-scale-positive", target: { kind: "object", objectId: object.id }, property: "scale", keyframes: [
         { id: "keyframe-rejected-scale-positive-a", time: 0, value: 100, interpolation: { kind: "eased", easing: "spring-soft" } },
         { id: "keyframe-rejected-scale-positive-b", time: 2, value: 0.01, interpolation: { kind: "linear" } },
@@ -600,10 +605,6 @@ describe("timeline operations and compiler", () => {
       numericTrack({ id: "track-rejected-scale-negative", target: { kind: "object", objectId: object.id }, property: "scaleX", keyframes: [
         { id: "keyframe-rejected-scale-negative-a", time: 0, value: -100, interpolation: { kind: "eased", easing: "spring-soft" } },
         { id: "keyframe-rejected-scale-negative-b", time: 2, value: -0.01, interpolation: { kind: "linear" } },
-      ] }),
-      numericTrack({ id: "track-rejected-custom", target: { kind: "object", objectId: object.id }, property: "x", keyframes: [
-        { id: "keyframe-rejected-custom-a", time: 0, value: object.transform.x, interpolation: { kind: "custom-bezier", curve: { x1: 0.2, y1: 0, x2: 0.8, y2: 1 } } },
-        { id: "keyframe-rejected-custom-b", time: 2, value: object.transform.x + 20, interpolation: { kind: "linear" } },
       ] }),
     ];
     for (const rejected of rejectedTracks) {
@@ -642,14 +643,13 @@ describe("timeline operations and compiler", () => {
     shot.propertyTracks = [survivor];
     const standaloneSource = compileManim(ProjectDocumentSchema.parse(standalone)).python;
     const contaminated = cloneSerializable(standalone);
-    contaminated.shots[0].propertyTracks.push(numericTrack({ id: `track-rejected-peer-${property}`, target: { kind: "object", objectId: object.id }, property: "x", keyframes: [
-      { id: `keyframe-rejected-peer-${property}-a`, time: 0, value: object.transform.x, interpolation: { kind: "linear" } },
-      { id: `keyframe-rejected-peer-${property}-b`, time: 1, value: object.transform.x + 10, interpolation: { kind: "hold" } },
-      { id: `keyframe-rejected-peer-${property}-c`, time: 2, value: object.transform.x + 20, interpolation: { kind: "linear" } },
+    contaminated.shots[0].propertyTracks.push(numericTrack({ id: `track-rejected-peer-${property}`, target: { kind: "object", objectId: object.id }, property: "scale", keyframes: [
+      { id: `keyframe-rejected-peer-${property}-a`, time: 0, value: 100, interpolation: { kind: "eased", easing: "spring-soft" } },
+      { id: `keyframe-rejected-peer-${property}-b`, time: 2, value: 0.01, interpolation: { kind: "linear" } },
     ] }));
     const compiled = compileManim(ProjectDocumentSchema.parse(contaminated));
     expect(compiled.python).toBe(standaloneSource);
-    expect(compiled.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: "TRACK_INTERPOLATION_UNSUPPORTED", trackId: `track-rejected-peer-${property}` })]));
+    expect(compiled.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: "TRACK_EASING_DOMAIN_UNSAFE", trackId: `track-rejected-peer-${property}` })]));
   });
 
   test("interleaves touching semantic then object and camera tracks by chronological authority", () => {
@@ -684,10 +684,12 @@ describe("timeline operations and compiler", () => {
     expect(objectX(2)).toBe(290);
     expect(cameraX(2)).toBe(290);
     const compiled = compileManim(ProjectDocumentSchema.parse(project));
-    expect(compiled.diagnostics.filter(({ code }) => code === "TRACK_DELAYED_INITIAL_STATE_UNSUPPORTED").map(({ trackId }) => trackId).sort()).toEqual(["track-touching-camera", "track-touching-object"]);
+    expect(compiled.diagnostics.filter(({ severity }) => severity === "error")).toEqual([]);
     const semanticOnly = cloneSerializable(project);
     semanticOnly.shots[0].propertyTracks = [];
-    expect(compiled.python).toBe(compileManim(ProjectDocumentSchema.parse(semanticOnly)).python);
+    expect(compiled.python).not.toBe(compileManim(ProjectDocumentSchema.parse(semanticOnly)).python);
+    expect(compiled.python).toContain("# Animation component 1: 0.0s to 2.0s");
+    expect(compiled.python.match(/run_time=0\.0, rate_func=linear/g)).toHaveLength(2);
     const reversed = cloneSerializable(project);
     reversed.shots[0].propertyTracks.reverse();
     expect(compileManim(ProjectDocumentSchema.parse(reversed)).python).toBe(compiled.python);
@@ -724,7 +726,7 @@ describe("timeline operations and compiler", () => {
     expect(previewShotAtTime(shot, 1).objects.find(({ id }) => id === object.id)?.transform.x).toBe(270);
   });
 
-  test("fails closed on every delayed compiler initial state while preserving time-zero singletons", () => {
+  test("emits every delayed initial state as an exact point and preserves time-zero singletons", () => {
     const makeProject = () => {
       const project = cloneSerializable(createCantorDemoProject());
       const shot = project.shots[0];
@@ -753,8 +755,9 @@ describe("timeline operations and compiler", () => {
       const track = buildTrack(shot);
       shot.propertyTracks = [track];
       const result = compileManim(ProjectDocumentSchema.parse(project));
-      expect(result.python).toBe(semanticSource);
-      expect(result.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: "TRACK_DELAYED_INITIAL_STATE_UNSUPPORTED", trackId: track.id })]));
+      expect(result.python).not.toBe(semanticSource);
+      expect(result.diagnostics.filter(({ severity }) => severity === "error")).toEqual([]);
+      expect(result.python).toContain("run_time=0.0, rate_func=linear");
     }
 
     const { project, shot } = makeProject();
@@ -790,7 +793,7 @@ describe("timeline operations and compiler", () => {
     expect(ordinarySource).toContain("FadeIn(pc_pre_entrance, run_time=1.0, rate_func=linear)");
   });
 
-  test("rejects delayed pre-entrance tracks and leaves the native entrance source uncontaminated", () => {
+  test("keeps delayed pre-entrance points hidden and reveals their exact state", () => {
     const project = cloneSerializable(createCantorDemoProject());
     const shot = project.shots[1];
     project.shots = [shot];
@@ -804,10 +807,14 @@ describe("timeline operations and compiler", () => {
       { id: "keyframe-delayed-before-entrance-a", time: 0.5, value: object.transform.x + 10, interpolation: { kind: "linear" } },
       { id: "keyframe-delayed-before-entrance-b", time: 0.75, value: object.transform.x + 20, interpolation: { kind: "linear" } },
     ] })];
-    const rejected = compileManim(ProjectDocumentSchema.parse(project));
-    expect(rejected.python).toBe(entranceOnly);
-    expect(rejected.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ code: "TRACK_DELAYED_INITIAL_STATE_UNSUPPORTED", trackId: "track-delayed-before-entrance" })]));
-    expect(rejected.python).toContain("FadeIn(pc_delayed_before_entrance");
+    const compiled = compileManim(ProjectDocumentSchema.parse(project));
+    expect(compiled.python).not.toBe(entranceOnly);
+    expect(compiled.diagnostics.filter(({ severity }) => severity === "error")).toEqual([]);
+    expect(compiled.python).toContain("pc_delayed_before_entrance.set_opacity(0.0)");
+    expect(compiled.python).toMatch(/Transform\(pc_delayed_before_entrance, [^\n]+\.set_opacity\(0\.0\), run_time=0\.0/);
+    expect(compiled.python).toMatch(/Transform\(pc_delayed_before_entrance, [^\n]+\.set_opacity\(0\.0\), run_time=0\.25/);
+    expect(compiled.python).toMatch(/Transform\(pc_delayed_before_entrance, [^\n]+\.set_opacity\(1\.0\), run_time=1\.0/);
+    expect(compiled.python).not.toContain("FadeIn(pc_delayed_before_entrance");
   });
 
   test("merges identical track lanes and fails closed on staggered or hierarchy-overlapping lanes", () => {

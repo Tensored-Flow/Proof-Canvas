@@ -8,7 +8,16 @@ import {
   statSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { canonicalProjectJson, parseProjectDocument, type ProjectDocument } from "./schema";
+import {
+  LEGACY_FLOAT_TIMELINE_SCHEMA_VERSION,
+  PROJECT_SCHEMA_VERSION,
+  canonicalProjectJson,
+  classifyLegacyV2ProjectDocument,
+  parseProjectDocument,
+  projectDurationSeconds,
+  type ProjectDocument,
+} from "./schema";
+import { PROOFCANVAS_TIMELINE_TICK_SECONDS, canonicalTimelineTime, sumTimelineTimes } from "./frame";
 
 export const DATABASE_FILENAME = "proofcanvas.sqlite3";
 export const INSTANCE_LEASE_FILENAME = ".proofcanvas-instance-lease.sqlite3";
@@ -20,6 +29,8 @@ interface Migration {
   version: number;
   name: string;
   sql: string;
+  dataTransformVersion?: string;
+  apply?: (database: SqliteDatabase, appliedAt: string) => void;
 }
 
 const MIGRATIONS: readonly Migration[] = [{
@@ -90,6 +101,44 @@ const MIGRATIONS: readonly Migration[] = [{
       blocked_until INTEGER NOT NULL CHECK(blocked_until >= 0)
     ) STRICT;
   `,
+}, {
+  version: 2,
+  name: "loss-aware-v3-timeline-and-recovery-archive",
+  sql: `
+    ALTER TABLE projects ADD COLUMN document_state TEXT NOT NULL DEFAULT 'ready'
+      CHECK(document_state IN ('ready', 'recovery-required'));
+    ALTER TABLE checkpoints ADD COLUMN document_state TEXT NOT NULL DEFAULT 'ready'
+      CHECK(document_state IN ('ready', 'recovery-required'));
+
+    CREATE TABLE legacy_document_archive (
+      owner_type TEXT NOT NULL CHECK(owner_type IN ('project', 'checkpoint')),
+      owner_id TEXT NOT NULL,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+      schema_version INTEGER NOT NULL CHECK(schema_version = 2),
+      document_json TEXT NOT NULL,
+      document_sha256 TEXT NOT NULL CHECK(length(document_sha256) = 64),
+      migration_status TEXT NOT NULL CHECK(migration_status IN ('migrated', 'recovery-required')),
+      reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 1000),
+      archived_at TEXT NOT NULL,
+      PRIMARY KEY(owner_type, owner_id)
+    ) STRICT;
+
+    CREATE INDEX legacy_document_archive_project_idx
+      ON legacy_document_archive(project_id, owner_type, owner_id);
+
+    CREATE TRIGGER legacy_document_archive_no_update
+      BEFORE UPDATE ON legacy_document_archive
+      BEGIN SELECT RAISE(ABORT, 'legacy document archive is immutable'); END;
+    CREATE TRIGGER legacy_document_archive_no_delete
+      BEFORE DELETE ON legacy_document_archive
+      BEGIN SELECT RAISE(ABORT, 'legacy document archive is immutable'); END;
+    CREATE TRIGGER legacy_document_archive_no_late_insert
+      BEFORE INSERT ON legacy_document_archive
+      WHEN EXISTS(SELECT 1 FROM schema_migrations WHERE version = 2)
+      BEGIN SELECT RAISE(ABORT, 'legacy document archive is sealed after migration'); END;
+  `,
+  dataTransformVersion: "loss-aware-v2-to-v3-r1",
+  apply: applyLossAwareV3TimelineMigration,
 }];
 
 const MIGRATION_TABLE_SQL = `
@@ -100,9 +149,282 @@ const MIGRATION_TABLE_SQL = `
     applied_at TEXT NOT NULL
   ) STRICT;
 `;
+const LOSSLESS_V2_ARCHIVE_REASON = "Lossless schema-v2 to schema-v3 fixed-tick migration";
 
 function checksum(migration: Migration): string {
-  return createHash("sha256").update(`${migration.version}\n${migration.name}\n${migration.sql}`, "utf8").digest("hex");
+  const transformMaterial = migration.dataTransformVersion === undefined ? "" : `\ndata:${migration.dataTransformVersion}`;
+  return createHash("sha256").update(`${migration.version}\n${migration.name}\n${migration.sql}${transformMaterial}`, "utf8").digest("hex");
+}
+
+function exactDocumentSha256(raw: string): string {
+  return createHash("sha256").update(raw, "utf8").digest("hex");
+}
+
+function legacyProjectCounters(candidate: unknown): { shotCount: number; objectCount: number; durationSeconds: number } {
+  if (!candidate || typeof candidate !== "object" || !Array.isArray((candidate as { shots?: unknown }).shots)) {
+    throw new Error("Legacy ProofCanvas project is missing shots");
+  }
+  const shots = (candidate as { shots: unknown[] }).shots;
+  const durations = shots.map((shot, index) => {
+    if (!shot || typeof shot !== "object" || typeof (shot as { duration?: unknown }).duration !== "number") {
+      throw new Error(`Legacy ProofCanvas shot ${index} is missing duration`);
+    }
+    return canonicalTimelineTime((shot as { duration: number }).duration);
+  });
+  const objectCount = shots.reduce<number>((count, shot) => count + (
+    shot && typeof shot === "object" && Array.isArray((shot as { objects?: unknown }).objects)
+      ? (shot as { objects: unknown[] }).objects.length
+      : 0
+  ), 0);
+  const durationSeconds = sumTimelineTimes(durations);
+  return {
+    shotCount: shots.length,
+    objectCount,
+    durationSeconds: durationSeconds > 0 ? durationSeconds : PROOFCANVAS_TIMELINE_TICK_SECONDS,
+  };
+}
+
+function archiveLegacyDocument(
+  database: SqliteDatabase,
+  input: {
+    ownerType: "project" | "checkpoint";
+    ownerId: string;
+    projectId: string;
+    raw: string;
+    status: "migrated" | "recovery-required";
+    reason: string;
+    archivedAt: string;
+  },
+): void {
+  database.prepare(`INSERT INTO legacy_document_archive(
+    owner_type, owner_id, project_id, schema_version, document_json, document_sha256,
+    migration_status, reason, archived_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(
+      input.ownerType,
+      input.ownerId,
+      input.projectId,
+      LEGACY_FLOAT_TIMELINE_SCHEMA_VERSION,
+      input.raw,
+      exactDocumentSha256(input.raw),
+      input.status,
+      input.reason,
+      input.archivedAt,
+    );
+}
+
+function classifyPersistedLegacyDocument(raw: string): {
+  parsed: unknown;
+  classification: ReturnType<typeof classifyLegacyV2ProjectDocument>;
+} {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("Persisted ProofCanvas schema-v2 document is invalid JSON");
+  }
+  const canonicalize = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonicalize);
+    if (value && typeof value === "object") {
+      return Object.fromEntries(Object.keys(value as Record<string, unknown>).sort().map((key) => [key, canonicalize((value as Record<string, unknown>)[key])]));
+    }
+    return value;
+  };
+  if (`${JSON.stringify(canonicalize(parsed), null, 2)}\n` !== raw) {
+    throw new Error("Persisted ProofCanvas schema-v2 document is not canonical JSON");
+  }
+  const owns = (value: unknown, key: string): boolean => Boolean(value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, key));
+  const project = parsed as { styles?: unknown; shots?: unknown };
+  if (!owns(parsed, "assets") || !owns(parsed, "customEasings") || !Array.isArray(project.styles) || !Array.isArray(project.shots)) {
+    throw new Error("Persisted ProofCanvas schema-v2 document is missing canonical default fields");
+  }
+  for (const style of project.styles) {
+    if (!owns(style, "origin")) throw new Error("Persisted ProofCanvas schema-v2 style is missing canonical origin");
+  }
+  for (const shot of project.shots) {
+    if (!["propertyTracks", "audioClips", "captionClips", "markers"].every((key) => owns(shot, key))) {
+      throw new Error("Persisted ProofCanvas schema-v2 shot is missing canonical timeline collections");
+    }
+    const shotRecord = shot as { camera?: unknown; objects?: unknown };
+    if (!owns(shotRecord.camera, "rotation")) throw new Error("Persisted ProofCanvas schema-v2 camera is missing canonical rotation");
+    if (!Array.isArray(shotRecord.objects)) continue;
+    for (const object of shotRecord.objects) {
+      const transform = object && typeof object === "object" ? (object as { transform?: unknown }).transform : undefined;
+      if (!["rotation", "scaleX", "scaleY"].every((key) => owns(transform, key))) {
+        throw new Error("Persisted ProofCanvas schema-v2 object transform is missing canonical defaults");
+      }
+    }
+  }
+  return { parsed, classification: classifyLegacyV2ProjectDocument(parsed) };
+}
+
+type MigrationProjectRow = {
+  id: string;
+  title: string;
+  document_json: string;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+  shot_count: number;
+  object_count: number;
+  duration_seconds: number;
+};
+
+function migrationMetadata(document: unknown, label: string): Record<string, unknown> {
+  const metadata = document && typeof document === "object" ? (document as { metadata?: unknown }).metadata : undefined;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) throw new Error(`${label} metadata is invalid`);
+  return metadata as Record<string, unknown>;
+}
+
+function canonicalIsoForMigration(value: unknown, label: string): string {
+  if (typeof value !== "string" || !Number.isFinite(Date.parse(value)) || new Date(Date.parse(value)).toISOString() !== value) {
+    throw new Error(`${label} is not a canonical UTC timestamp`);
+  }
+  return value;
+}
+
+function assertLegacyProjectBinding(row: MigrationProjectRow, document: unknown): void {
+  if (!/^project-[a-f0-9]{24}$/.test(row.id)) throw new Error(`Project row has invalid id ${row.id}`);
+  const metadata = migrationMetadata(document, `Project ${row.id}`);
+  if (
+    metadata.id !== row.id
+    || metadata.title !== row.title
+    || metadata.createdAt !== row.created_at
+    || metadata.updatedAt !== row.updated_at
+  ) throw new Error(`Project ${row.id} schema-v2 metadata diverges from its persistence row`);
+  if (!Number.isSafeInteger(row.revision) || row.revision < 1) throw new Error(`Project ${row.id} has an invalid revision`);
+  canonicalIsoForMigration(row.created_at, `Project ${row.id} created_at`);
+  canonicalIsoForMigration(row.updated_at, `Project ${row.id} updated_at`);
+  if (row.deleted_at !== null) {
+    canonicalIsoForMigration(row.deleted_at, `Project ${row.id} deleted_at`);
+    if (row.deleted_at !== row.updated_at) throw new Error(`Project ${row.id} deletion timestamp diverges from its update timestamp`);
+  }
+
+  const shots = document && typeof document === "object" && Array.isArray((document as { shots?: unknown }).shots)
+    ? (document as { shots: unknown[] }).shots
+    : [];
+  const rawShotCount = shots.length;
+  const rawObjectCount = shots.reduce<number>((sum, shot) => sum + (shot && typeof shot === "object" && Array.isArray((shot as { objects?: unknown }).objects) ? (shot as { objects: unknown[] }).objects.length : 0), 0);
+  const rawDuration = shots.reduce<number>((sum, shot) => sum + (shot && typeof shot === "object" && typeof (shot as { duration?: unknown }).duration === "number" ? (shot as { duration: number }).duration : 0), 0);
+  const canonicalCounters = legacyProjectCounters(document);
+  let storedCanonicalDuration: number | undefined;
+  try { storedCanonicalDuration = canonicalTimelineTime(row.duration_seconds); } catch { /* Exact raw V2 sum remains the alternate authority below. */ }
+  if (
+    row.shot_count !== rawShotCount
+    || row.object_count !== rawObjectCount
+    || (row.duration_seconds !== rawDuration && storedCanonicalDuration !== canonicalCounters.durationSeconds)
+  ) throw new Error(`Project ${row.id} schema-v2 derived counters diverge from its persistence row`);
+}
+
+function assertLegacyCheckpointBinding(
+  row: { id: string; project_id: string; revision: number; created_at: string; project_created_at: string; project_revision: number },
+  document: unknown,
+): void {
+  if (!/^checkpoint-[a-f0-9]{24}$/.test(row.id)) throw new Error(`Checkpoint row has invalid id ${row.id}`);
+  const metadata = migrationMetadata(document, `Checkpoint ${row.id}`);
+  if (metadata.id !== row.project_id || metadata.createdAt !== row.project_created_at) {
+    throw new Error(`Checkpoint ${row.id} schema-v2 metadata diverges from its project`);
+  }
+  if (!Number.isSafeInteger(row.revision) || row.revision < 1 || row.revision > row.project_revision) {
+    throw new Error(`Checkpoint ${row.id} has an invalid project revision`);
+  }
+  canonicalIsoForMigration(row.created_at, `Checkpoint ${row.id} created_at`);
+  canonicalIsoForMigration(metadata.updatedAt, `Checkpoint ${row.id} document updatedAt`);
+}
+
+function applyLossAwareV3TimelineMigration(database: SqliteDatabase, appliedAt: string): void {
+  const projects = database.prepare(`SELECT
+    id, title, document_json, revision, created_at, updated_at, deleted_at, shot_count, object_count, duration_seconds
+    FROM projects ORDER BY id`).all() as MigrationProjectRow[];
+  for (const row of projects) {
+    let rawDocument: unknown;
+    try { rawDocument = JSON.parse(row.document_json); } catch { throw new Error(`Project ${row.id} document is invalid JSON`); }
+    const version = rawDocument && typeof rawDocument === "object" ? (rawDocument as { schemaVersion?: unknown }).schemaVersion : undefined;
+    if (version === PROJECT_SCHEMA_VERSION) {
+      const document = parseProjectDocument(row.document_json);
+      if (canonicalProjectJson(document) !== row.document_json) throw new Error(`Project ${row.id} schema-v3 JSON is not canonical`);
+      continue;
+    }
+    const { parsed, classification } = classifyPersistedLegacyDocument(row.document_json);
+    assertLegacyProjectBinding(row, parsed);
+    if (classification.status === "invalid") throw new Error(`Project ${row.id} is not a valid schema-v2 document: ${classification.reason}`);
+    const reason = classification.status === "migrated"
+      ? LOSSLESS_V2_ARCHIVE_REASON
+      : classification.reason;
+    archiveLegacyDocument(database, {
+      ownerType: "project",
+      ownerId: row.id,
+      projectId: row.id,
+      raw: row.document_json,
+      status: classification.status,
+      reason,
+      archivedAt: appliedAt,
+    });
+    if (classification.status === "migrated") {
+      const document = classification.document;
+      database.prepare(`UPDATE projects SET
+        document_json = ?, document_state = 'ready', shot_count = ?, object_count = ?, duration_seconds = ?
+        WHERE id = ?`)
+        .run(
+          canonicalProjectJson(document),
+          document.shots.length,
+          document.shots.reduce((sum, shot) => sum + shot.objects.length, 0),
+          projectDurationSeconds(document),
+          row.id,
+        );
+    } else {
+      const counters = legacyProjectCounters(parsed);
+      database.prepare(`UPDATE projects SET
+        document_state = 'recovery-required', shot_count = ?, object_count = ?, duration_seconds = ?
+        WHERE id = ?`)
+        .run(counters.shotCount, counters.objectCount, counters.durationSeconds, row.id);
+    }
+  }
+
+  const checkpoints = database.prepare(`SELECT
+    checkpoints.id, checkpoints.project_id, checkpoints.revision, checkpoints.document_json, checkpoints.created_at,
+    projects.created_at AS project_created_at, projects.revision AS project_revision
+    FROM checkpoints JOIN projects ON projects.id = checkpoints.project_id
+    ORDER BY checkpoints.id`).all() as Array<{
+      id: string;
+      project_id: string;
+      revision: number;
+      document_json: string;
+      created_at: string;
+      project_created_at: string;
+      project_revision: number;
+    }>;
+  for (const row of checkpoints) {
+    let version: unknown;
+    try { version = (JSON.parse(row.document_json) as { schemaVersion?: unknown }).schemaVersion; } catch { throw new Error(`Checkpoint ${row.id} document is invalid JSON`); }
+    if (version === PROJECT_SCHEMA_VERSION) {
+      const document = parseProjectDocument(row.document_json);
+      if (canonicalProjectJson(document) !== row.document_json) throw new Error(`Checkpoint ${row.id} schema-v3 JSON is not canonical`);
+      continue;
+    }
+    const { parsed, classification } = classifyPersistedLegacyDocument(row.document_json);
+    assertLegacyCheckpointBinding(row, parsed);
+    if (classification.status === "invalid") throw new Error(`Checkpoint ${row.id} is not a valid schema-v2 document: ${classification.reason}`);
+    const reason = classification.status === "migrated"
+      ? LOSSLESS_V2_ARCHIVE_REASON
+      : classification.reason;
+    archiveLegacyDocument(database, {
+      ownerType: "checkpoint",
+      ownerId: row.id,
+      projectId: row.project_id,
+      raw: row.document_json,
+      status: classification.status,
+      reason,
+      archivedAt: appliedAt,
+    });
+    if (classification.status === "migrated") {
+      database.prepare("UPDATE checkpoints SET document_json = ?, document_state = 'ready' WHERE id = ?")
+        .run(canonicalProjectJson(classification.document), row.id);
+    } else {
+      database.prepare("UPDATE checkpoints SET document_state = 'recovery-required' WHERE id = ?").run(row.id);
+    }
+  }
 }
 
 export function proofCanvasDataDirectory(environment: NodeJS.ProcessEnv = process.env): string {
@@ -143,12 +465,19 @@ function migrate(database: SqliteDatabase): void {
   }
   const appliedVersions = new Set(applied.map(({ version }) => version));
   const applyPending = database.transaction(() => {
+    let appliedAny = false;
     for (const migration of MIGRATIONS) {
       if (appliedVersions.has(migration.version)) continue;
+      appliedAny = true;
+      const appliedAt = new Date().toISOString();
       database.exec(migration.sql);
+      migration.apply?.(database, appliedAt);
       database.prepare("INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)")
-        .run(migration.version, migration.name, checksum(migration), new Date().toISOString());
+        .run(migration.version, migration.name, checksum(migration), appliedAt);
     }
+    // Validate the fully migrated schema and rows before the IMMEDIATE
+    // transaction can publish a migration receipt or any rewritten document.
+    if (appliedAny) assertProofCanvasPersistenceIntegrity(database);
   });
   applyPending.immediate();
   const latest = (database.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations").get() as { version: number }).version;
@@ -474,6 +803,7 @@ interface PersistedProjectRow {
   thumbnail_width: number | null;
   thumbnail_height: number | null;
   thumbnail_updated_at: string | null;
+  document_state: "ready" | "recovery-required";
 }
 
 interface PersistedCheckpointRow {
@@ -483,6 +813,19 @@ interface PersistedCheckpointRow {
   label: string;
   document_json: string;
   created_at: string;
+  document_state: "ready" | "recovery-required";
+}
+
+interface PersistedLegacyArchiveRow {
+  owner_type: "project" | "checkpoint";
+  owner_id: string;
+  project_id: string;
+  schema_version: number;
+  document_json: string;
+  document_sha256: string;
+  migration_status: "migrated" | "recovery-required";
+  reason: string;
+  archived_at: string;
 }
 
 let expectedSchemaCatalogCache: SchemaCatalogRow[] | undefined;
@@ -537,6 +880,20 @@ function assertCanonicalDocument(raw: string, field: string): ProjectDocument {
   return document;
 }
 
+function assertLegacyArchiveRow(row: PersistedLegacyArchiveRow): ReturnType<typeof classifyLegacyV2ProjectDocument> {
+  if (row.schema_version !== LEGACY_FLOAT_TIMELINE_SCHEMA_VERSION) persistenceFailure(`legacy archive ${row.owner_type}:${row.owner_id} has an invalid schema version`);
+  if (exactDocumentSha256(row.document_json) !== row.document_sha256) persistenceFailure(`legacy archive ${row.owner_type}:${row.owner_id} hash diverges from its exact JSON`);
+  if (typeof row.reason !== "string" || row.reason.length < 1 || row.reason.length > 1000) persistenceFailure(`legacy archive ${row.owner_type}:${row.owner_id} has an invalid reason`);
+  assertIsoTimestamp(row.archived_at, `legacy archive ${row.owner_type}:${row.owner_id} archived_at`);
+  let classification: ReturnType<typeof classifyLegacyV2ProjectDocument>;
+  try { classification = classifyPersistedLegacyDocument(row.document_json).classification; } catch { return persistenceFailure(`legacy archive ${row.owner_type}:${row.owner_id} is not canonical schema-v2 JSON`); }
+  if (classification.status === "invalid") persistenceFailure(`legacy archive ${row.owner_type}:${row.owner_id} is not a valid schema-v2 document`);
+  if (classification.status !== row.migration_status) persistenceFailure(`legacy archive ${row.owner_type}:${row.owner_id} migration status diverges from its document`);
+  const expectedReason = classification.status === "migrated" ? LOSSLESS_V2_ARCHIVE_REASON : classification.reason;
+  if (row.reason !== expectedReason) persistenceFailure(`legacy archive ${row.owner_type}:${row.owner_id} reason diverges from its classification`);
+  return classification;
+}
+
 function assertThumbnail(row: PersistedProjectRow): void {
   const values = [
     row.thumbnail_mime,
@@ -556,7 +913,7 @@ function assertThumbnail(row: PersistedProjectRow): void {
   assertIsoTimestamp(row.thumbnail_updated_at, `project ${row.id} thumbnail_updated_at`);
 }
 
-function assertProjectRow(row: PersistedProjectRow): ProjectDocument {
+function assertProjectRow(row: PersistedProjectRow, archives: ReadonlyMap<string, PersistedLegacyArchiveRow>): ProjectDocument | undefined {
   if (!/^project-[a-f0-9]{24}$/.test(row.id)) persistenceFailure(`project row has invalid id ${row.id}`);
   assertPositiveInteger(row.revision, `project ${row.id} revision`);
   assertIsoTimestamp(row.created_at, `project ${row.id} created_at`);
@@ -565,7 +922,47 @@ function assertProjectRow(row: PersistedProjectRow): ProjectDocument {
     assertIsoTimestamp(row.deleted_at, `project ${row.id} deleted_at`);
     if (row.deleted_at !== row.updated_at) persistenceFailure(`project ${row.id} deletion timestamp diverges from its update timestamp`);
   }
+  if (row.document_state === "recovery-required") {
+    const archive = archives.get(`project:${row.id}`);
+    if (!archive || archive.project_id !== row.id || archive.document_json !== row.document_json || archive.migration_status !== "recovery-required") {
+      persistenceFailure(`project ${row.id} recovery state is missing its exact legacy archive`);
+    }
+    const classification = assertLegacyArchiveRow(archive);
+    if (classification.status !== "recovery-required") persistenceFailure(`project ${row.id} recovery archive is not loss-prone`);
+    let legacy: unknown;
+    try { legacy = JSON.parse(row.document_json); } catch { return persistenceFailure(`project ${row.id} legacy JSON is invalid`); }
+    const metadata = legacy && typeof legacy === "object" ? (legacy as { metadata?: unknown }).metadata : undefined;
+    const metadataRecord = metadata && typeof metadata === "object" ? metadata as Record<string, unknown> : undefined;
+    if (
+      metadataRecord?.id !== row.id
+      || metadataRecord.title !== row.title
+      || metadataRecord.createdAt !== row.created_at
+      || metadataRecord.updatedAt !== row.updated_at
+    ) persistenceFailure(`project ${row.id} legacy row metadata diverges from its document`);
+    const counters = legacyProjectCounters(legacy);
+    let storedDurationSeconds: number;
+    try { storedDurationSeconds = canonicalTimelineTime(row.duration_seconds); } catch { return persistenceFailure(`project ${row.id} duration_seconds is outside the authored timeline domain`); }
+    if (row.shot_count !== counters.shotCount || row.object_count !== counters.objectCount || storedDurationSeconds !== counters.durationSeconds) {
+      persistenceFailure(`project ${row.id} legacy derived counters diverge from its document`);
+    }
+    assertThumbnail(row);
+    return undefined;
+  }
+  if (row.document_state !== "ready") persistenceFailure(`project ${row.id} has an invalid document state`);
   const document = assertCanonicalDocument(row.document_json, `project ${row.id} document_json`);
+  const archive = archives.get(`project:${row.id}`);
+  if (archive) {
+    const classification = assertLegacyArchiveRow(archive);
+    if (
+      archive.project_id !== row.id
+      || archive.migration_status !== "migrated"
+      || classification.status !== "migrated"
+      || classification.document.metadata.id !== row.id
+      || classification.document.metadata.createdAt !== row.created_at
+    ) {
+      persistenceFailure(`project ${row.id} ready document diverges from its migrated legacy archive`);
+    }
+  }
   if (
     document.metadata.id !== row.id
     || document.metadata.title !== row.title
@@ -573,8 +970,14 @@ function assertProjectRow(row: PersistedProjectRow): ProjectDocument {
     || document.metadata.updatedAt !== row.updated_at
   ) persistenceFailure(`project ${row.id} row metadata diverges from its document`);
   const objectCount = document.shots.reduce((sum, shot) => sum + shot.objects.length, 0);
-  const durationSeconds = document.shots.reduce((sum, shot) => sum + shot.duration, 0);
-  if (row.shot_count !== document.shots.length || row.object_count !== objectCount || row.duration_seconds !== durationSeconds) {
+  const durationSeconds = projectDurationSeconds(document);
+  let storedDurationSeconds: number;
+  try {
+    storedDurationSeconds = canonicalTimelineTime(row.duration_seconds);
+  } catch {
+    persistenceFailure(`project ${row.id} duration_seconds is outside the authored timeline domain`);
+  }
+  if (row.shot_count !== document.shots.length || row.object_count !== objectCount || storedDurationSeconds! !== durationSeconds) {
     persistenceFailure(`project ${row.id} derived counters diverge from its document`);
   }
   assertThumbnail(row);
@@ -608,9 +1011,22 @@ function assertProofCanvasPersistenceStructure(database: SqliteDatabase, check: 
 }
 
 function assertProofCanvasPersistenceRows(database: SqliteDatabase): void {
+  const archiveRows = database.prepare(`SELECT
+    owner_type, owner_id, project_id, schema_version, document_json, document_sha256,
+    migration_status, reason, archived_at
+    FROM legacy_document_archive ORDER BY owner_type, owner_id`).all() as PersistedLegacyArchiveRow[];
+  const archives = new Map<string, PersistedLegacyArchiveRow>();
+  for (const row of archiveRows) {
+    const key = `${row.owner_type}:${row.owner_id}`;
+    if (archives.has(key)) persistenceFailure(`duplicate legacy archive ${key}`);
+    assertLegacyArchiveRow(row);
+    const migration = database.prepare("SELECT applied_at FROM schema_migrations WHERE version = 2").get() as { applied_at: string } | undefined;
+    if (!migration || row.archived_at !== migration.applied_at) persistenceFailure(`legacy archive ${key} timestamp diverges from migration 2`);
+    archives.set(key, row);
+  }
   const projectRows = database.prepare("SELECT * FROM projects ORDER BY id").all() as PersistedProjectRow[];
-  const projects = new Map(projectRows.map((row) => [row.id, { row, document: assertProjectRow(row) }]));
-  const checkpointRows = database.prepare("SELECT id, project_id, revision, label, document_json, created_at FROM checkpoints ORDER BY id").all() as PersistedCheckpointRow[];
+  const projects = new Map(projectRows.map((row) => [row.id, { row, document: assertProjectRow(row, archives) }]));
+  const checkpointRows = database.prepare("SELECT id, project_id, revision, label, document_json, created_at, document_state FROM checkpoints ORDER BY id").all() as PersistedCheckpointRow[];
   const checkpoints = new Map<string, PersistedCheckpointRow>();
   for (const row of checkpointRows) {
     if (!/^checkpoint-[a-f0-9]{24}$/.test(row.id)) persistenceFailure(`checkpoint row has invalid id ${row.id}`);
@@ -620,11 +1036,52 @@ function assertProofCanvasPersistenceRows(database: SqliteDatabase): void {
     if (row.revision > project.row.revision) persistenceFailure(`checkpoint ${row.id} is newer than its project`);
     if (typeof row.label !== "string" || row.label.length < 1 || row.label.length > 120) persistenceFailure(`checkpoint ${row.id} has an invalid label`);
     assertIsoTimestamp(row.created_at, `checkpoint ${row.id} created_at`);
-    const document = assertCanonicalDocument(row.document_json, `checkpoint ${row.id} document_json`);
-    if (document.metadata.id !== row.project_id || document.metadata.createdAt !== project.row.created_at) {
-      persistenceFailure(`checkpoint ${row.id} metadata diverges from its project`);
+    if (row.document_state === "recovery-required") {
+      const archive = archives.get(`checkpoint:${row.id}`);
+      if (!archive || archive.project_id !== row.project_id || archive.document_json !== row.document_json || archive.migration_status !== "recovery-required") {
+        persistenceFailure(`checkpoint ${row.id} recovery state is missing its exact legacy archive`);
+      }
+      const classification = assertLegacyArchiveRow(archive);
+      if (classification.status !== "recovery-required") persistenceFailure(`checkpoint ${row.id} recovery archive is not loss-prone`);
+      let legacy: unknown;
+      try { legacy = JSON.parse(row.document_json); } catch { return persistenceFailure(`checkpoint ${row.id} legacy JSON is invalid`); }
+      const metadata = legacy && typeof legacy === "object" ? (legacy as { metadata?: unknown }).metadata : undefined;
+      const metadataRecord = metadata && typeof metadata === "object" ? metadata as Record<string, unknown> : undefined;
+      if (metadataRecord?.id !== row.project_id || metadataRecord.createdAt !== project.row.created_at) {
+        persistenceFailure(`checkpoint ${row.id} legacy metadata diverges from its project`);
+      }
+    } else if (row.document_state === "ready") {
+      const document = assertCanonicalDocument(row.document_json, `checkpoint ${row.id} document_json`);
+      if (document.metadata.id !== row.project_id || document.metadata.createdAt !== project.row.created_at) {
+        persistenceFailure(`checkpoint ${row.id} metadata diverges from its project`);
+      }
+      const archive = archives.get(`checkpoint:${row.id}`);
+      if (archive) {
+        const classification = assertLegacyArchiveRow(archive);
+        if (
+          archive.project_id !== row.project_id
+          || archive.migration_status !== "migrated"
+          || classification.status !== "migrated"
+          || canonicalProjectJson(classification.document) !== row.document_json
+        ) persistenceFailure(`checkpoint ${row.id} ready state diverges from its legacy archive`);
+      }
+    } else {
+      persistenceFailure(`checkpoint ${row.id} has an invalid document state`);
     }
     checkpoints.set(row.id, row);
+  }
+
+  for (const archive of archives.values()) {
+    const project = projects.get(archive.project_id);
+    if (!project) persistenceFailure(`legacy archive ${archive.owner_type}:${archive.owner_id} references a missing project`);
+    if (archive.owner_type === "project") {
+      if (archive.owner_id !== archive.project_id) persistenceFailure(`legacy project archive ${archive.owner_id} has a divergent project id`);
+      if (project.row.document_state !== (archive.migration_status === "migrated" ? "ready" : "recovery-required")) {
+        persistenceFailure(`legacy project archive ${archive.owner_id} diverges from project state`);
+      }
+    } else if (!checkpoints.has(archive.owner_id)) {
+      persistenceFailure(`legacy checkpoint archive ${archive.owner_id} references a missing checkpoint`);
+    }
   }
 
   const mutations = database.prepare("SELECT mutation_id, project_id, action, request_hash, response_json, created_at FROM project_mutations ORDER BY mutation_id").all() as Array<{

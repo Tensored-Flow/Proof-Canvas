@@ -158,7 +158,7 @@ test("authenticated API journey enforces origin, CSRF, CAS, idempotency, recover
   ));
   expect(missingCsrf.status).toBe(403);
 
-  const createBody = { kind: "blank", title: "Durable proof", mutationId: "api-create-project-0001" };
+  const createBody = { kind: "sample", title: "Durable proof", mutationId: "api-create-project-0001" };
   const createdResponse = await projectsPost(request("/api/projects", "POST", createBody, authCookies, csrfToken));
   expect(createdResponse.status).toBe(201);
   const createdPayload = await createdResponse.json() as { project: { projectId: string; revision: number }; replayed: boolean };
@@ -174,6 +174,24 @@ test("authenticated API journey enforces origin, CSRF, CAS, idempotency, recover
   const loadedPayload = await loadedResponse.json() as { project: { revision: number; document: Record<string, any> } };
   const edited = structuredClone(loadedPayload.project.document);
   edited.metadata.title = "Durable proof edited";
+  const unsupportedAuthoring = structuredClone(loadedPayload.project.document);
+  unsupportedAuthoring.shots[0].animations.find((animation: { id: string }) => animation.id === "animation-limit-emphasis").easing = "editorial";
+  const unsupportedResponse = await projectPut(request(`/api/projects/${projectId}`, "PUT", {
+    expectedRevision: 1,
+    mutationId: "api-reject-unsupported-01",
+    document: unsupportedAuthoring,
+  }, authCookies, csrfToken), context(projectId));
+  expect(unsupportedResponse.status).toBe(400);
+  expect(await unsupportedResponse.json()).toMatchObject({ code: "invalid_project" });
+  const extremeTimeline = structuredClone(loadedPayload.project.document);
+  extremeTimeline.shots[0].duration = Number.MAX_VALUE;
+  const extremeResponse = await projectPut(request(`/api/projects/${projectId}`, "PUT", {
+    expectedRevision: 1,
+    mutationId: "api-save-extreme-time-01",
+    document: extremeTimeline,
+  }, authCookies, csrfToken), context(projectId));
+  expect(extremeResponse.status).toBe(400);
+  expect(await extremeResponse.json()).toMatchObject({ code: "invalid_request" });
   const saveBody = {
     expectedRevision: 1,
     mutationId: "api-save-project-000001",

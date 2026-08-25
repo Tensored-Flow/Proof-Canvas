@@ -14,6 +14,7 @@ import {
   ObjectTypeSchema,
   ProjectDocumentSchema,
   SceneOperationSchema,
+  animationAuthoringCompatibilityIssue,
   type JsonValue,
   type ProjectDocument,
   type SceneOperation,
@@ -107,7 +108,10 @@ const ModelSceneAnimationSchema = z.object({
   duration: z.number().finite().positive(),
   easing: EasingSchema,
   properties: z.array(ModelPropertyEntrySchema).max(64),
-}).strict();
+}).strict().superRefine((animation, context) => {
+  const issue = animationAuthoringCompatibilityIssue(animation);
+  if (issue) context.addIssue({ code: "custom", path: ["easing"], message: issue });
+});
 
 const ModelObjectPatchEntrySchema = z.discriminatedUnion("field", [
   z.object({ field: z.literal("name"), value: z.string().min(1).max(120) }).strict(),

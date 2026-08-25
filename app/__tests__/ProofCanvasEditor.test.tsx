@@ -1,7 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import ProofCanvasEditor from '../ProofCanvasEditor'
 import { createCantorDemoProject } from '@/lib/proofcanvas/demo'
-import { PROOFCANVAS_PROJECT_MAX_BYTES, canonicalProjectJson, cloneSerializable } from '@/lib/proofcanvas/schema'
+import { logicalFrameFor, resolutionFor, type ProofCanvasAspectRatio } from '@/lib/proofcanvas/frame'
+import { PROJECT_SCHEMA_VERSION, PROOFCANVAS_PROJECT_MAX_BYTES, canonicalProjectJson, cloneSerializable } from '@/lib/proofcanvas/schema'
 
 const createObjectURL = jest.fn(() => 'blob:proofcanvas-test')
 const revokeObjectURL = jest.fn()
@@ -49,7 +50,7 @@ describe('ProofCanvas editor client', () => {
     const { container } = render(<ProofCanvasEditor />)
 
     expect(editor()).toHaveAttribute('data-project-id', 'project-uncountable-zero-length')
-    expect(editor()).toHaveAttribute('data-schema-version', '2')
+    expect(editor()).toHaveAttribute('data-schema-version', String(PROJECT_SCHEMA_VERSION))
     expect(editor()).toHaveAttribute('data-active-shot-id', 'shot-cantor-construction')
     expect(screen.getByRole('tree', { name: 'Objects' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Scene canvas' })).toHaveAttribute('data-preview-style-id', 'style-editorial-ink')
@@ -60,6 +61,60 @@ describe('ProofCanvas editor client', () => {
     expect(screen.getByRole('tablist', { name: 'Shots' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Animation timeline' })).toHaveAttribute('data-shot-id', 'shot-cantor-construction')
     expect(container.querySelector('[data-object-id="object-removal-first"]')).not.toBeInTheDocument()
+  })
+
+  it.each(['9:16', '1:1'] as ProofCanvasAspectRatio[])('centres a new %s shot on the shared logical frame', (aspectRatio) => {
+    const project = cloneSerializable(createCantorDemoProject())
+    const frame = logicalFrameFor(aspectRatio)
+    project.settings.aspectRatio = aspectRatio
+    project.settings.resolution = resolutionFor(aspectRatio, project.settings.renderPreset)
+    render(<ProofCanvasEditor initialProject={project} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Add shot' }))
+    const stage = screen.getByRole('group', { name: /Scene 3 canvas/ })
+    expect(stage).toHaveAttribute('viewBox', `0 0 ${frame.width} ${frame.height}`)
+    expect(stage.querySelector('[data-pc-camera-transform]')).toHaveAttribute('transform', expect.stringContaining(`translate(${frame.centerX} ${frame.centerY})`))
+    expect(stage.querySelector('[data-pc-camera-transform]')).toHaveAttribute('transform', expect.stringContaining(`translate(${-frame.centerX} ${-frame.centerY})`))
+  })
+
+  it.each(['9:16', '1:1'] as ProofCanvasAspectRatio[])('keeps ordinary and semantic-component insertions inside the %s logical frame', (aspectRatio) => {
+    const project = cloneSerializable(createCantorDemoProject())
+    const frame = logicalFrameFor(aspectRatio)
+    project.settings.aspectRatio = aspectRatio
+    project.settings.resolution = resolutionFor(aspectRatio, project.settings.renderPreset)
+    const { container } = render(<ProofCanvasEditor initialProject={project} />)
+    const existingIds = new Set([...container.querySelectorAll<SVGElement>('[data-object-id]')].map((element) => element.dataset.objectId))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add coordinate axes' }))
+    const axes = [...container.querySelectorAll<SVGElement>('svg.pc-stage [data-object-type="axes"]')]
+      .find((element) => !existingIds.has(element.dataset.objectId))!
+    const axesPosition = axes.getAttribute('transform')?.match(/^translate\(([-\d.]+) ([-\d.]+)\)/)
+    expect(axesPosition).not.toBeNull()
+    const axesX = Number(axesPosition?.[1])
+    const axesY = Number(axesPosition?.[2])
+    expect(axesX - 120).toBeGreaterThanOrEqual(0)
+    expect(axesX + 120).toBeLessThanOrEqual(frame.width)
+    expect(axesY - 75).toBeGreaterThanOrEqual(0)
+    expect(axesY + 75).toBeLessThanOrEqual(frame.height)
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Components' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Insert mathematical title' }))
+    const titleParts = [...container.querySelectorAll<SVGForeignObjectElement>('[data-parent-id="group-mathematical-title"]')]
+    expect(titleParts).toHaveLength(2)
+    for (const part of titleParts) {
+      const position = part.getAttribute('transform')?.match(/^translate\(([-\d.]+) ([-\d.]+)\)/)
+      expect(position).not.toBeNull()
+      const centerX = Number(position?.[1])
+      const centerY = Number(position?.[2])
+      const localX = Number(part.getAttribute('x'))
+      const localY = Number(part.getAttribute('y'))
+      const width = Number(part.getAttribute('width'))
+      const height = Number(part.getAttribute('height'))
+      expect(centerX + localX).toBeGreaterThanOrEqual(0)
+      expect(centerX + localX + width).toBeLessThanOrEqual(frame.width)
+      expect(centerY + localY).toBeGreaterThanOrEqual(0)
+      expect(centerY + localY + height).toBeLessThanOrEqual(frame.height)
+    }
+    expect(screen.getByRole('group', { name: /canvas at/ })).toHaveStyle(`--pc-stage-aspect: ${frame.width} / ${frame.height}`)
   })
 
   it('runs selection edits and AI proposals through authoritative history', async () => {
@@ -319,14 +374,16 @@ describe('ProofCanvas editor client', () => {
     expect(container.querySelector('image[data-object-type="image"]')).toHaveAttribute('href', expect.stringContaining('data:image/png;base64'))
   })
 
-  it('derives a selected group frame from styled visible descendants', () => {
+  it('derives a selected group frame from authored visible descendants independently of output style', () => {
     const { container } = render(<ProofCanvasEditor />)
     fireEvent.click(screen.getByRole('tab', { name: 'Components' }))
     fireEvent.click(screen.getByRole('button', { name: 'Insert mathematical title' }))
     fireEvent.click(screen.getByRole('treeitem', { name: /Mathematical title/ }))
 
-    const moveTarget = container.querySelector<SVGRectElement>('[data-group-move-target="group-mathematical-title"]')!
-    expect(Number(moveTarget.getAttribute('width'))).toBeGreaterThan(400)
+    const moveTarget = () => container.querySelector<SVGRectElement>('[data-group-move-target="group-mathematical-title"]')!
+    expect(Number(moveTarget().getAttribute('width'))).toBe(340)
+    fireEvent.click(screen.getByRole('radio', { name: 'Raw Manim' }))
+    expect(Number(moveTarget().getAttribute('width'))).toBe(340)
   })
 
   it('labels inherited visibility and omits the dead group-opacity control', () => {
@@ -442,6 +499,45 @@ describe('ProofCanvas editor client', () => {
     fireEvent.click(lockedAnimation)
     expect(screen.getByRole('spinbutton', { name: 'Start time' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Delete animation' })).toBeDisabled()
+  })
+
+  it('offers a real easing repair for a legacy V2 animation on a locked target', () => {
+    const legacy = cloneSerializable(createCantorDemoProject())
+    legacy.shots[0].animations.find(({ id }) => id === 'animation-limit-emphasis')!.easing = 'editorial'
+    const { container } = render(<ProofCanvasEditor initialProject={legacy} />)
+    const animation = container.querySelector<HTMLElement>('[data-animation-id="animation-limit-emphasis"]')!
+    expect(animation).toHaveAttribute('aria-disabled', 'true')
+    fireEvent.click(animation)
+
+    const easing = screen.getByRole('combobox', { name: 'Easing' })
+    expect(easing).toBeEnabled()
+    expect(easing).toHaveValue('editorial')
+    expect(screen.getByText(/saved emphasise easing remains previewable but cannot render/i)).toBeInTheDocument()
+    fireEvent.change(easing, { target: { value: 'there-and-back' } })
+
+    expect(easing).toHaveValue('there-and-back')
+    expect(screen.getByText(/fixed there-and-back pulse/i)).toBeInTheDocument()
+    expect(editor()).toHaveAttribute('data-history-past-count', '1')
+    expect(screen.getByRole('spinbutton', { name: 'Start time' })).toBeDisabled()
+  })
+
+  it('keeps an unlocked legacy animation read-only except for its exact easing repair', () => {
+    const legacy = cloneSerializable(createCantorDemoProject())
+    legacy.shots[0].objects.find(({ id }) => id === 'object-equation-chain')!.locked = false
+    legacy.shots[0].objects.find(({ id }) => id === 'object-equation-limit')!.locked = false
+    legacy.shots[0].animations.find(({ id }) => id === 'animation-limit-emphasis')!.easing = 'editorial'
+    const { container } = render(<ProofCanvasEditor initialProject={legacy} />)
+    fireEvent.click(container.querySelector<HTMLElement>('[data-animation-id="animation-limit-emphasis"]')!)
+
+    expect(screen.getByRole('spinbutton', { name: 'Start time' })).toBeDisabled()
+    expect(screen.getByRole('spinbutton', { name: 'Duration' })).toBeDisabled()
+    expect(screen.getByRole('spinbutton', { name: 'Scale amount' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Delete animation' })).toBeDisabled()
+    const easing = screen.getByRole('combobox', { name: 'Easing' })
+    expect(easing).toBeEnabled()
+    fireEvent.change(easing, { target: { value: 'there-and-back' } })
+    expect(screen.getByRole('spinbutton', { name: 'Start time' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Delete animation' })).toBeEnabled()
   })
 
   it('saves, resets, and reloads canonical project JSON locally', () => {
@@ -569,7 +665,8 @@ describe('ProofCanvas editor client', () => {
     rejected.metadata.id = 'project-rejected-export'
     rejected.metadata.title = 'Rejected export fixture'
     rejected.shots[1].animations = []
-    rejected.shots[1].objects[0].lifetime = { start: 0, end: 1 }
+    rejected.assets.push({ id: 'asset-rejected-audio', filename: 'rejected.wav', mimeType: 'audio/wav', size: 32, sha256: 'c'.repeat(64), duration: 1, provenance: 'uploaded' })
+    rejected.shots[1].audioClips = [{ id: 'audio-rejected-export', assetId: 'asset-rejected-audio', name: 'Rejected audio', start: 0, duration: 1, sourceStart: 0, sourceEnd: 1, volume: 1, muted: false, solo: false }]
     render(<ProofCanvasEditor />)
     const file = new File([canonicalProjectJson(rejected)], 'rejected.proofcanvas.json', { type: 'application/json' })
     Object.defineProperty(file, 'text', { configurable: true, value: jest.fn().mockResolvedValue(canonicalProjectJson(rejected)) })
@@ -577,7 +674,7 @@ describe('ProofCanvas editor client', () => {
     await waitFor(() => expect(editor()).toHaveAttribute('data-project-id', rejected.metadata.id))
     fireEvent.click(screen.getByRole('button', { name: 'Export Manim Python' }))
     expect(screen.getByRole('dialog', { name: /Manim Python/ })).toHaveTextContent('from manim import')
-    expect(screen.getByRole('region', { name: 'Compiler diagnostics' })).toHaveTextContent('OBJECT_LIFETIME_RENDER_UNSUPPORTED')
+    expect(screen.getByRole('region', { name: 'Compiler diagnostics' })).toHaveTextContent('AUDIO_CLIP_RENDER_UNSUPPORTED')
     expect(createObjectURL).not.toHaveBeenCalled()
     expect(anchorClick).not.toHaveBeenCalled()
   })

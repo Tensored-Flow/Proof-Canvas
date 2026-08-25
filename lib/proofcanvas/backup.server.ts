@@ -128,10 +128,14 @@ interface PrivateBackupSnapshot {
   sha256: string;
 }
 
-function validatePrivateBackupFile(path: string): void {
+function upgradeAndValidatePrivateBackupFile(path: string): void {
   let database: Database.Database | undefined;
   try {
-    database = openProofCanvasDatabase({ path, readonly: true });
+    // The caller has already made a private copy. Writable migration is
+    // intentionally confined to that copy so validating/restoring an older
+    // backup never changes the source inode/link target, bytes, mode, mtime,
+    // or SQLite sidecar/listing state (ordinary reads may update atime).
+    database = openProofCanvasDatabase({ path });
     assertProofCanvasPersistenceIntegrity(database);
   } finally {
     if (database?.open) database.close();
@@ -158,7 +162,8 @@ function createValidatedPrivateBackupSnapshot(path: string): PrivateBackupSnapsh
     copyFileSync(path, privateCopy);
     chmodSync(privateCopy, 0o600);
     fsyncFile(privateCopy);
-    validatePrivateBackupFile(privateCopy);
+    upgradeAndValidatePrivateBackupFile(privateCopy);
+    fsyncFile(privateCopy);
     const bytes = statSync(privateCopy).size;
     const sha256 = fileSha256Sync(privateCopy);
     chmodSync(privateCopy, 0o400);

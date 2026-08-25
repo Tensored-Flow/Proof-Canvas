@@ -1,6 +1,7 @@
 import type { ProjectDocument, SceneObject, SceneOperation, Shot, StylePack } from "./schema";
 import { effectiveLockOwner, effectiveVisibilityOwner } from "./operations";
 import { styledTransform } from "./styles";
+import { addTimelineTimes, compareTimelineTimes, logicalFrameFor } from "./frame";
 
 export type CritiqueSeverity = "info" | "warning" | "error";
 export type CritiqueKind =
@@ -27,12 +28,6 @@ export interface CritiqueIssue {
 export interface CritiqueOptions {
   shotId?: string;
   proposedOperations?: readonly SceneOperation[];
-}
-
-function dimensions(project: ProjectDocument) {
-  if (project.settings.aspectRatio === "16:9") return { width: 960, height: 540 };
-  if (project.settings.aspectRatio === "9:16") return { width: 540, height: 960 };
-  return { width: 720, height: 720 };
 }
 
 function bounds(object: SceneObject) {
@@ -113,7 +108,7 @@ function operationObjectIds(operation: SceneOperation, shot: Shot): string[] {
 
 function critiqueShot(project: ProjectDocument, shot: Shot, style: StylePack, operations: readonly SceneOperation[]): CritiqueIssue[] {
   const issues: CritiqueIssue[] = [];
-  const frame = dimensions(project);
+  const frame = logicalFrameFor(project.settings.aspectRatio);
   const visible = shot.objects
     .filter((object) => object.type !== "group" && !effectiveVisibilityOwner(shot, object))
     .map((object) => ({ ...object, transform: styledTransform(object, style) }));
@@ -171,10 +166,14 @@ function critiqueShot(project: ProjectDocument, shot: Shot, style: StylePack, op
     }
   }
 
-  const eventTimes = [...new Set(shot.animations.flatMap((animation) => [animation.start, animation.start + animation.duration]))].sort((a, b) => a - b);
+  const eventTimes = [...new Set(shot.animations.flatMap((animation) => [animation.start, addTimelineTimes(animation.start, animation.duration)]))]
+    .sort((a, b) => compareTimelineTimes(a, b));
   let maximumActive: SceneAnimationLike[] = [];
   for (const time of eventTimes) {
-    const active = shot.animations.filter((animation) => animation.start <= time && animation.start + animation.duration > time);
+    const active = shot.animations.filter((animation) => (
+      compareTimelineTimes(animation.start, time) <= 0
+      && compareTimelineTimes(addTimelineTimes(animation.start, animation.duration), time) > 0
+    ));
     if (active.length > maximumActive.length) maximumActive = active;
   }
   if (maximumActive.length > 3) {

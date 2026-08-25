@@ -1,7 +1,10 @@
 import { allocateId, collectProjectIds } from "./ids";
+import { z } from "zod";
 import {
   ProjectDocumentSchema,
+  SceneAnimationSchema,
   SceneOperationSchema,
+  animationAuthoringCompatibilityIssue,
   cloneSerializable,
   type ProjectDocument,
   type PropertyKeyframe,
@@ -12,6 +15,17 @@ import {
   type Shot,
 } from "./schema";
 import { styleById, styledDisplayBounds, styledTransform } from "./styles";
+import { compareTimelineTimes } from "./frame";
+
+export const ManualSceneOperationSchema = z.union([
+  SceneOperationSchema,
+  z.object({
+    type: z.literal("clear-object-lifetime"),
+    objectId: z.string().regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/i).max(96),
+  }).strict(),
+]);
+
+export type ManualSceneOperation = z.infer<typeof ManualSceneOperationSchema>;
 
 export class OperationValidationError extends Error {
   constructor(message: string, readonly operationIndex?: number) {
@@ -100,7 +114,7 @@ function requireTrackUnlocked(shot: Shot, track: PropertyTrack, action: string):
 }
 
 function sortKeyframes(track: PropertyTrack): void {
-  track.keyframes.sort((left, right) => left.time - right.time || left.id.localeCompare(right.id));
+  track.keyframes.sort((left, right) => compareTimelineTimes(left.time, right.time) || left.id.localeCompare(right.id));
 }
 
 function requireIndependentHierarchy(shot: Shot, objects: readonly SceneObject[], action: string): void {
@@ -313,7 +327,7 @@ function rawTranslationForStyledDelta(object: SceneObject, style: ProjectDocumen
   return delta / slope;
 }
 
-function applyOne(project: ProjectDocument, shotId: string, operation: SceneOperation): string {
+function applyOne(project: ProjectDocument, shotId: string, operation: ManualSceneOperation): string {
   const shot = shotById(project, shotId);
   const projectIds = collectProjectIds(project);
   const activeStyle = styleById(project.styles, project.activeStyleId) ?? project.styles[0];
@@ -497,17 +511,36 @@ function applyOne(project: ProjectDocument, shotId: string, operation: SceneOper
     }
     case "update-animation": {
       const animation = animationById(shot, operation.animationId);
+      const existingCompatibilityIssue = animationAuthoringCompatibilityIssue(animation);
+      const compatibilityEasingRepair = Object.keys(operation.patch).length === 1
+        && operation.patch.easing !== undefined
+        && (
+          animation.type === "emphasise" && animation.easing !== "there-and-back" && operation.patch.easing === "there-and-back"
+          || (animation.type === "write" || animation.type === "create") && animation.easing === "there-and-back" && operation.patch.easing !== "there-and-back"
+        );
+      if (existingCompatibilityIssue && !compatibilityEasingRepair) {
+        throw new OperationValidationError("A legacy render-unsupported animation is read-only except for its exact easing repair");
+      }
       const currentTargets = animation.targetIds.map((id) => objectById(shot, id));
-      requireUnlocked(shot, mutationFamily(shot, currentTargets), "Update animation");
+      if (!compatibilityEasingRepair) requireUnlocked(shot, mutationFamily(shot, currentTargets), "Update animation");
       const targets = operation.patch.targetIds ?? animation.targetIds;
       const targetObjects = targets.map((id) => objectById(shot, id));
-      requireUnlocked(shot, mutationFamily(shot, targetObjects), "Update animation");
+      if (!compatibilityEasingRepair) requireUnlocked(shot, mutationFamily(shot, targetObjects), "Update animation");
       const index = shot.animations.findIndex(({ id }) => id === animation.id);
-      shot.animations[index] = {
+      const updated = SceneAnimationSchema.parse({
         ...animation,
         ...operation.patch,
         properties: operation.patch.properties ? { ...animation.properties, ...operation.patch.properties } : animation.properties,
-      };
+      });
+      const updatedCompatibilityIssue = animationAuthoringCompatibilityIssue(updated);
+      if (existingCompatibilityIssue) {
+        if (!compatibilityEasingRepair || updatedCompatibilityIssue) {
+          throw new OperationValidationError("A legacy render-unsupported animation is read-only except for its exact easing repair");
+        }
+      } else if (updatedCompatibilityIssue) {
+        throw new OperationValidationError(updatedCompatibilityIssue);
+      }
+      shot.animations[index] = updated;
       return `Updated ${animation.type} animation`;
     }
     case "delete-animation": {
@@ -521,6 +554,12 @@ function applyOne(project: ProjectDocument, shotId: string, operation: SceneOper
       requireUnlocked(shot, mutationFamily(shot, [object]), "Set lifetime");
       object.lifetime = cloneSerializable(operation.lifetime);
       return `Set ${object.name} lifetime to ${operation.lifetime.start}s–${operation.lifetime.end}s`;
+    }
+    case "clear-object-lifetime": {
+      const object = objectById(shot, operation.objectId);
+      requireUnlocked(shot, mutationFamily(shot, [object]), "Clear lifetime");
+      delete object.lifetime;
+      return `Cleared ${object.name} lifetime`;
     }
     case "add-property-track": {
       if (projectIds.has(operation.track.id)) throw new OperationValidationError(`ID already exists: ${operation.track.id}`);
@@ -583,29 +622,14 @@ function applyOne(project: ProjectDocument, shotId: string, operation: SceneOper
       if (!project.styles.some(({ id }) => id === operation.styleId)) throw new OperationValidationError(`Style not found: ${operation.styleId}`);
       if (project.activeStyleId === operation.styleId) return `${project.styles.find(({ id }) => id === operation.styleId)!.name} was already active`;
       project.activeStyleId = operation.styleId;
-      let preservedLockedAnimations = 0;
-      for (const candidateShot of project.shots) {
-        candidateShot.animations = candidateShot.animations.map((animation) => {
-          const targetsLockedFamily = animation.targetIds.some((id) => {
-            const target = candidateShot.objects.find((object) => object.id === id);
-            if (!target) return false;
-            return mutationFamily(candidateShot, [target]).some((member) => effectiveLockOwner(candidateShot, member));
-          });
-          if (targetsLockedFamily) {
-            preservedLockedAnimations += 1;
-            return animation;
-          }
-          return { ...animation, easing: project.styles.find(({ id }) => id === operation.styleId)!.motion.easing };
-        });
-      }
-      return `Changed style to ${project.styles.find(({ id }) => id === operation.styleId)!.name}${preservedLockedAnimations ? `; preserved ${preservedLockedAnimations} locked animation${preservedLockedAnimations === 1 ? "" : "s"}` : ""}`;
+      return `Changed style to ${project.styles.find(({ id }) => id === operation.styleId)!.name}`;
   }
 }
 
 export function applyOperations(
   project: ProjectDocument,
   shotId: string,
-  operations: readonly SceneOperation[],
+  operations: readonly ManualSceneOperation[],
 ): OperationResult {
   if (!operations.length) throw new OperationValidationError("A transaction must contain at least one operation");
   if (operations.some(({ type }) => type === "unlock-object") && operations.length !== 1) {
@@ -615,7 +639,7 @@ export function applyOperations(
   const summary: string[] = [];
   operations.forEach((candidate, index) => {
     try {
-      const operation = SceneOperationSchema.parse(candidate);
+      const operation = ManualSceneOperationSchema.parse(candidate);
       summary.push(applyOne(next, shotId, operation));
     } catch (error) {
       if (error instanceof OperationValidationError) throw new OperationValidationError(error.message, index);
@@ -632,7 +656,7 @@ export function applyOperations(
 export function validateOperations(
   project: ProjectDocument,
   shotId: string,
-  operations: readonly SceneOperation[],
+  operations: readonly ManualSceneOperation[],
 ): OperationValidationResult {
   try {
     return { valid: true, project: applyOperations(project, shotId, operations).project };
@@ -644,7 +668,7 @@ export function validateOperations(
   }
 }
 
-export function describeOperations(operations: readonly SceneOperation[]): string[] {
+export function describeOperations(operations: readonly ManualSceneOperation[]): string[] {
   return operations.map((operation) => {
     switch (operation.type) {
       case "add-object": return `Add “${operation.object.name}”`;
@@ -661,6 +685,7 @@ export function describeOperations(operations: readonly SceneOperation[]): strin
       case "update-animation": return `Update animation ${operation.animationId}`;
       case "delete-animation": return `Delete animation ${operation.animationId}`;
       case "set-object-lifetime": return `Set ${operation.objectId} lifetime to ${operation.lifetime.start}s–${operation.lifetime.end}s`;
+      case "clear-object-lifetime": return `Clear ${operation.objectId} lifetime`;
       case "add-property-track": return `Add ${operation.track.property} track ${operation.track.id}`;
       case "delete-property-track": return `Delete property track ${operation.trackId}`;
       case "add-keyframe": return `Add keyframe to ${operation.trackId} at ${operation.keyframe.time}s`;
@@ -717,4 +742,20 @@ export function duplicateObjects(
     return { type: "add-object", object: clone };
   });
   return applyOperations(project, shotId, operations);
+}
+
+/** Build a deterministic, reviewable add operation for an existing animation. */
+export function duplicateAnimationOperation(
+  project: ProjectDocument,
+  shotId: string,
+  animationId: string,
+  start: number,
+): Extract<SceneOperation, { type: "add-animation" }> {
+  const shot = shotById(project, shotId);
+  const source = animationById(shot, animationId);
+  const ids = collectProjectIds(project);
+  const animation = cloneSerializable(source);
+  animation.id = allocateId("animation", ids, `${source.id}-copy`);
+  animation.start = start;
+  return { type: "add-animation", animation };
 }

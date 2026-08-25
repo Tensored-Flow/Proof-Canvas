@@ -8,10 +8,11 @@ import { SEMANTIC_COMPONENTS, insertSemanticComponent, type SemanticComponentId 
 import { critiqueProject, type CritiqueIssue } from '@/lib/proofcanvas/critique'
 import { ensureSessionCsrfToken } from '@/lib/proofcanvas/csrf.client'
 import { createCantorDemoProject } from '@/lib/proofcanvas/demo'
+import { addTimelineTimes, compareTimelineTimes, logicalFrameFor, subtractTimelineTimes, type LogicalFrame } from '@/lib/proofcanvas/frame'
 import { canRedo, canUndo, commitOperations, commitProject, createHistory, redo, undo, type ProjectHistory } from '@/lib/proofcanvas/history'
 import { allocateId, collectProjectIds } from '@/lib/proofcanvas/ids'
 import { applyOperations, duplicateObjects, effectiveLockOwner, effectiveVisibilityOwner } from '@/lib/proofcanvas/operations'
-import { PROOFCANVAS_BRACE_LABEL_MAX_CHARS, PROOFCANVAS_LATEX_MAX_CHARS, PROOFCANVAS_PROJECT_MAX_BYTES, PROOFCANVAS_SCHEMA_LIMITS, PROOFCANVAS_TEXT_MAX_CHARS, ProjectDocumentSchema, SceneOperationSchema, canonicalProjectJson, cloneSerializable, parseProjectDocument, type AnimationType, type Easing, type ProjectDocument, type SceneAnimation, type SceneObject, type SceneOperation, type Shot } from '@/lib/proofcanvas/schema'
+import { PROOFCANVAS_BRACE_LABEL_MAX_CHARS, PROOFCANVAS_LATEX_MAX_CHARS, PROOFCANVAS_PROJECT_MAX_BYTES, PROOFCANVAS_SCHEMA_LIMITS, PROOFCANVAS_TEXT_MAX_CHARS, ProjectDocumentSchema, SceneOperationSchema, animationAuthoringCompatibilityIssue, canonicalProjectJson, cloneSerializable, parseProjectDocument, type AnimationType, type Easing, type ProjectDocument, type SceneAnimation, type SceneObject, type SceneOperation, type Shot } from '@/lib/proofcanvas/schema'
 import { EDITORIAL_INK_STYLE_ID, RAW_MANIM_STYLE_ID, styleById } from '@/lib/proofcanvas/styles'
 
 const STORAGE_KEY = 'proofcanvas_project_v1'
@@ -23,7 +24,7 @@ const OBJECT_TYPES: Array<{ type: Exclude<SceneObject['type'], 'group'>; label: 
   { type: 'image', label: 'raster image' }, { type: 'svg', label: 'SVG' },
 ]
 const ANIMATION_TYPES: AnimationType[] = ['appear', 'fade-in', 'fade-out', 'write', 'create', 'move', 'scale', 'transform', 'emphasise', 'camera-focus']
-const EASINGS: Easing[] = ['linear', 'ease-in', 'ease-out', 'ease-in-out', 'editorial', 'spring-soft']
+const EASINGS: Easing[] = ['linear', 'ease-in', 'ease-out', 'ease-in-out', 'editorial', 'spring-soft', 'there-and-back']
 const TIMELINE_LANE_COUNT = 4
 const INITIAL_DEMO_PLAYHEAD = 6.8
 
@@ -61,6 +62,7 @@ type DurableCheckpoint = {
   revision: number
   label: string
   createdAt: string
+  recoveryRequired: boolean
 }
 
 type PendingDurableSave = {
@@ -225,22 +227,28 @@ function selectionBounds(objects: readonly SceneObject[]) {
 
 function timelineLaneMap(animations: readonly SceneAnimation[], draft: { id: string; start: number; duration: number } | null): ReadonlyMap<string, number> {
   const timing = animations.map((animation) => draft?.id === animation.id ? { ...animation, start: draft.start, duration: draft.duration } : animation)
-    .sort((left, right) => left.start - right.start || left.id.localeCompare(right.id))
+    .sort((left, right) => compareTimelineTimes(left.start, right.start) || left.id.localeCompare(right.id))
   const laneEnds = Array.from({ length: TIMELINE_LANE_COUNT }, () => Number.NEGATIVE_INFINITY)
   const lanes = new Map<string, number>()
   for (const animation of timing) {
-    let lane = laneEnds.findIndex((end) => end <= animation.start + Number.EPSILON)
-    if (lane < 0) lane = laneEnds.reduce((earliest, end, index) => end < laneEnds[earliest] ? index : earliest, 0)
+    let lane = laneEnds.findIndex((end) => !Number.isFinite(end) || compareTimelineTimes(end, animation.start) <= 0)
+    if (lane < 0) lane = laneEnds.reduce((earliest, end, index) => compareTimelineTimes(end, laneEnds[earliest]) < 0 ? index : earliest, 0)
     lanes.set(animation.id, lane)
-    laneEnds[lane] = Math.max(laneEnds[lane], animation.start + animation.duration)
+    laneEnds[lane] = Math.max(laneEnds[lane], addTimelineTimes(animation.start, animation.duration))
   }
   return lanes
 }
 
-function newObject(type: Exclude<SceneObject['type'], 'group'>, id: string, index: number): SceneObject {
+function newObject(type: Exclude<SceneObject['type'], 'group'>, id: string, index: number, frame: LogicalFrame): SceneObject {
+  const cascadeX = ((index - 1) % 5 - 2) * Math.min(18, frame.width / 30)
+  const cascadeY = ((Math.floor((index - 1) / 5) % 5) - 2) * Math.min(18, frame.height / 30)
+  // Ordinary insertions are at most 240x150. Keep that complete authored box
+  // inside every logical frame while retaining a small deterministic cascade.
+  const x = Math.max(120, Math.min(frame.width - 120, frame.centerX + cascadeX))
+  const y = Math.max(75, Math.min(frame.height - 75, frame.centerY + cascadeY))
   const base: SceneObject = {
     id, type, name: `${type[0].toUpperCase()}${type.slice(1)} ${index}`, locked: false, visible: true,
-    transform: { x: 430 + (index % 5) * 24, y: 235 + (index % 4) * 22, width: 150, height: 70, rotation: 0, scaleX: 1, scaleY: 1 },
+    transform: { x, y, width: 150, height: 70, rotation: 0, scaleX: 1, scaleY: 1 },
     style: {}, properties: {},
   }
   switch (type) {
@@ -368,6 +376,7 @@ export default function ProofCanvasEditor({
   csrfTokenRef.current = csrfToken
 
   const project = history.present
+  const logicalFrame = logicalFrameFor(project.settings.aspectRatio)
   const shot = project.shots.find(({ id }) => id === activeShotId) ?? project.shots[0]
   const previewStyle = styleById(project.styles, project.activeStyleId) ?? project.styles[0]
   const selectedRootIds = selectionRootIds(shot, selectedIds)
@@ -380,6 +389,17 @@ export default function ProofCanvasEditor({
   const primaryVisibilityOwner = primary ? effectiveVisibilityOwner(shot, primary) : undefined
   const primaryInheritedHidden = Boolean(primary && primaryVisibilityOwner && primaryVisibilityOwner.id !== primary.id)
   const selectedAnimation = shot.animations.find(({ id }) => id === selectedAnimationId) ?? null
+  const selectedEntranceThereBackUnsupported = Boolean(
+    selectedAnimation
+    && (selectedAnimation.type === 'write' || selectedAnimation.type === 'create')
+    && selectedAnimation.easing === 'there-and-back',
+  )
+  const selectedEmphasisUnsupported = Boolean(
+    selectedAnimation
+    && selectedAnimation.type === 'emphasise'
+    && selectedAnimation.easing !== 'there-and-back',
+  )
+  const selectedAnimationCompatibilityUnsupported = Boolean(selectedAnimation && animationAuthoringCompatibilityIssue(selectedAnimation))
   const selectedAnimationLocked = selectedAnimation ? animationTargetsLocked(shot, selectedAnimation) : false
   const selectedAnimationTarget = selectedAnimation ? shot.objects.find(({ id }) => id === selectedAnimation.targetIds[0]) : undefined
   const projectRevision = useMemo(() => canonicalProjectJson(project), [project])
@@ -483,7 +503,7 @@ export default function ProofCanvasEditor({
   const aiContextRef = useRef(aiContextKey)
   const proposalReviews = useMemo(() => proposal ? reviewOperations(project, shot.id, proposal) : [], [project, proposal, shot.id])
   const animationLanes = useMemo(() => timelineLaneMap(shot.animations, timelineDraft), [shot.animations, timelineDraft])
-  const minimumShotDuration = Math.max(1, ...shot.animations.map((animation) => animation.start + animation.duration))
+  const minimumShotDuration = Math.max(1, ...shot.animations.map((animation) => addTimelineTimes(animation.start, animation.duration)))
   const lockedAnimationCount = project.shots.reduce((count, candidateShot) => count + candidateShot.animations.filter((animation) => animationTargetsLocked(candidateShot, animation)).length, 0)
   const coordinateBounds = { min: -PROOFCANVAS_SCHEMA_LIMITS.animationCoordinateMagnitude, max: PROOFCANVAS_SCHEMA_LIMITS.animationCoordinateMagnitude }
   const signedScaleBounds = { min: -PROOFCANVAS_SCHEMA_LIMITS.animationScaleMaxMagnitude, max: PROOFCANVAS_SCHEMA_LIMITS.animationScaleMaxMagnitude, minMagnitude: PROOFCANVAS_SCHEMA_LIMITS.animationScaleMinMagnitude }
@@ -493,16 +513,16 @@ export default function ProofCanvasEditor({
         { key: 'deltaX', label: 'Horizontal move', fallback: 0, ...coordinateBounds },
         { key: 'deltaY', label: 'Vertical move', fallback: 0, ...coordinateBounds },
       ] : [
-        { key: 'x', label: 'Target X', fallback: selectedAnimationTarget?.transform.x ?? 480, ...coordinateBounds },
-        { key: 'y', label: 'Target Y', fallback: selectedAnimationTarget?.transform.y ?? 270, ...coordinateBounds },
+        { key: 'x', label: 'Target X', fallback: selectedAnimationTarget?.transform.x ?? logicalFrame.centerX, ...coordinateBounds },
+        { key: 'y', label: 'Target Y', fallback: selectedAnimationTarget?.transform.y ?? logicalFrame.centerY, ...coordinateBounds },
       ]),
     ] : selectedAnimation.type === 'scale' || selectedAnimation.type === 'emphasise' ? [
       selectedAnimation.type === 'emphasise'
         ? { key: 'scale', label: 'Scale amount', fallback: 1.08, min: PROOFCANVAS_SCHEMA_LIMITS.animationScaleMinMagnitude, max: PROOFCANVAS_SCHEMA_LIMITS.animationScaleMaxMagnitude }
         : { key: 'scale', label: 'Scale amount', fallback: 1.15, ...signedScaleBounds },
     ] : selectedAnimation.type === 'transform' && selectedAnimation.targetIds.length === 1 ? [
-      { key: 'x', label: 'Target X', fallback: selectedAnimationTarget?.transform.x ?? 480, ...coordinateBounds },
-      { key: 'y', label: 'Target Y', fallback: selectedAnimationTarget?.transform.y ?? 270, ...coordinateBounds },
+      { key: 'x', label: 'Target X', fallback: selectedAnimationTarget?.transform.x ?? logicalFrame.centerX, ...coordinateBounds },
+      { key: 'y', label: 'Target Y', fallback: selectedAnimationTarget?.transform.y ?? logicalFrame.centerY, ...coordinateBounds },
       { key: 'width', label: 'Target width', fallback: selectedAnimationTarget?.transform.width ?? 60, min: PROOFCANVAS_SCHEMA_LIMITS.animationDimensionMin, max: PROOFCANVAS_SCHEMA_LIMITS.animationDimensionMax },
       { key: 'height', label: 'Target height', fallback: selectedAnimationTarget?.transform.height ?? 30, min: PROOFCANVAS_SCHEMA_LIMITS.animationDimensionMin, max: PROOFCANVAS_SCHEMA_LIMITS.animationDimensionMax },
       { key: 'rotation', label: 'Target rotation', fallback: selectedAnimationTarget?.transform.rotation ?? 0, min: -PROOFCANVAS_SCHEMA_LIMITS.animationRotationMagnitude, max: PROOFCANVAS_SCHEMA_LIMITS.animationRotationMagnitude },
@@ -667,14 +687,14 @@ export default function ProofCanvasEditor({
 
   const insertObject = (type: Exclude<SceneObject['type'], 'group'>) => {
     const ids = collectProjectIds(project)
-    const object = newObject(type, allocateId('object', ids, type), shot.objects.length + 1)
+    const object = newObject(type, allocateId('object', ids, type), shot.objects.length + 1, logicalFrame)
     if (commitOps([{ type: 'add-object', object }], `Insert ${type}`)) setSelectedIds([object.id])
   }
 
   const insertComponent = (componentId: SemanticComponentId) => {
     try {
       const before = new Set(shot.objects.map(({ id }) => id))
-      const next = insertSemanticComponent(project, shot.id, componentId, { x: 490, y: 275 })
+      const next = insertSemanticComponent(project, shot.id, componentId, { x: logicalFrame.centerX, y: logicalFrame.centerY })
       if (commitDocument(next, `Insert ${componentId}`)) setSelectedIds(next.shots.find(({ id }) => id === shot.id)!.objects.filter(({ id }) => !before.has(id)).map(({ id }) => id))
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Component insertion failed')
@@ -870,7 +890,7 @@ export default function ProofCanvasEditor({
   const addShot = () => {
     const id = allocateId('shot', collectProjectIds(project), `scene-${project.shots.length + 1}`)
     const next = cloneSerializable(project)
-    next.shots.push({ id, name: `Scene ${project.shots.length + 1}`, duration: 6, objects: [], animations: [], propertyTracks: [], audioClips: [], captionClips: [], markers: [], camera: { x: 480, y: 270, zoom: 1, rotation: 0 } })
+    next.shots.push({ id, name: `Scene ${project.shots.length + 1}`, duration: 6, objects: [], animations: [], propertyTracks: [], audioClips: [], captionClips: [], markers: [], camera: { x: logicalFrame.centerX, y: logicalFrame.centerY, zoom: 1, rotation: 0 } })
     if (commitDocument(next, 'Add shot')) { setActiveShotId(id); setSelectedIds([]); setPlayhead(0) }
   }
 
@@ -879,7 +899,7 @@ export default function ProofCanvasEditor({
     const target = next.shots.find(({ id }) => id === shot.id)!
     if (patch.name !== undefined && patch.name.trim()) target.name = patch.name.trim()
     if (patch.duration !== undefined) {
-      const minimum = Math.max(1, ...target.animations.map((animation) => animation.start + animation.duration))
+      const minimum = Math.max(1, ...target.animations.map((animation) => addTimelineTimes(animation.start, animation.duration)))
       target.duration = Math.max(minimum, Math.min(300, patch.duration))
     }
     return commitDocument(next, label)
@@ -898,14 +918,19 @@ export default function ProofCanvasEditor({
   const addAnimation = () => {
     if (!selectedRootIds.length && animationType !== 'camera-focus') return setStatus('Select one or more objects before adding an animation')
     if (animationType === 'transform' && selectedRootIds.length > 1) return setStatus('Transform uses one absolute target. Select one object, or use Move/Scale to preserve multi-object spacing.')
-    const duration = Math.min(previewStyle.motion.defaultDuration, Math.max(0.1, shot.duration - playhead))
+    const duration = Math.min(previewStyle.motion.defaultDuration, Math.max(0.1, subtractTimelineTimes(shot.duration, playhead)))
     const id = allocateId('animation', collectProjectIds(project), animationType)
     const targetIds = animationType === 'camera-focus' ? (selectedRootIds.length ? selectedRootIds : [shot.objects[0]?.id].filter(Boolean)) : selectedRootIds
     if (!targetIds.length) return setStatus('This shot needs an object before camera focus can be added')
     const properties: SceneAnimation['properties'] = animationType === 'move' && primary
       ? selectedRootIds.length > 1 ? { deltaX: 80, deltaY: 0 } : { x: primary.transform.x + 80, y: primary.transform.y }
-      : animationType === 'scale' ? { scale: 1.2 } : animationType === 'emphasise' ? { scale: 1.12 } : animationType === 'camera-focus' ? { x: primary?.transform.x ?? 480, y: primary?.transform.y ?? 270, zoom: 1.15 } : {}
-    const animation: SceneAnimation = { id, type: animationType, targetIds, start: Math.min(playhead, shot.duration - duration), duration, easing: previewStyle.motion.easing, properties }
+      : animationType === 'scale' ? { scale: 1.2 } : animationType === 'emphasise' ? { scale: 1.12 } : animationType === 'camera-focus' ? { x: primary?.transform.x ?? logicalFrame.centerX, y: primary?.transform.y ?? logicalFrame.centerY, zoom: 1.15 } : {}
+    const easing: Easing = animationType === 'emphasise'
+      ? 'there-and-back'
+      : (animationType === 'write' || animationType === 'create') && previewStyle.motion.easing === 'there-and-back'
+        ? 'linear'
+        : previewStyle.motion.easing
+    const animation: SceneAnimation = { id, type: animationType, targetIds, start: Math.min(playhead, subtractTimelineTimes(shot.duration, duration)), duration, easing, properties }
     if (commitOps([{ type: 'add-animation', animation }], `Add ${animationType} animation`)) setSelectedAnimationId(id)
   }
 
@@ -915,6 +940,10 @@ export default function ProofCanvasEditor({
   }
 
   const deleteTimelineAnimation = (animation: SceneAnimation) => {
+    if (animationAuthoringCompatibilityIssue(animation)) {
+      setStatus('This saved animation is read-only except for its easing repair.')
+      return false
+    }
     if (animationTargetsLocked(shot, animation)) {
       setStatus('This animation targets a locked object family; unlock it before deleting the block.')
       return false
@@ -959,6 +988,11 @@ export default function ProofCanvasEditor({
 
   const beginTimelineGesture = (event: ReactPointerEvent, animation: SceneAnimation, kind: 'move' | 'resize') => {
     event.stopPropagation()
+    if (animationAuthoringCompatibilityIssue(animation)) {
+      setSelectedAnimationId(animation.id)
+      setStatus('This saved animation is read-only except for its easing repair.')
+      return
+    }
     event.currentTarget.setPointerCapture?.(event.pointerId)
     setSelectedAnimationId(animation.id)
     setTimelineGesture({ id: animation.id, kind, clientX: event.clientX, start: animation.start, duration: animation.duration })
@@ -969,8 +1003,8 @@ export default function ProofCanvasEditor({
     if (!timelineGesture || !trackRef.current) return
     const seconds = (event.clientX - timelineGesture.clientX) / trackRef.current.clientWidth * shot.duration
     const snap = (value: number) => Math.round(value * 10) / 10
-    if (timelineGesture.kind === 'move') setTimelineDraft({ id: timelineGesture.id, start: snap(Math.max(0, Math.min(shot.duration - timelineGesture.duration, timelineGesture.start + seconds))), duration: timelineGesture.duration })
-    else setTimelineDraft({ id: timelineGesture.id, start: timelineGesture.start, duration: snap(Math.max(0.1, Math.min(shot.duration - timelineGesture.start, timelineGesture.duration + seconds))) })
+    if (timelineGesture.kind === 'move') setTimelineDraft({ id: timelineGesture.id, start: snap(Math.max(0, Math.min(subtractTimelineTimes(shot.duration, timelineGesture.duration), addTimelineTimes(timelineGesture.start, seconds)))), duration: timelineGesture.duration })
+    else setTimelineDraft({ id: timelineGesture.id, start: timelineGesture.start, duration: snap(Math.max(0.1, Math.min(subtractTimelineTimes(shot.duration, timelineGesture.start), addTimelineTimes(timelineGesture.duration, seconds)))) })
   }
 
   const endTimelineGesture = () => {
@@ -1122,7 +1156,8 @@ export default function ProofCanvasEditor({
         && typeof (candidate as { id?: unknown }).id === 'string'
         && typeof (candidate as { revision?: unknown }).revision === 'number'
         && typeof (candidate as { label?: unknown }).label === 'string'
-        && typeof (candidate as { createdAt?: unknown }).createdAt === 'string',
+        && typeof (candidate as { createdAt?: unknown }).createdAt === 'string'
+        && typeof (candidate as { recoveryRequired?: unknown }).recoveryRequired === 'boolean',
       ))
       setCheckpoints(loaded)
       setRecoveryOpen(true)
@@ -1174,6 +1209,10 @@ export default function ProofCanvasEditor({
 
   const recoverCheckpoint = async (checkpoint: DurableCheckpoint) => {
     if (!durableProject || checkpointPending) return
+    if (checkpoint.recoveryRequired) {
+      setSaveMessage('This legacy checkpoint cannot be migrated losslessly. Export its exact JSON instead of recovering it.')
+      return
+    }
     if (!window.confirm(`Recover “${checkpoint.label}” from revision ${checkpoint.revision}? A checkpoint of the current project will be created first.`)) return
     setCheckpointPending(true)
     try {
@@ -1351,18 +1390,21 @@ export default function ProofCanvasEditor({
           <strong>{selectedAnimation.type}</strong>
           {selectedAnimationLocked && <span className="pc-animation-lock-note" role="status">Locked target</span>}
           {selectedAnimation.type === 'transform' && selectedAnimation.targetIds.length > 1 && <span className="pc-animation-lock-note" role="status">Split this legacy multi-target transform before editing absolute geometry.</span>}
-          <label>Start<input type="number" min="0" max={shot.duration - selectedAnimation.duration} step="0.1" aria-label="Start time" defaultValue={selectedAnimation.start} key={`${selectedAnimation.id}-start-${selectedAnimation.start}`} disabled={selectedAnimationLocked} onBlur={(event) => commitNumericInput(event, { key: 'start', label: 'Start time', fallback: selectedAnimation.start, min: 0, max: shot.duration - selectedAnimation.duration }, selectedAnimation.start, (next) => updateAnimation({ start: next }, 'Set animation start'))}/></label>
-          <label>Duration<input type="number" min="0.1" max={shot.duration - selectedAnimation.start} step="0.1" aria-label="Duration" defaultValue={selectedAnimation.duration} key={`${selectedAnimation.id}-duration-${selectedAnimation.duration}`} disabled={selectedAnimationLocked} onBlur={(event) => commitNumericInput(event, { key: 'duration', label: 'Duration', fallback: selectedAnimation.duration, min: 0.1, max: shot.duration - selectedAnimation.start }, selectedAnimation.duration, (next) => updateAnimation({ duration: next }, 'Set animation duration'))}/></label>
-          <label>Easing<select aria-label="Easing" value={selectedAnimation.easing} disabled={selectedAnimationLocked} onChange={(event) => updateAnimation({ easing: event.target.value as Easing }, 'Set animation easing')}>{EASINGS.map((easing) => <option key={easing}>{easing}</option>)}</select></label>
-          {animationPropertyFields.map((field) => { const value = typeof selectedAnimation.properties[field.key] === 'number' ? Number(selectedAnimation.properties[field.key]) : field.fallback; return <label key={field.key}>{field.label}<input type="number" min={field.min} max={field.max} step="0.1" aria-label={field.label} defaultValue={value} key={`${selectedAnimation.id}-${field.key}-${String(selectedAnimation.properties[field.key])}`} disabled={selectedAnimationLocked} onBlur={(event) => commitNumericInput(event, field, value, (next) => updateAnimation({ properties: { [field.key]: next } }, `Set ${field.label.toLowerCase()}`))}/></label> })}
-          <button type="button" disabled={selectedAnimationLocked} onClick={() => deleteTimelineAnimation(selectedAnimation)}>Delete animation</button>
+          <label>Start<input type="number" min="0" max={subtractTimelineTimes(shot.duration, selectedAnimation.duration)} step="0.1" aria-label="Start time" defaultValue={selectedAnimation.start} key={`${selectedAnimation.id}-start-${selectedAnimation.start}`} disabled={selectedAnimationLocked || selectedAnimationCompatibilityUnsupported} onBlur={(event) => commitNumericInput(event, { key: 'start', label: 'Start time', fallback: selectedAnimation.start, min: 0, max: subtractTimelineTimes(shot.duration, selectedAnimation.duration) }, selectedAnimation.start, (next) => updateAnimation({ start: next }, 'Set animation start'))}/></label>
+          <label>Duration<input type="number" min="0.1" max={subtractTimelineTimes(shot.duration, selectedAnimation.start)} step="0.1" aria-label="Duration" defaultValue={selectedAnimation.duration} key={`${selectedAnimation.id}-duration-${selectedAnimation.duration}`} disabled={selectedAnimationLocked || selectedAnimationCompatibilityUnsupported} onBlur={(event) => commitNumericInput(event, { key: 'duration', label: 'Duration', fallback: selectedAnimation.duration, min: 0.1, max: subtractTimelineTimes(shot.duration, selectedAnimation.start) }, selectedAnimation.duration, (next) => updateAnimation({ duration: next }, 'Set animation duration'))}/></label>
+          <label>Easing<select aria-label="Easing" value={selectedAnimation.easing} disabled={selectedAnimationLocked && !selectedEmphasisUnsupported && !selectedEntranceThereBackUnsupported} onChange={(event) => updateAnimation({ easing: event.target.value as Easing }, 'Set animation easing')}>{(selectedAnimation.type === 'emphasise' ? ['there-and-back'] : EASINGS.filter((easing) => easing !== 'there-and-back' || (selectedAnimation.type !== 'write' && selectedAnimation.type !== 'create'))).map((easing) => <option key={easing}>{easing}</option>)}{selectedEmphasisUnsupported && <option value={selectedAnimation.easing} disabled>{selectedAnimation.easing} (render unsupported)</option>}{selectedEntranceThereBackUnsupported && <option value="there-and-back" disabled>there-and-back (render unsafe)</option>}</select></label>
+          {selectedAnimation.type === 'emphasise' && !selectedEmphasisUnsupported && <span className="pc-animation-lock-note" role="status">Emphasise uses a fixed there-and-back pulse so preview and Manim share the same envelope.</span>}
+          {selectedEmphasisUnsupported && <span className="pc-animation-lock-note" role="status">This saved emphasise easing remains previewable but cannot render; choose there-and-back to repair it.</span>}
+          {selectedEntranceThereBackUnsupported && <span className="pc-animation-lock-note" role="status">Write/Create there-and-back leaks native path state into hidden follow-up motion in pinned Manim; choose another easing before render.</span>}
+          {animationPropertyFields.map((field) => { const value = typeof selectedAnimation.properties[field.key] === 'number' ? Number(selectedAnimation.properties[field.key]) : field.fallback; return <label key={field.key}>{field.label}<input type="number" min={field.min} max={field.max} step="0.1" aria-label={field.label} defaultValue={value} key={`${selectedAnimation.id}-${field.key}-${String(selectedAnimation.properties[field.key])}`} disabled={selectedAnimationLocked || selectedAnimationCompatibilityUnsupported} onBlur={(event) => commitNumericInput(event, field, value, (next) => updateAnimation({ properties: { [field.key]: next } }, `Set ${field.label.toLowerCase()}`))}/></label> })}
+          <button type="button" disabled={selectedAnimationLocked || selectedAnimationCompatibilityUnsupported} onClick={() => deleteTimelineAnimation(selectedAnimation)}>Delete animation</button>
         </div>}
       </section>
 
       {(rendererMessage || importError) && <div className="pc-message" role="alert"><p>{importError || rendererMessage}</p><button type="button" onClick={() => { setRendererMessage(''); setImportError('') }}>Dismiss</button></div>}
       {durableProject && saveMessage && <div className={`pc-save-message ${saveState === 'conflict' ? 'conflict' : ''}`} role={saveState === 'conflict' ? 'alert' : 'status'}><p>{saveMessage}</p>{(saveState === 'offline' || saveState === 'conflict') && <button type="button" onClick={() => saveState === 'conflict' ? window.location.reload() : void performDurableSave()}>{saveState === 'conflict' ? 'Reload durable project' : 'Retry autosave'}</button>}<button type="button" onClick={() => setSaveMessage('')} aria-label="Dismiss save message">×</button></div>}
       {durableProject && localRecovery && !recoveryIgnored && <section className="pc-recovery-offer" role="region" aria-label="Browser recovery available"><strong>Unsaved browser recovery found</strong><p>ProofCanvas did not load it automatically. Apply this project-scoped copy only if it contains work missing from durable revision {serverRevision}.</p><div><button type="button" onClick={applyLocalRecovery}>Apply browser recovery</button><button type="button" onClick={() => setRecoveryIgnored(true)}>Ignore for now</button></div></section>}
-      {durableProject && recoveryOpen && <section className="pc-checkpoint-panel" role="dialog" aria-modal="false" aria-label="Project recovery"><header><div><span>Durable recovery</span><strong>Checkpoints</strong></div><button type="button" onClick={() => setRecoveryOpen(false)} aria-label="Close project recovery">×</button></header>{checkpoints.length === 0 ? <p>No checkpoints have been created yet.</p> : <ul>{checkpoints.map((checkpoint) => <li key={checkpoint.id}><div><strong>{checkpoint.label}</strong><span>Revision {checkpoint.revision} · {checkpoint.createdAt.replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC')}</span></div><button type="button" onClick={() => void recoverCheckpoint(checkpoint)} disabled={checkpointPending}>Recover…</button></li>)}</ul>}</section>}
+      {durableProject && recoveryOpen && <section className="pc-checkpoint-panel" role="dialog" aria-modal="false" aria-label="Project recovery"><header><div><span>Durable recovery</span><strong>Checkpoints</strong></div><button type="button" onClick={() => setRecoveryOpen(false)} aria-label="Close project recovery">×</button></header>{checkpoints.length === 0 ? <p>No checkpoints have been created yet.</p> : <ul>{checkpoints.map((checkpoint) => <li key={checkpoint.id}><div><strong>{checkpoint.label}</strong><span>Revision {checkpoint.revision} · {checkpoint.createdAt.replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC')}{checkpoint.recoveryRequired ? ' · exact legacy export required' : ''}</span></div>{checkpoint.recoveryRequired ? <a href={`/api/projects/${encodeURIComponent(durableProject.projectId)}/legacy-export?checkpointId=${encodeURIComponent(checkpoint.id)}`}>Export exact legacy JSON</a> : <button type="button" onClick={() => void recoverCheckpoint(checkpoint)} disabled={checkpointPending}>Recover…</button>}</li>)}</ul>}</section>}
       {renderJob && <section className="pc-render-panel" role="region" aria-label="Render status" data-render-job-id={renderJob.id} data-render-status={renderJob.status} data-render-current={renderRepresentsCurrentProject ? 'true' : 'false'}>
         <header><div><span>Manim render</span><strong>{renderJob.status}</strong></div><button type="button" onClick={() => { setRenderJob(null); setRenderBaseRevision(null) }} aria-label="Dismiss render status">×</button></header>
         <p>Source <code>{renderJob.sourceSha256.slice(0, 12)}</code> · {renderJob.quality}</p>

@@ -4,7 +4,13 @@ import hashlib
 
 import pytest
 
-from proofcanvas_render.policy import MAX_SOURCE_BYTES, SourcePolicyError, validate_generated_source
+from proofcanvas_render.policy import (
+    MAX_RATE_LAMBDAS,
+    MAX_SOURCE_BYTES,
+    PROOFCANVAS_CUBIC_BEZIER_HELPER,
+    SourcePolicyError,
+    validate_generated_source,
+)
 
 
 def test_accepts_compiler_dialect(generated_source: str, generated_sha: str) -> None:
@@ -49,6 +55,10 @@ def test_rejects_oversized_source() -> None:
 
 def source_with(statement: str) -> str:
     return "from manim import *\nimport math\n\nclass GeneratedScene(MovingCameraScene):\n    def construct(self):\n" + statement
+
+
+def source_with_cubic_helper(statement: str, helper: str = PROOFCANVAS_CUBIC_BEZIER_HELPER) -> str:
+    return f"from manim import *\nimport math\n\n{helper}\nclass GeneratedScene(MovingCameraScene):\n    def construct(self):\n" + statement
 
 
 def validate(source: str) -> None:
@@ -103,3 +113,108 @@ def test_rejects_mathtex_arguments_outside_compiler_dialect(arguments: str) -> N
 
     with pytest.raises(SourcePolicyError, match="arguments are outside"):
         validate(source)
+
+
+def test_accepts_exact_cubic_bezier_helper_only_in_transform_rate_func() -> None:
+    validate(source_with_cubic_helper(
+        "        pc_box = Rectangle(width=1.0, height=1.0)\n"
+        "        self.play(Transform(pc_box, pc_box.copy(), run_time=1.0, "
+        "rate_func=lambda x: proofcanvas_cubic_bezier(x, 0.25, -1.0, 0.75, 2.0)))\n"
+    ))
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda helper: helper.replace("range(32)", "range(31)"),
+        lambda helper: helper.replace("lower = 0.0", "lower = 0.1"),
+        lambda helper: helper + "\nproofcanvas_extra = 1.0\n",
+        lambda helper: helper.replace("proofcanvas_cubic_bezier", "proofcanvas_cubic_bezier_other", 1),
+    ],
+)
+def test_rejects_any_cubic_helper_ast_mutation(mutation) -> None:
+    source = source_with_cubic_helper("        self.wait(1.0)\n", mutation(PROOFCANVAS_CUBIC_BEZIER_HELPER))
+
+    with pytest.raises(SourcePolicyError, match="helper|scene class"):
+        validate(source)
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "        pc_graph = FunctionGraph(lambda x: proofcanvas_cubic_bezier(x, 0.2, 0.3, 0.8, 0.9), x_range=[-1.0, 1.0])\n",
+        "        pc_box = Rectangle(width=1.0, height=1.0)\n        self.play(Transform(pc_box, pc_box.copy(), lambda x: proofcanvas_cubic_bezier(x, 0.2, 0.3, 0.8, 0.9)))\n",
+        "        pc_box = Rectangle(width=1.0, height=1.0)\n        self.play(Transform(pc_box, pc_box.copy(), path_func=lambda x: proofcanvas_cubic_bezier(x, 0.2, 0.3, 0.8, 0.9)))\n",
+        "        pc_box = Rectangle(width=1.0, height=1.0)\n        self.play(FadeIn(pc_box, rate_func=lambda x: proofcanvas_cubic_bezier(x, 0.2, 0.3, 0.8, 0.9)))\n",
+    ],
+)
+def test_rejects_cubic_lambda_outside_exact_transform_rate_keyword(statement: str) -> None:
+    with pytest.raises(SourcePolicyError, match="Transform rate_func"):
+        validate(source_with_cubic_helper(statement))
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        "pc_curve, 0.0, 0.8, 1.0",
+        "1.1, 0.0, 0.8, 1.0",
+        "0.2, -4.1, 0.8, 1.0",
+        "0.2, 0.0, 0.8, float('nan')",
+    ],
+)
+def test_rejects_nonliteral_or_out_of_bounds_cubic_arguments(arguments: str) -> None:
+    prefix = "        pc_curve = 0.2\n" if "pc_curve" in arguments else ""
+    source = source_with_cubic_helper(
+        prefix
+        + "        pc_box = Rectangle(width=1.0, height=1.0)\n"
+        + f"        self.play(Transform(pc_box, pc_box.copy(), rate_func=lambda x: proofcanvas_cubic_bezier(x, {arguments})))\n"
+    )
+
+    with pytest.raises(SourcePolicyError, match="numeric literals|schema bounds"):
+        validate(source)
+
+
+def test_rejects_cubic_lambda_without_exact_helper() -> None:
+    source = source_with(
+        "        pc_box = Rectangle(width=1.0, height=1.0)\n"
+        "        self.play(Transform(pc_box, pc_box.copy(), rate_func=lambda x: proofcanvas_cubic_bezier(x, 0.2, 0.3, 0.8, 0.9)))\n"
+    )
+
+    with pytest.raises(SourcePolicyError, match="exact compiler helper"):
+        validate(source)
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "        proofcanvas_cubic_bezier = min\n",
+        "        Transform = FadeIn\n",
+    ],
+)
+def test_rejects_shadowing_compiler_policy_names(statement: str) -> None:
+    with pytest.raises(SourcePolicyError, match="shadows a reserved compiler name"):
+        validate(source_with_cubic_helper(statement))
+
+
+def test_rejects_bare_cubic_helper_reference() -> None:
+    with pytest.raises(SourcePolicyError, match="may be read only"):
+        validate(source_with_cubic_helper("        pc_easing = proofcanvas_cubic_bezier\n"))
+
+
+def test_enforces_the_independent_custom_easing_lambda_budget() -> None:
+    def source_for(count: int) -> str:
+        transforms = ",\n".join(
+            "            Transform(pc_box, pc_box.copy(), run_time=1.0, "
+            "rate_func=lambda x: proofcanvas_cubic_bezier(x, 0.2, 0.0, 0.8, 1.0))"
+            for _ in range(count)
+        )
+        return source_with_cubic_helper(
+            "        pc_box = Rectangle(width=1.0, height=1.0)\n"
+            "        self.play(AnimationGroup(\n"
+            f"{transforms},\n"
+            "            group=Group(), lag_ratio=0))\n"
+        )
+
+    validate(source_for(MAX_RATE_LAMBDAS))
+    with pytest.raises(SourcePolicyError, match="too many custom easing lambdas"):
+        validate(source_for(MAX_RATE_LAMBDAS + 1))

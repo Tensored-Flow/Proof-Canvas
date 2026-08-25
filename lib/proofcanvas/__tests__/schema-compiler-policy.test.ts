@@ -18,6 +18,77 @@ function validateWithRendererPolicy(source: string) {
   return spawnSync("python3", ["-c", script], { input: source, encoding: "utf8" });
 }
 
+test("an actual compiler-owned custom Bezier helper and rate lambda pass the renderer policy", () => {
+  const project = cloneSerializable(createCantorDemoProject());
+  const shot = project.shots[1];
+  const object = shot.objects.find(({ type }) => type !== "group")!;
+  project.shots = [shot];
+  shot.animations = [];
+  shot.objects = [object];
+  shot.propertyTracks = [{
+    id: "track-policy-custom-bezier",
+    target: { kind: "object", objectId: object.id },
+    property: "x",
+    keyframes: [
+      { id: "keyframe-policy-custom-a", time: 0, value: object.transform.x, interpolation: { kind: "custom-bezier", curve: { x1: 0.25, y1: -1, x2: 0.75, y2: 2 } } },
+      { id: "keyframe-policy-custom-b", time: 2, value: object.transform.x + 40, interpolation: { kind: "linear" } },
+    ],
+  }];
+  const compiled = compileManim(ProjectDocumentSchema.parse(project));
+  expect(compiled.diagnostics.filter(({ severity }) => severity === "error")).toEqual([]);
+  expect(compiled.python).toContain("def proofcanvas_cubic_bezier");
+  const policy = validateWithRendererPolicy(compiled.python);
+  expect(policy.status).toBe(0);
+  expect(policy.stderr).toBe("");
+});
+
+test("a one-tick delayed lifetime compiles with an allocated reference through renderer policy", () => {
+  const project = cloneSerializable(createCantorDemoProject());
+  const shot = project.shots[1];
+  const object = shot.objects.find(({ type }) => type !== "group")!;
+  project.shots = [shot];
+  shot.animations = [];
+  shot.objects = [object];
+  shot.propertyTracks = [];
+  object.lifetime = { start: 1e-8, end: shot.duration };
+  const compiled = compileManim(ProjectDocumentSchema.parse(project));
+  expect(compiled.diagnostics.filter(({ severity }) => severity === "error")).toEqual([]);
+  expect(compiled.python).toContain("Wait(1e-8)");
+  expect(compiled.python).not.toContain("undefined.copy()");
+  const policy = validateWithRendererPolicy(compiled.python);
+  expect(policy.status).toBe(0);
+  expect(policy.stderr).toBe("");
+});
+
+test.each(["write", "create"] as const)("a saved V2 %s there-and-back pulse stays loadable but render-blocked", (type) => {
+  const project = cloneSerializable(createCantorDemoProject());
+  const shot = project.shots[1];
+  const object = shot.objects.find(({ type: objectType }) => objectType !== "group")!;
+  project.shots = [shot];
+  shot.duration = 4;
+  shot.objects = [object];
+  shot.propertyTracks = [];
+  shot.audioClips = [];
+  shot.captionClips = [];
+  shot.markers = [];
+  shot.animations = [
+    { id: `animation-policy-${type}-pulse`, type, targetIds: [object.id], start: 0, duration: 1, easing: "there-and-back", properties: {} },
+    { id: `animation-policy-${type}-move`, type: "move", targetIds: [object.id], start: 1, duration: 1, easing: "linear", properties: { deltaX: 40 } },
+    { id: `animation-policy-${type}-reenter`, type: "fade-in", targetIds: [object.id], start: 3, duration: 1, easing: "linear", properties: {} },
+  ];
+  expect(previewShotAtTime(shot, 1.5).objects[0].preview.opacity).toBe(0);
+  expect(previewShotAtTime(shot, 4).objects[0].preview.opacity).toBe(1);
+  const valid = ProjectDocumentSchema.parse(project);
+  const compiled = compileManim(valid);
+  expect(compiled.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ code: "SEMANTIC_EASING_UNSUPPORTED", animationId: `animation-policy-${type}-pulse` }),
+  ]));
+  expect(compiled.python).not.toContain(`${type === "write" ? "Write" : "Create"}(`);
+  const policy = validateWithRendererPolicy(compiled.python);
+  expect(policy.status).toBe(0);
+  expect(policy.stderr).toBe("");
+});
+
 test("a project at direct numeric schema bounds compiles through the renderer policy", () => {
   const project = cloneSerializable(createCantorDemoProject());
   const title = project.shots[0].objects.find(({ id }) => id === "object-title")!;

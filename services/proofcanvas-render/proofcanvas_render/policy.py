@@ -163,6 +163,31 @@ FORBIDDEN_NODES = (
     ast.YieldFrom,
 )
 
+MAX_GRAPH_LAMBDAS = 8
+MAX_RATE_LAMBDAS = 1024
+RESERVED_CONSTRUCT_BINDINGS = ALLOWED_CONSTRUCTORS | ALLOWED_CONSTANT_NAMES | frozenset(
+    {"MovingCameraScene", "config", "math", "proofcanvas_cubic_bezier", "rate_functions", "self", "x"}
+)
+PROOFCANVAS_CUBIC_BEZIER_HELPER = """def proofcanvas_cubic_bezier(x, x1, y1, x2, y2):
+    x = min(1.0, max(0.0, x))
+    if x == 0.0 or x == 1.0:
+        return x
+    lower = 0.0
+    upper = 1.0
+    for iteration in range(32):
+        candidate = (lower + upper) / 2.0
+        inverse = 1.0 - candidate
+        value = 3.0 * inverse * inverse * candidate * x1 + 3.0 * inverse * candidate * candidate * x2 + candidate * candidate * candidate
+        if value < x:
+            lower = candidate
+        else:
+            upper = candidate
+    candidate = (lower + upper) / 2.0
+    inverse = 1.0 - candidate
+    return 3.0 * inverse * inverse * candidate * y1 + 3.0 * inverse * candidate * candidate * y2 + candidate * candidate * candidate
+"""
+PROOFCANVAS_CUBIC_BEZIER_HELPER_AST = ast.parse(PROOFCANVAS_CUBIC_BEZIER_HELPER).body[0]
+
 
 def _attribute_parts(node: ast.Attribute) -> list[str]:
     parts: list[str] = [node.attr]
@@ -186,10 +211,20 @@ def _is_safe_latex(value: str) -> bool:
     return all(command in SAFE_LATEX_COMMANDS for command in SAFE_LATEX_COMMAND_PATTERN.findall(value))
 
 
+def _is_exact_cubic_bezier_helper(node: ast.stmt) -> bool:
+    return (
+        isinstance(node, ast.FunctionDef)
+        and ast.dump(node, include_attributes=False)
+        == ast.dump(PROOFCANVAS_CUBIC_BEZIER_HELPER_AST, include_attributes=False)
+    )
+
+
 def _validate_structure(tree: ast.Module) -> None:
-    if len(tree.body) != 3:
-        raise SourcePolicyError("Generated source must contain exactly two imports and one scene class")
-    manim_import, math_import, scene_class = tree.body
+    if len(tree.body) not in {3, 4}:
+        raise SourcePolicyError("Generated source must contain two imports, one optional exact compiler helper, and one scene class")
+    manim_import, math_import = tree.body[:2]
+    scene_class = tree.body[-1]
+    helpers = tree.body[2:-1]
     if not (
         isinstance(manim_import, ast.ImportFrom)
         and manim_import.module == "manim"
@@ -206,6 +241,8 @@ def _validate_structure(tree: ast.Module) -> None:
         and math_import.names[0].asname is None
     ):
         raise SourcePolicyError("Generated source has an unsupported standard-library import")
+    if helpers and (len(helpers) != 1 or not _is_exact_cubic_bezier_helper(helpers[0])):
+        raise SourcePolicyError("Generated source has an altered or unsupported compiler helper")
     if not (
         isinstance(scene_class, ast.ClassDef)
         and scene_class.name == "GeneratedScene"
@@ -232,10 +269,13 @@ def _validate_structure(tree: ast.Module) -> None:
 
 
 def _validate_nodes(tree: ast.Module) -> None:
-    manim_import, math_import, scene_class = tree.body
+    manim_import, math_import = tree.body[:2]
+    scene_class = tree.body[-1]
+    helpers = tree.body[2:-1]
     assert isinstance(scene_class, ast.ClassDef)
     construct = scene_class.body[0]
-    permitted_definitions = {id(manim_import), id(math_import), id(scene_class), id(construct)}
+    helper_node_ids = {id(node) for helper in helpers for node in ast.walk(helper)}
+    permitted_definitions = {id(manim_import), id(math_import), id(scene_class), id(construct), *(id(helper) for helper in helpers)}
     permitted_statements = permitted_definitions | {
         id(statement)
         for statement in construct.body
@@ -243,17 +283,94 @@ def _validate_nodes(tree: ast.Module) -> None:
     }
     assigned = {
         node.id
-        for node in ast.walk(tree)
+        for node in ast.walk(construct)
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
     }
+    shadowed = sorted(assigned & RESERVED_CONSTRUCT_BINDINGS)
+    if shadowed:
+        raise SourcePolicyError(f"Generated source shadows a reserved compiler name: {shadowed[0]}")
+    helper_names = {helper.name for helper in helpers if isinstance(helper, ast.FunctionDef)}
     permitted_loads = (
         assigned
         | ALLOWED_CONSTANT_NAMES
         | ALLOWED_CONSTRUCTORS
+        | helper_names
         | {"MovingCameraScene", "config", "math", "rate_functions", "self", "x"}
     )
-    lambda_depth = 0
+    parents = {id(child): parent for parent in ast.walk(construct) for child in ast.iter_child_nodes(parent)}
+    rate_lambda_ids: set[int] = set()
+    rate_call_ids: set[int] = set()
+    rate_helper_load_ids: set[int] = set()
+    graph_lambda_ids: set[int] = set()
+    for node in ast.walk(construct):
+        if not isinstance(node, ast.Lambda):
+            continue
+        if (
+            len(node.args.args) != 1
+            or node.args.args[0].arg != "x"
+            or node.args.vararg is not None
+            or node.args.kwarg is not None
+            or node.args.kwonlyargs
+            or node.args.defaults
+        ):
+            raise SourcePolicyError("Restricted lambdas must accept only x")
+        if isinstance(node.body, ast.Call) and isinstance(node.body.func, ast.Name) and node.body.func.id == "proofcanvas_cubic_bezier":
+            if "proofcanvas_cubic_bezier" not in helper_names:
+                raise SourcePolicyError("Custom easing lambda requires the exact compiler helper")
+            lambda_parent = parents.get(id(node))
+            rate_call = parents.get(id(lambda_parent)) if isinstance(lambda_parent, ast.keyword) else None
+            if not (
+                isinstance(lambda_parent, ast.keyword)
+                and lambda_parent.arg == "rate_func"
+                and isinstance(rate_call, ast.Call)
+                and isinstance(rate_call.func, ast.Name)
+                and rate_call.func.id == "Transform"
+            ):
+                raise SourcePolicyError("Custom easing lambda is allowed only as a Transform rate_func")
+            if node.body.keywords or len(node.body.args) != 5 or not isinstance(node.body.args[0], ast.Name) or node.body.args[0].id != "x":
+                raise SourcePolicyError("Custom easing lambda is outside the compiler dialect")
+            numeric_values: list[float] = []
+            for argument in node.body.args[1:]:
+                value: object
+                if isinstance(argument, ast.Constant):
+                    value = argument.value
+                elif (
+                    isinstance(argument, ast.UnaryOp)
+                    and isinstance(argument.op, (ast.USub, ast.UAdd))
+                    and isinstance(argument.operand, ast.Constant)
+                    and isinstance(argument.operand.value, (int, float))
+                    and not isinstance(argument.operand.value, bool)
+                ):
+                    value = -argument.operand.value if isinstance(argument.op, ast.USub) else argument.operand.value
+                else:
+                    raise SourcePolicyError("Custom easing arguments must be direct numeric literals")
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                    raise SourcePolicyError("Custom easing arguments must be finite numeric literals")
+                numeric_values.append(float(value))
+            x1, y1, x2, y2 = numeric_values
+            if not (0 <= x1 <= 1 and 0 <= x2 <= 1 and -4 <= y1 <= 4 and -4 <= y2 <= 4):
+                raise SourcePolicyError("Custom easing arguments exceed the schema bounds")
+            rate_lambda_ids.add(id(node))
+            rate_call_ids.add(id(node.body))
+            rate_helper_load_ids.add(id(node.body.func))
+            continue
+        parent = parents.get(id(node))
+        if not (
+            isinstance(parent, ast.Call)
+            and isinstance(parent.func, ast.Name)
+            and parent.func.id == "FunctionGraph"
+            and parent.args
+            and parent.args[0] is node
+        ):
+            raise SourcePolicyError("Restricted graph lambdas are allowed only in FunctionGraph")
+        graph_lambda_ids.add(id(node))
+    if len(graph_lambda_ids) > MAX_GRAPH_LAMBDAS:
+        raise SourcePolicyError("Generated source contains too many restricted graph lambdas")
+    if len(rate_lambda_ids) > MAX_RATE_LAMBDAS:
+        raise SourcePolicyError("Generated source contains too many custom easing lambdas")
     for node in ast.walk(tree):
+        if id(node) in helper_node_ids:
+            continue
         if isinstance(node, ast.stmt) and id(node) not in permitted_statements:
             raise SourcePolicyError(f"Generated source contains an unsupported statement: {type(node).__name__}")
         if isinstance(node, (ast.Import, ast.ImportFrom, ast.ClassDef, ast.FunctionDef)) and id(node) not in permitted_definitions:
@@ -270,6 +387,12 @@ def _validate_nodes(tree: ast.Module) -> None:
         if isinstance(node, ast.Name):
             if not IDENTIFIER_PATTERN.fullmatch(node.id) or node.id.startswith("_"):
                 raise SourcePolicyError("Generated source contains an unsafe identifier")
+            if (
+                isinstance(node.ctx, ast.Load)
+                and node.id == "proofcanvas_cubic_bezier"
+                and id(node) not in rate_helper_load_ids
+            ):
+                raise SourcePolicyError("The cubic Bezier helper may be read only by an approved Transform rate_func")
             if isinstance(node.ctx, ast.Load) and node.id not in permitted_loads:
                 raise SourcePolicyError(f"Generated source reads an unsupported name: {node.id}")
         if isinstance(node, ast.Attribute):
@@ -290,7 +413,9 @@ def _validate_nodes(tree: ast.Module) -> None:
             if any(keyword.arg is None for keyword in node.keywords):
                 raise SourcePolicyError("Generated source cannot expand keyword arguments")
             if isinstance(node.func, ast.Name):
-                if node.func.id not in ALLOWED_CONSTRUCTORS:
+                if id(node) in rate_call_ids:
+                    pass
+                elif node.func.id not in ALLOWED_CONSTRUCTORS:
                     raise SourcePolicyError(f"Generated source calls an unsupported function: {node.func.id}")
                 if node.func.id == "MathTex":
                     if (
@@ -326,18 +451,6 @@ def _validate_nodes(tree: ast.Module) -> None:
                 raise SourcePolicyError("Generated source contains an unsupported power")
             if not isinstance(exponent, int) or not -8 <= exponent <= 8:
                 raise SourcePolicyError("Generated source contains an out-of-range power")
-        if isinstance(node, ast.Lambda):
-            lambda_depth += 1
-            if (
-                len(node.args.args) != 1
-                or node.args.args[0].arg != "x"
-                or node.args.vararg is not None
-                or node.args.kwarg is not None
-                or node.args.kwonlyargs
-            ):
-                raise SourcePolicyError("Restricted graph lambdas must accept only x")
-    if lambda_depth > 8:
-        raise SourcePolicyError("Generated source contains too many restricted graph lambdas")
 
 
 def validate_generated_source(source: str, expected_sha256: str) -> ValidatedSource:

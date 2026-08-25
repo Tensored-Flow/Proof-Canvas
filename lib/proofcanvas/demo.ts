@@ -1,4 +1,4 @@
-import { ProjectDocumentSchema, cloneSerializable, type ProjectDocument, type SceneAnimation, type SceneObject } from "./schema";
+import { PROJECT_SCHEMA_VERSION, ProjectDocumentSchema, cloneSerializable, type ProjectDocument, type SceneAnimation, type SceneObject } from "./schema";
 import { DEFAULT_STYLE_PACKS, EDITORIAL_INK_STYLE_ID } from "./styles";
 
 function object(
@@ -31,7 +31,7 @@ function animation(
   duration: number,
   properties: SceneAnimation["properties"] = {},
 ): SceneAnimation {
-  return { id, type, targetIds, start, duration, easing: "editorial", properties };
+  return { id, type, targetIds, start, duration, easing: type === "emphasise" ? "there-and-back" : "editorial", properties };
 }
 
 export function createCantorDemoProject(): ProjectDocument {
@@ -84,7 +84,7 @@ export function createCantorDemoProject(): ProjectDocument {
   ];
 
   const project: ProjectDocument = {
-    schemaVersion: 2,
+    schemaVersion: PROJECT_SCHEMA_VERSION,
     metadata: {
       id: "project-uncountable-zero-length",
       title: "Uncountable, Yet Zero Length",

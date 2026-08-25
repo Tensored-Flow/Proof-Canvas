@@ -45,6 +45,20 @@ test("fails closed on delayed initial property state before renderer fetch", asy
   expect(global.fetch).not.toHaveBeenCalled();
 });
 
+test.each(["legacy emphasis", "unsafe path entrance"])("keeps %s V2 documents loadable but rejects rendering before fetch", async (variant) => {
+  const project = cloneSerializable(createCantorDemoProject());
+  if (variant === "legacy emphasis") {
+    project.shots[0].animations.find(({ id }) => id === "animation-limit-emphasis")!.easing = "editorial";
+  } else {
+    project.shots[0].animations.find(({ id }) => id === "animation-title-write")!.easing = "there-and-back";
+  }
+  const valid = ProjectDocumentSchema.parse(project);
+  await expect(submitRender({ project: valid, quality: "preview" })).rejects.toEqual(
+    expect.objectContaining({ status: 422, code: "compile_rejected" }),
+  );
+  expect(global.fetch).not.toHaveBeenCalled();
+});
+
 const ORIGINAL_ENV = { ...process.env };
 const TOKEN = "proofcanvas-next-test-token-that-is-long-enough";
 

@@ -49,7 +49,7 @@ describe("deterministic composition critic", () => {
       });
     }
     shot.animations.push(
-      { id: "animation-extra-one", type: "emphasise", targetIds: [title.id], start: 1.5, duration: 2, easing: "linear", properties: {} },
+      { id: "animation-extra-one", type: "emphasise", targetIds: [title.id], start: 1.5, duration: 2, easing: "there-and-back", properties: {} },
       { id: "animation-extra-two", type: "scale", targetIds: [shot.objects[1].id], start: 1.5, duration: 2, easing: "linear", properties: {} },
       { id: "animation-missing", type: "appear", targetIds: ["object-missing"], start: 1.5, duration: 1, easing: "linear", properties: {} },
     );
@@ -89,16 +89,16 @@ describe("deterministic composition critic", () => {
     expect(results.some(({ kind, objectIds }) => kind === "locked-operation-target" && objectIds.includes(shot.objects[1].id))).toBe(true);
   });
 
-  test("uses active-style geometry and ignores inherited-hidden leaves", () => {
+  test("uses authored geometry independently of active style and ignores inherited-hidden leaves", () => {
     const project = cloneSerializable(createCantorDemoProject());
     const shot = project.shots[1];
     const title = shot.objects[0];
-    title.transform = { ...title.transform, x: 883, y: 270, width: 120, height: 40, rotation: 0, scaleX: 1, scaleY: 1 };
+    title.transform = { ...title.transform, x: 910, y: 270, width: 120, height: 40, rotation: 0, scaleX: 1, scaleY: 1 };
     project.activeStyleId = EDITORIAL_INK_STYLE_ID;
     expect(critiqueProject(project, { shotId: shot.id }).some(({ kind, objectIds }) => kind === "outside-frame" && objectIds.includes(title.id))).toBe(true);
 
     project.activeStyleId = RAW_MANIM_STYLE_ID;
-    expect(critiqueProject(project, { shotId: shot.id }).some(({ kind, objectIds }) => kind === "outside-frame" && objectIds.includes(title.id))).toBe(false);
+    expect(critiqueProject(project, { shotId: shot.id }).some(({ kind, objectIds }) => kind === "outside-frame" && objectIds.includes(title.id))).toBe(true);
 
     const hiddenGroup: SceneObject = { id: "group-hidden-critic", type: "group", name: "Hidden critic group", locked: false, visible: false, transform: { x: 480, y: 270, width: 200, height: 80, rotation: 0, scaleX: 1, scaleY: 1 }, style: {}, properties: {} };
     shot.objects.unshift(hiddenGroup);
@@ -132,7 +132,7 @@ describe("Manim compiler", () => {
     expect(first.python).toContain("self.camera.frame.become(Rectangle(width=config.frame_width");
     expect(first.python).toContain("# Animation component 1: 0.0s to 1.5s");
     expect(first.python).toContain("Succession(Wait(0.7), FadeIn(pc_a_quiet_paradox");
-    expect(first.python).toContain("group=Group())");
+    expect(first.python).toContain("group=Group(), run_time=1.5)");
     expect(first.python).not.toContain("Succession(Wait(7.4)");
     expect(first.python).not.toMatch(/\beval\s*\(/);
     const parsed = spawnSync("python3", ["-c", "import ast,sys; ast.parse(sys.stdin.read())"], { input: first.python, encoding: "utf8" });
@@ -162,7 +162,7 @@ describe("Manim compiler", () => {
       { id: "animation-overlap-a", type: "fade-in", targetIds: [shot.objects[0].id], start: 0, duration: 2, easing: "linear", properties: {} },
       { id: "animation-overlap-b", type: "fade-in", targetIds: [shot.objects[1].id], start: 1, duration: 2, easing: "linear", properties: {} },
       { id: "animation-future-intro", type: "fade-in", targetIds: [shot.objects[2].id], start: 4, duration: 1, easing: "linear", properties: {} },
-      { id: "animation-future-emphasis", type: "emphasise", targetIds: [shot.objects[2].id], start: 6, duration: 1, easing: "linear", properties: { scale: 1.1 } },
+      { id: "animation-future-emphasis", type: "emphasise", targetIds: [shot.objects[2].id], start: 6, duration: 1, easing: "there-and-back", properties: { scale: 1.1 } },
     ];
 
     const python = compileManim(ProjectDocumentSchema.parse(project)).python;
@@ -179,8 +179,8 @@ describe("Manim compiler", () => {
     expect(futureIntro).toBeGreaterThan(futureIntroComponent);
     expect(futureEmphasisComponent).toBeGreaterThan(futureIntro);
     expect(futureEmphasis).toBeGreaterThan(futureEmphasisComponent);
-    expect(python.match(/self\.play\(/g)).toHaveLength(3);
-    expect(python.match(/        self\.wait\(1\.0\)/g)).toHaveLength(3);
+    expect(python.match(/self\.play\(/g)).toHaveLength(6);
+    expect(python.match(/self\.play\(Succession\(Wait\(1\.0\), group=Group\(\), run_time=1\.0\)\)/g)).toHaveLength(3);
     expect(python).not.toContain("Succession(Wait(4.0)");
     expect(python).not.toContain("Succession(Wait(6.0)");
   });
@@ -193,17 +193,16 @@ describe("Manim compiler", () => {
     shot.animations = [
       { id: "animation-a-intro", type: "fade-in", targetIds: [shot.objects[0].id], start: 0, duration: 1, easing: "linear", properties: {} },
       { id: "animation-b-bridge", type: "fade-in", targetIds: [shot.objects[1].id], start: 0.5, duration: 1.5, easing: "linear", properties: {} },
-      { id: "animation-a-later", type: "emphasise", targetIds: [shot.objects[0].id], start: 1.2, duration: 0.6, easing: "linear", properties: { scale: 1.1 } },
+      { id: "animation-a-later", type: "emphasise", targetIds: [shot.objects[0].id], start: 1.2, duration: 0.6, easing: "there-and-back", properties: { scale: 1.1 } },
     ];
 
     const python = compileManim(ProjectDocumentSchema.parse(project)).python;
     expect(python).toContain("# Animation component 1: 0.0s to 2.0s");
     expect(python).toContain("FadeIn(pc_the_contrast, run_time=1.0, rate_func=linear),");
-    expect(python).toContain("Succession(Wait(0.5), FadeIn(pc_uncountable, run_time=1.5, rate_func=linear), group=Group()),");
-    expect(python).toContain("Succession(Wait(1.2), Indicate(pc_the_contrast, color=\"#71402d\", scale_factor=1.1, run_time=0.6, rate_func=rate_functions.there_and_back), group=Group()),");
-    expect(python).toContain("            group=Group(),\n            lag_ratio=0,");
-    expect(python.match(/group=Group\(\)/g)).toHaveLength(3);
-    expect(python).toContain("        self.wait(1.0)");
+    expect(python).toContain("Succession(Wait(0.5), FadeIn(pc_uncountable, run_time=1.5, rate_func=linear), group=Group(), run_time=2.0),");
+    expect(python).toContain("Succession(Wait(1.2), Indicate(pc_the_contrast, color=\"#71402d\", scale_factor=1.1, run_time=0.6, rate_func=rate_functions.there_and_back), group=Group(), run_time=1.8),");
+    expect(python).toContain("group=Group(), lag_ratio=0, run_time=2.0))");
+    expect(python).toContain("self.play(Succession(Wait(1.0), group=Group(), run_time=1.0))");
   });
 
   test("uses an empty lazy group with an absolute target for delayed camera transforms", () => {
@@ -215,7 +214,7 @@ describe("Manim compiler", () => {
       { id: "animation-delayed-camera", type: "camera-focus", targetIds: [shot.objects[0].id], start: 0.5, duration: 1, easing: "linear", properties: { x: 500, y: 280, zoom: 1.08 } },
     ];
     const python = compileManim(ProjectDocumentSchema.parse(project)).python;
-    expect(python).toMatch(/Succession\(Wait\(0\.5\), Transform\(self\.camera\.frame, Rectangle\(width=config\.frame_width \/ 1\.08.*group=Group\(\)\)/);
+    expect(python).toMatch(/Succession\(Wait\(0\.5\), Transform\(self\.camera\.frame, Rectangle\(width=config\.frame_width \/ 1\.08.*group=Group\(\), run_time=1\.5\)/);
   });
 
   test("compiles sequential object and camera targets from their semantic state at animation start", () => {
@@ -241,9 +240,9 @@ describe("Manim compiler", () => {
     const reference = python.match(/(pc_ref_[a-f0-9_]+) = pc_the_contrast\.copy\(\)/)?.[1];
     expect(reference).toBeDefined();
     expect(python).toContain(`${reference}.copy().stretch(2.0, 0).stretch(2.0, 1)`);
-    expect(python).toContain(`${reference}.copy().stretch(4.5, 0).stretch(6.0, 1).rotate(10.0 * DEGREES).move_to([2.71111107, -0.62222221, 0])`);
-    expect(python).toContain(`${reference}.copy().stretch(4.5, 0).stretch(6.0, 1).rotate(10.0 * DEGREES).move_to([3.59999994, -0.17777777, 0])`);
-    expect(python).toContain(`${reference}.copy().stretch(4.5, 0).stretch(6.0, 1).rotate(20.0 * DEGREES).move_to([3.59999994, -0.17777777, 0])`);
+    expect(python).toContain(`${reference}.copy().stretch(4.5, 0).stretch(6.0, 1).rotate(10.0 * DEGREES).move_to([1.77777775, 0.0, 0])`);
+    expect(python).toContain(`${reference}.copy().stretch(4.5, 0).stretch(6.0, 1).rotate(10.0 * DEGREES).move_to([2.66666662, 0.44444444, 0])`);
+    expect(python).toContain(`${reference}.copy().stretch(4.5, 0).stretch(6.0, 1).rotate(20.0 * DEGREES).move_to([2.66666662, 0.44444444, 0])`);
     expect(python).toContain("Rectangle(width=config.frame_width / 2.0, height=config.frame_height / 2.0).move_to([0.88888888, 0.44444444, 0]).rotate(10.0 * DEGREES)");
     expect(python).toContain("Rectangle(width=config.frame_width / 2.0, height=config.frame_height / 2.0).move_to([0.88888888, 0.44444444, 0]).rotate(20.0 * DEGREES)");
   });
@@ -421,7 +420,7 @@ describe("Manim compiler", () => {
     shot.animations = [
       { id: "animation-hidden-motion-out", type: "fade-out", targetIds: [target.id], start: 0, duration: 1, easing: "linear", properties: {} },
       { id: "animation-hidden-motion-move", type: "move", targetIds: [target.id], start: 1.1, duration: 1, easing: "linear", properties: { x: 500 } },
-      { id: "animation-hidden-motion-emphasis", type: "emphasise", targetIds: [target.id], start: 2.2, duration: 0.5, easing: "linear", properties: { scale: 1.1 } },
+      { id: "animation-hidden-motion-emphasis", type: "emphasise", targetIds: [target.id], start: 2.2, duration: 0.5, easing: "there-and-back", properties: { scale: 1.1 } },
       { id: "animation-hidden-motion-in", type: "fade-in", targetIds: [target.id], start: 3, duration: 1, easing: "linear", properties: {} },
     ];
 
@@ -439,7 +438,7 @@ describe("Manim compiler", () => {
     expect(reference).toBeDefined();
     expect(python).toContain(`Transform(pc_hidden_motion, ${reference}.copy().set_opacity(0.0)`);
     expect(python).toContain(`${reference}.copy().move_to([0.29629629, 0.0, 0]).set_opacity(0.0)`);
-    expect(python).toContain("# Animation component 3: 2.2s to 2.7s\n        self.wait(0.1)\n        self.play(Wait(0.5))");
+    expect(python).toContain("# Animation component 3: 2.2s to 2.7s\n        self.play(Succession(Wait(0.1), group=Group(), run_time=0.1))\n        self.play(Succession(Wait(0.5), group=Group(), run_time=0.5))");
     expect(python).toContain(`${reference}.copy().move_to([0.29629629, 0.0, 0]).set_opacity(1.0)`);
     expect(python).not.toContain("FadeOut(pc_hidden_motion");
     expect(python).not.toContain("FadeIn(pc_hidden_motion");
@@ -524,12 +523,13 @@ describe("Manim compiler", () => {
     const python = compileManim(ProjectDocumentSchema.parse(project)).python;
     expect(python).toContain("# Animation component 1: 0.1s to 0.3s");
     expect(python).toContain("# Animation component 2: 0.3s to 0.5s");
-    expect(python.match(/        self\.play\(/g)).toHaveLength(2);
+    expect(python.match(/        self\.play\(/g)).toHaveLength(3);
+    expect(python).toContain("self.play(Succession(Wait(0.1), group=Group(), run_time=0.1))");
     expect(python).not.toContain("AnimationGroup(");
     expect(python).not.toMatch(/self\.wait\(-?0\.0\)/);
   });
 
-  test("estimates emitted duration literals at frame boundaries and never serializes a positive runtime as zero", () => {
+  test("bounds pinned-Manim sampling for canonical runtimes without inferred child-sum drift", () => {
     const project = cloneSerializable(createCantorDemoProject());
     const shot = project.shots[1];
     const object = shot.objects[0];
@@ -549,10 +549,12 @@ describe("Manim compiler", () => {
     const parsed = ProjectDocumentSchema.parse(project);
     const boundarySource = compileManim(parsed).python;
     expect(boundarySource).toContain("run_time=0.06666667");
+    // 1/15 canonicalizes to 0.06666667, which pinned Manim samples as two
+    // frames. The estimator bounds emitted runtime, not ideal rational time.
     expect(estimateManimTimelineDurationUpperBound(parsed, 15)).toBeCloseTo(2 / 15, 12);
 
-    shot.duration = 1e-10;
-    shot.animations[0].duration = 1e-10;
+    shot.duration = 1e-8;
+    shot.animations[0].duration = 1e-8;
     const tiny = ProjectDocumentSchema.parse(project);
     const tinySource = compileManim(tiny).python;
     expect(tinySource).toContain("run_time=1e-8");
@@ -560,10 +562,31 @@ describe("Manim compiler", () => {
     expect(estimateManimTimelineDurationUpperBound(tiny, 15)).toBeCloseTo(1 / 15, 12);
     expect(validateWithRendererPolicy(tinySource).status).toBe(0);
 
+    shot.duration = 1e-10;
+    shot.animations[0].duration = 1e-10;
+    expect(ProjectDocumentSchema.safeParse(project).success).toBe(false);
+
+    shot.duration = 1e-8;
     shot.animations = [];
     const tinyStatic = ProjectDocumentSchema.parse(project);
-    expect(compileManim(tinyStatic).python).toContain("self.wait(1e-8)");
+    expect(compileManim(tinyStatic).python).toContain("self.play(Succession(Wait(1e-8), group=Group(), run_time=1e-8))");
     expect(estimateManimTimelineDurationUpperBound(tinyStatic, 15)).toBeCloseTo(1 / 15, 12);
+
+    shot.duration = 0.3;
+    shot.animations = [];
+    shot.propertyTracks = [{
+      id: "track-explicit-succession-runtime",
+      target: { kind: "object", objectId: object.id },
+      property: "x",
+      keyframes: [
+        { id: "keyframe-runtime-a", time: 0, value: object.transform.x, interpolation: { kind: "eased", easing: "there-and-back" } },
+        { id: "keyframe-runtime-b", time: 0.1, value: object.transform.x + 10, interpolation: { kind: "linear" } },
+        { id: "keyframe-runtime-c", time: 0.3, value: object.transform.x + 20, interpolation: { kind: "linear" } },
+      ],
+    }];
+    const exactSuccession = ProjectDocumentSchema.parse(project);
+    expect(compileManim(exactSuccession).python).toContain("group=Group(), run_time=0.3)");
+    expect(estimateManimTimelineDurationUpperBound(exactSuccession, 10)).toBeCloseTo(0.3, 12);
   });
 
   test("tweens appear consistently in preview and generated Manim", () => {
@@ -629,7 +652,7 @@ describe("Manim compiler", () => {
     expect(validateWithRendererPolicy(result.python).status).toBe(0);
   });
 
-  test("shares deterministic active-style transforms between preview semantics and compiled targets", () => {
+  test("keeps authored transforms stable across styles in preview semantics and compiled targets", () => {
     const project = cloneSerializable(createCantorDemoProject());
     const editorial = project.styles.find(({ id }) => id === EDITORIAL_INK_STYLE_ID)!;
     const raw = project.styles.find(({ id }) => id === RAW_MANIM_STYLE_ID)!;
@@ -653,9 +676,9 @@ describe("Manim compiler", () => {
       properties: { content: "Style note" },
     };
 
-    expect(styledTransform(title, editorial)).toEqual({ ...title.transform, x: 128, y: 55.6, scaleX: 1.28, scaleY: 1.28 });
-    expect(styledTransform(annotation, editorial)).toEqual({ ...annotation.transform, x: 714, rotation: 10.72 });
-    expect(styledTransform(annotation, raw)).toEqual({ ...annotation.transform, x: 660.4 });
+    expect(styledTransform(title, editorial)).toEqual(title.transform);
+    expect(styledTransform(annotation, editorial)).toEqual(annotation.transform);
+    expect(styledTransform(annotation, raw)).toEqual(annotation.transform);
 
     const shot = project.shots[1];
     project.activeStyleId = RAW_MANIM_STYLE_ID;
@@ -666,9 +689,9 @@ describe("Manim compiler", () => {
       { id: "animation-centred-note-move", type: "move", targetIds: [annotation.id], start: 0, duration: 1, easing: "linear", properties: { x: 800 } },
     ];
     const python = compileManim(ProjectDocumentSchema.parse(project)).python;
-    expect(python).toContain("pc_style_note.move_to([2.67259255, 0.0, 0])");
+    expect(python).toContain("pc_style_note.move_to([3.25925921, 0.0, 0])");
     expect(python).toContain("pc_style_note.rotate(12.0 * DEGREES)");
-    expect(python).toMatch(/Transform\(pc_style_note, pc_ref_[a-f0-9_]+\.copy\(\)\.move_to\(\[3\.88740735, 0\.0, 0\]\)\.set_opacity\(1\.0\), run_time=1\.0, rate_func=linear\)/);
+    expect(python).toMatch(/Transform\(pc_style_note, pc_ref_[a-f0-9_]+\.copy\(\)\.move_to\(\[4\.74074067, 0\.0, 0\]\)\.set_opacity\(1\.0\), run_time=1\.0, rate_func=linear\)/);
   });
 
   test("bounds generated identifiers and disambiguates truncated and normalized name collisions", () => {
@@ -783,9 +806,9 @@ describe("Manim compiler", () => {
     expect(result.python).not.toContain("pc_hidden_top");
     expect(result.python).not.toContain("pc_hidden_nested_group");
     expect(result.python).not.toContain("pc_inherited_hidden_child");
-    expect(result.python).toContain("self.play(Wait(1.0))");
+    expect(result.python).toContain("self.play(Succession(Wait(1.0), group=Group(), run_time=1.0))");
     expect(result.python).toContain("self.play(FadeIn(pc_visible_group, run_time=1.0, rate_func=linear))");
-    expect(result.python).toContain("self.wait(1.0)");
+    expect(result.python.match(/self\.play\(Succession\(Wait\(1\.0\), group=Group\(\), run_time=1\.0\)\)/g)).toHaveLength(2);
     expect(result.diagnostics.filter(({ code }) => code === "ANIMATION_TARGET_HIDDEN").map(({ objectId }) => objectId)).toEqual([
       hiddenTop.id,
       hiddenChild.id,

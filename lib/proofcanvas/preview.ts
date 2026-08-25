@@ -1,8 +1,16 @@
-import { PROOFCANVAS_TIME_EPSILON, cloneSerializable, objectTypeSupportsStyleProperty, type CameraStateSchema, type VisualStyleProperty } from "./schema";
+import {
+  addTimelineTimes,
+  canonicalTimelineTime,
+  compareTimelineEventStarts,
+  compareTimelineTimes,
+  timelineTickFor,
+  timelineTimesEqual,
+} from "./frame";
+import { cloneSerializable, objectTypeSupportsStyleProperty, type CameraStateSchema, type VisualStyleProperty } from "./schema";
 import type { Easing, SceneAnimation, SceneObject, Shot } from "./schema";
 import type { z } from "zod";
 import { easingProgress } from "./easing";
-import { objectExistsAtTime, orderedPropertyTracks, samplePropertyTrack } from "./timeline";
+import { effectiveObjectLifetime, objectExistsAtTime, orderedPropertyTracks, samplePropertyTrack } from "./timeline";
 
 export interface PreviewObject extends SceneObject {
   preview: {
@@ -25,7 +33,14 @@ function clamp(value: number, min = 0, max = 1): number {
 export { easingProgress } from "./easing";
 
 function animationProgress(animation: SceneAnimation, time: number): number {
-  return easingProgress(animation.easing, (time - animation.start) / animation.duration);
+  const end = addTimelineTimes(animation.start, animation.duration);
+  if (compareTimelineTimes(time, animation.start) <= 0) return easingProgress(animation.easing, 0);
+  if (compareTimelineTimes(time, end) >= 0) return easingProgress(animation.easing, 1);
+  const startTick = timelineTickFor(animation.start);
+  return easingProgress(
+    animation.easing,
+    (timelineTickFor(time) - startTick) / (timelineTickFor(end) - startTick),
+  );
 }
 
 function numberProperty(properties: SceneAnimation["properties"], key: string, fallback: number): number {
@@ -34,7 +49,10 @@ function numberProperty(properties: SceneAnimation["properties"], key: string, f
 }
 
 function orderedAnimations(shot: Shot): SceneAnimation[] {
-  return [...shot.animations].sort((a, b) => a.start - b.start || a.id.localeCompare(b.id));
+  return [...shot.animations].sort((a, b) => compareTimelineEventStarts(
+    { start: a.start, end: addTimelineTimes(a.start, a.duration) },
+    { start: b.start, end: addTimelineTimes(b.start, b.duration) },
+  ) || a.id.localeCompare(b.id));
 }
 
 function descendantIds(shot: Shot, objectId: string): string[] {
@@ -127,9 +145,20 @@ function reduceShotPreview(
   shot: Shot,
   requestedTime: number,
   includeAnimation: (animation: SceneAnimation) => boolean,
+  phase: "inclusive" | "before-point-events" = "inclusive",
+  progressOverride?: Readonly<{ animationId: string; progress: number }>,
 ): ShotPreview {
-  const time = clamp(Number.isFinite(requestedTime) ? requestedTime : 0, 0, shot.duration);
+  const time = canonicalTimelineTime(clamp(Number.isFinite(requestedTime) ? requestedTime : 0, 0, shot.duration));
   const animations = orderedAnimations(shot).filter(includeAnimation);
+  const sameTime = timelineTimesEqual;
+  const existsAtPreviewPhase = (objectId: string) => {
+    if (phase === "before-point-events") {
+      const lifetime = effectiveObjectLifetime(shot, objectId);
+      if (lifetime && sameTime(time, lifetime.start)) return false;
+      if (lifetime && sameTime(time, lifetime.end)) return true;
+    }
+    return objectExistsAtTime(shot, objectId, time);
+  };
   const enteringTargets = initiallyHiddenByEntranceIds(shot);
   const visibleIds = effectivelyVisibleIds(shot);
   const authoredObjects = new Map(shot.objects.map((object) => [object.id, object]));
@@ -149,7 +178,7 @@ function reduceShotPreview(
     ...cloneSerializable(source),
     style: cloneSerializable(styleFor(source.id)),
     preview: {
-      opacity: visibleIds.has(source.id) && objectExistsAtTime(shot, source.id, time) && !enteringTargets.has(source.id) ? styleFor(source.id).opacity ?? 1 : 0,
+      opacity: visibleIds.has(source.id) && existsAtPreviewPhase(source.id) && !enteringTargets.has(source.id) ? styleFor(source.id).opacity ?? 1 : 0,
       revealProgress: enteringTargets.has(source.id) ? 0 : 1,
       emphasis: 0,
     },
@@ -157,8 +186,23 @@ function reduceShotPreview(
   const byId = new Map(objects.map((object) => [object.id, object]));
   let camera = cloneSerializable(shot.camera);
 
-  const applyTrack = (track: Shot["propertyTracks"][number]) => {
-    const sample = { target: track.target, property: track.property, value: samplePropertyTrack(track, time) };
+  const sampleBeforePointEvents = (track: Shot["propertyTracks"][number]): number | string | undefined => {
+    const first = track.keyframes[0];
+    if (phase !== "before-point-events") {
+      return compareTimelineTimes(time, first.time) >= 0 ? samplePropertyTrack(track, time) : undefined;
+    }
+    if (compareTimelineTimes(first.time, time) > 0) return undefined;
+    if (sameTime(first.time, time)) return undefined;
+    const rightIndex = track.keyframes.findIndex((keyframe, index) => index > 0 && sameTime(keyframe.time, time));
+    if (rightIndex < 0) return samplePropertyTrack(track, time);
+    const left = track.keyframes[rightIndex - 1];
+    if (left.interpolation.kind === "hold") return left.value;
+    if (left.interpolation.kind === "eased" && left.interpolation.easing === "there-and-back") return left.value;
+    return track.keyframes[rightIndex].value;
+  };
+
+  const applyTrack = (track: Shot["propertyTracks"][number], value: number | string) => {
+    const sample = { target: track.target, property: track.property, value };
     if (sample.target.kind === "camera" && typeof sample.value === "number") {
       camera = { ...camera, [sample.property]: sample.value };
       return;
@@ -177,7 +221,7 @@ function reduceShotPreview(
         const styledObject = byId.get(styledId);
         if (!styledObject) continue;
         if (!objectTypeSupportsStyleProperty(styledObject.type, sample.property as VisualStyleProperty)) continue;
-        if (styledId !== object.id && (!visibleIds.has(styledId) || !objectExistsAtTime(shot, styledId, time))) continue;
+        if (styledId !== object.id && (!visibleIds.has(styledId) || !existsAtPreviewPhase(styledId))) continue;
         if ((sample.property === "opacity" || sample.property === "strokeWidth") && typeof sample.value === "number") {
           styledObject.style = { ...styledObject.style, [sample.property]: sample.value };
           if (sample.property === "opacity" && visibleIds.has(styledId) && !enteringTargets.has(styledId)) {
@@ -192,7 +236,9 @@ function reduceShotPreview(
   };
 
   const applyAnimation = (animation: SceneAnimation) => {
-    const progress = animationProgress(animation, time);
+    const progress = progressOverride?.animationId === animation.id
+      ? progressOverride.progress
+      : animationProgress(animation, time);
     if (animation.type === "camera-focus") {
       camera = {
         x: camera.x + (numberProperty(animation.properties, "x", camera.x) - camera.x) * progress,
@@ -207,7 +253,7 @@ function reduceShotPreview(
       : animation.targetIds;
     for (const targetId of [...new Set(targetIds)]) {
       const object = byId.get(targetId);
-      if (!object || !visibleIds.has(targetId) || !objectExistsAtTime(shot, targetId, time)) continue;
+      if (!object || !visibleIds.has(targetId) || !existsAtPreviewPhase(targetId)) continue;
       const baseOpacity = object.style.opacity ?? 1;
       const oldGroupTransform = object.type === "group" ? { ...object.transform } : null;
       switch (animation.type) {
@@ -248,7 +294,11 @@ function reduceShotPreview(
         }
         case "emphasise": {
           const magnitude = numberProperty(animation.properties, "scale", 1.08) - 1;
-          const pulse = Math.sin(Math.PI * progress);
+          // schemaVersion 2 historically allowed authored easing here and
+          // previewed it through a sine pulse. Preserve that loaded-document
+          // behavior, while the supported intrinsic preset uses the exact
+          // Manim there-and-back envelope directly.
+          const pulse = animation.easing === "there-and-back" ? progress : Math.sin(Math.PI * progress);
           object.preview.emphasis = pulse;
           object.transform.scaleX *= 1 + magnitude * pulse;
           object.transform.scaleY *= 1 + magnitude * pulse;
@@ -263,16 +313,20 @@ function reduceShotPreview(
 
   const canonicalTracks = orderedPropertyTracks(shot);
   const trackOrder = new Map(canonicalTracks.map((track, index) => [track.id, index]));
+  const trackSamples = new Map(canonicalTracks.map((track) => [track.id, sampleBeforePointEvents(track)]));
   const events = [
-    ...animations.filter((animation) => time >= animation.start - PROOFCANVAS_TIME_EPSILON).map((animation) => ({
+    ...animations.filter((animation) => phase === "before-point-events"
+      ? compareTimelineTimes(animation.start, time) < 0
+        || (compareTimelineTimes(animation.start, time) === 0 && compareTimelineTimes(time, addTimelineTimes(animation.start, animation.duration)) >= 0)
+      : compareTimelineTimes(time, animation.start) >= 0).map((animation) => ({
       kind: "animation" as const,
-      authority: Math.min(time, animation.start + animation.duration),
+      authority: Math.min(time, addTimelineTimes(animation.start, animation.duration)),
       start: animation.start,
       id: animation.id,
       animation,
       order: 0,
     })),
-    ...canonicalTracks.filter((track) => time >= track.keyframes[0].time - PROOFCANVAS_TIME_EPSILON).map((track) => ({
+    ...canonicalTracks.filter((track) => trackSamples.get(track.id) !== undefined).map((track) => ({
       kind: "track" as const,
       authority: Math.min(time, track.keyframes.at(-1)!.time),
       start: track.keyframes[0].time,
@@ -280,13 +334,13 @@ function reduceShotPreview(
       track,
       order: trackOrder.get(track.id) ?? 0,
     })),
-  ].sort((left, right) => left.authority - right.authority
-    || left.start - right.start
+  ].sort((left, right) => compareTimelineTimes(left.authority, right.authority)
+    || compareTimelineTimes(left.start, right.start)
     || (left.kind === right.kind ? 0 : left.kind === "animation" ? -1 : 1)
     || left.order - right.order
     || left.id.localeCompare(right.id));
   for (const event of events) {
-    if (event.kind === "track") applyTrack(event.track);
+    if (event.kind === "track") applyTrack(event.track, trackSamples.get(event.track.id)!);
     else applyAnimation(event.animation);
   }
   return { time, objects, camera };
@@ -296,8 +350,13 @@ export function previewShotAtTime(shot: Shot, requestedTime: number): ShotPrevie
   return reduceShotPreview(shot, requestedTime, () => true);
 }
 
+/** State after positive intervals ending at `time`, before point/lifetime/start events at that time. */
+export function previewShotBeforePointEventsAtTime(shot: Shot, requestedTime: number): ShotPreview {
+  return reduceShotPreview(shot, requestedTime, () => true, "before-point-events");
+}
+
 /**
- * Semantic state after one animation finishes but before an epsilon-adjacent
+ * Semantic state after one animation finishes but before a tick-adjacent
  * animation begins. This prevents zero-progress boundary events such as
  * `appear` from changing the absolute compiler target of the prior track.
  */
@@ -305,10 +364,25 @@ export function previewShotAtAnimationEnd(
   shot: Shot,
   animation: Pick<SceneAnimation, "id" | "start" | "duration">,
 ): ShotPreview {
-  const end = animation.start + animation.duration;
+  const end = addTimelineTimes(animation.start, animation.duration);
   return reduceShotPreview(shot, end, (candidate) => (
-    candidate.id === animation.id || candidate.start < end - PROOFCANVAS_TIME_EPSILON
+    candidate.id === animation.id || compareTimelineTimes(candidate.start, end) < 0
   ));
+}
+
+/** State at a semantic animation's authored target (progress 1), independent of its easing endpoint. */
+export function previewShotAtAnimationPeak(
+  shot: Shot,
+  animation: Pick<SceneAnimation, "id" | "start" | "duration">,
+): ShotPreview {
+  const end = addTimelineTimes(animation.start, animation.duration);
+  return reduceShotPreview(
+    shot,
+    end,
+    (candidate) => candidate.id === animation.id || compareTimelineTimes(candidate.start, end) < 0,
+    "before-point-events",
+    { animationId: animation.id, progress: 1 },
+  );
 }
 
 export function previewObjectsAtTime(shot: Shot, time: number): PreviewObject[] {

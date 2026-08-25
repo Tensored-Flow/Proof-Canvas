@@ -84,30 +84,10 @@ export function styleById(styles: readonly StylePack[], styleId: string): StyleP
   return styles.find((style) => style.id === styleId);
 }
 
-export function styledTransform(object: Pick<SceneObject, "semanticRole" | "transform">, style: StylePack): SceneObject["transform"] {
-  if (style.layout.tendency === "centred") {
-    const centringStrength = 0.18;
-    return {
-      ...object.transform,
-      x: object.transform.x + (480 - object.transform.x) * centringStrength,
-    };
-  }
-  if (object.semanticRole === "annotation" || object.semanticRole === "marginal-note") {
-    return {
-      ...object.transform,
-      x: object.transform.x + style.annotation.offset,
-      rotation: object.transform.rotation - style.annotation.roughness * 4,
-    };
-  }
-  if (object.semanticRole !== "title") return { ...object.transform };
-  const factor = style.typography.titleScale;
-  return {
-    ...object.transform,
-    x: object.transform.x + (object.transform.width ?? 0) * object.transform.scaleX * (factor - 1) / 2,
-    y: object.transform.y + (object.transform.height ?? 0) * object.transform.scaleY * (factor - 1) / 2,
-    scaleX: object.transform.scaleX * factor,
-    scaleY: object.transform.scaleY * factor,
-  };
+export function styledTransform(object: Pick<SceneObject, "transform">, _style: StylePack): SceneObject["transform"] {
+  // Geometry is authored project state. Style packs provide visual tokens and
+  // insertion defaults; selecting or editing one must never move existing work.
+  return { ...object.transform };
 }
 
 export function transformCorners(transform: SceneObject["transform"]): Array<{ x: number; y: number }> {

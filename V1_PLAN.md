@@ -59,6 +59,21 @@ Acceptance criteria: AC-05, AC-06, remaining AC-07 and AC-08, AC-11, AC-16.
 - Complete object/component/property coverage and Style Lab with three materially distinct styles.
 - Validate required desktop and portrait-authoring viewports in a real browser.
 
+### Milestone 3.1 — shared core and schema-v3 timeline
+
+- Make logical frame dimensions authoritative for landscape, portrait, and square authoring while
+  keeping geometry independent from editable project-local style starting points.
+- Add typed document/shot/marker/style/easing operations, conservative split/merge, delayed and
+  hold keyframe scheduling, partial lifetimes, and bounded custom cubic-Bezier compilation.
+- Move compiler-bound persisted time from schema-v2 floats to schema-v3 10 ns ticks. The database
+  migration preserves exact canonical V2 bytes and rewrites a project or checkpoint only when all
+  authored temporal relations remain injective and ordered after quantization.
+- Quarantine only the individual loss-prone document. A current project becomes read-only with an
+  authenticated byte-exact JSON export; a loss-prone historical checkpoint blocks only its own
+  recovery and export remains available even if its ready parent project is later soft-deleted.
+- Keep legacy render-unsupported easing combinations loadable, but reject them at every new
+  authoring/copy/provider ingress. Permit unrelated edits, deletion, or the exact easing-only repair.
+
 ## Milestone 4 — assets, packages, audio, and captions
 
 Acceptance criteria: AC-09 and AC-10.
