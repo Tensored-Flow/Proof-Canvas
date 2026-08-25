@@ -1,13 +1,15 @@
 'use client'
 
 import katex from 'katex'
-import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { previewShotAtTime } from '@/lib/proofcanvas/preview'
 import { addTimelineTimes, compareTimelineTimes, logicalFrameFor, type LogicalFrame } from '@/lib/proofcanvas/frame'
 import { analyzeMathProperties, texContentSegments, type MathMode } from '@/lib/proofcanvas/latex'
 import { applyOperations, effectiveLockOwner } from '@/lib/proofcanvas/operations'
 import { analyzeGraphExpression } from '@/lib/proofcanvas/graphExpression'
 import { objectTypeSupportsStyleProperty, type ProjectDocument, type SceneObject, type Shot, type StylePack } from '@/lib/proofcanvas/schema'
+import { resolveArrowPreviewGeometry, resolveShapeDimensions, resolveShapeGeometry, resolveShapePaint } from '@/lib/proofcanvas/shapeGeometry'
+import { PROOFCANVAS_SHAPE_PRESET_MIME, shapePresetById, type ShapePresetId } from '@/lib/proofcanvas/shapePresets'
 import { resolvedGraphStroke, styledDisplayTransform, styledTransform } from '@/lib/proofcanvas/styles'
 
 type Gesture = {
@@ -42,6 +44,7 @@ export interface CanvasStageProps {
   onSelect(ids: string[]): void
   onCommitTransforms(updates: Array<{ objectId: string; transform: Partial<SceneObject['transform']> }>, label: string): void
   onCommitKeyboardTransform(intent: CanvasKeyboardTransformIntent): void
+  onInsertShapePresetAt?(presetId: ShapePresetId, point: { x: number; y: number }): void
   onNotice(message: string): void
 }
 
@@ -334,11 +337,12 @@ export function resolveCanvasKeyboardTransformIntent(
   }
 }
 
-function RenderObject({ object, style, selected, effectivelyLocked, temporallyTransformed, markerId = 'pc-arrow', interactive = true, onPointerDown }: { object: ReturnType<typeof previewShotAtTime>['objects'][number]; style: StylePack; selected: boolean; effectivelyLocked: boolean; temporallyTransformed: boolean; markerId?: string; interactive?: boolean; onPointerDown?(event: ReactPointerEvent<SVGElement>, object: SceneObject): void }) {
+function RenderObject({ object, style, selected, effectivelyLocked, temporallyTransformed, tipLengthLimit, interactive = true, onPointerDown }: { object: ReturnType<typeof previewShotAtTime>['objects'][number]; style: StylePack; selected: boolean; effectivelyLocked: boolean; temporallyTransformed: boolean; tipLengthLimit: number; interactive?: boolean; onPointerDown?(event: ReactPointerEvent<SVGElement>, object: SceneObject): void }) {
   const transform = styledTransform(object, style)
-  const width = transform.width ?? 60
-  const height = transform.height ?? 30
+  const { width, height } = resolveShapeDimensions({ transform })
   const opacity = object.preview.opacity
+  const geometry = resolveShapeGeometry({ ...object, transform }, style)
+  const paint = resolveShapePaint(object, style)
   const common = {
     transform: `translate(${transform.x} ${transform.y}) rotate(${transform.rotation}) scale(${transform.scaleX} ${transform.scaleY})`,
     opacity,
@@ -355,9 +359,9 @@ function RenderObject({ object, style, selected, effectivelyLocked, temporallyTr
       style: { cursor: effectivelyLocked || temporallyTransformed ? 'not-allowed' : 'move' },
     } : { 'aria-hidden': true, pointerEvents: 'none' as const }),
   }
-  const fill = objectTypeSupportsStyleProperty(object.type, 'fill') ? object.style.fill ?? (object.type === 'rectangle' ? style.colors.ink : object.type === 'circle' ? style.colors.background : 'none') : 'none'
-  const stroke = objectTypeSupportsStyleProperty(object.type, 'stroke') ? object.style.stroke ?? style.colors.ink : 'none'
-  const strokeWidth = objectTypeSupportsStyleProperty(object.type, 'strokeWidth') ? object.style.strokeWidth ?? style.strokes.regular : 0
+  const fill = paint ? paint.fill ?? 'none' : objectTypeSupportsStyleProperty(object.type, 'fill') ? object.style.fill ?? 'none' : 'none'
+  const stroke = paint ? paint.stroke : objectTypeSupportsStyleProperty(object.type, 'stroke') ? object.style.stroke ?? style.colors.ink : 'none'
+  const strokeWidth = paint ? paint.strokeWidth : objectTypeSupportsStyleProperty(object.type, 'strokeWidth') ? object.style.strokeWidth ?? style.strokes.regular : 0
   switch (object.type) {
     case 'text':
     case 'math':
@@ -369,10 +373,35 @@ function RenderObject({ object, style, selected, effectivelyLocked, temporallyTr
         </foreignObject>
       )
     case 'circle': return <ellipse {...common} rx={width / 2} ry={height / 2} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
-    case 'rectangle': return <rect {...common} x={-width / 2} y={-height / 2} width={width} height={height} rx={style.corners.object} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
-    case 'line': return <g {...common}><line x1={-width / 2} x2={width / 2} y1={0} y2={0} stroke={stroke} strokeWidth={strokeWidth} pointerEvents="none"/><line x1={-width / 2} x2={width / 2} y1={0} y2={0} stroke="transparent" strokeWidth={Math.max(16, strokeWidth)} pointerEvents="stroke"/></g>
-    case 'arrow': return <g {...common}><line x1={-width / 2} x2={width / 2} y1={0} y2={0} stroke={stroke} strokeWidth={strokeWidth} markerEnd={`url(#${markerId})`} pointerEvents="none"/><line x1={-width / 2} x2={width / 2} y1={0} y2={0} stroke="transparent" strokeWidth={Math.max(16, strokeWidth)} pointerEvents={interactive ? 'stroke' : 'none'}/></g>
-    case 'brace': return <g {...common}><path d={`M ${-width / 2} 0 C ${-width / 4} ${height / 2}, ${-width / 4} ${height / 2}, 0 ${height / 2} C ${width / 4} ${height / 2}, ${width / 4} ${height / 2}, ${width / 2} 0`} fill="none" stroke={stroke} strokeWidth={strokeWidth}/><text y={height + 12} textAnchor="middle" fill={object.style.color ?? style.colors.warmAccent} fontSize={object.style.fontSize ?? 22}>{String(object.properties.label ?? '')}</text></g>
+    case 'rectangle': return <rect {...common} x={-width / 2} y={-height / 2} width={width} height={height} rx={geometry?.kind === 'rectangle' ? geometry.cornerRadius : 0} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+    case 'line': return <g {...common}><line x1={-width / 2} x2={width / 2} y1={0} y2={0} stroke={stroke} strokeWidth={strokeWidth} strokeLinecap={geometry?.kind === 'line' ? geometry.lineCap : 'butt'} pointerEvents="none"/><line x1={-width / 2} x2={width / 2} y1={0} y2={0} stroke="transparent" strokeWidth={Math.max(16, strokeWidth)} pointerEvents="stroke"/></g>
+    case 'arrow': {
+      const arrow = geometry?.kind === 'arrow' ? geometry : null
+      const tipGeometry = resolveArrowPreviewGeometry(
+        width,
+        arrow?.tipShape ?? 'triangle',
+        arrow?.tipSizeRatio ?? 0.25,
+        tipLengthLimit,
+      )
+      const tip = tipGeometry.kind === 'circle'
+        ? <circle data-arrow-tip-shape="circle" cx={tipGeometry.centerX} cy={0} r={tipGeometry.radius} fill={stroke} stroke={stroke} strokeWidth={strokeWidth}/>
+        : <polygon data-arrow-tip-shape={tipGeometry.kind} points={tipGeometry.points.map(({ x, y }) => `${x},${y}`).join(' ')} fill={stroke} stroke={stroke} strokeWidth={strokeWidth}/>
+      return <g {...common} data-arrow-tip-length={tipGeometry.tipLength} data-arrow-shaft-end={tipGeometry.shaftEndX}><line x1={-width / 2} x2={tipGeometry.shaftEndX} y1={0} y2={0} stroke={stroke} strokeWidth={strokeWidth} strokeLinecap={arrow?.lineCap ?? 'butt'} pointerEvents="none"/>{tip}<line x1={-width / 2} x2={tipGeometry.tipX} y1={0} y2={0} stroke="transparent" strokeWidth={Math.max(16, strokeWidth)} pointerEvents={interactive ? 'stroke' : 'none'}/></g>
+    }
+    case 'brace': {
+      const brace = geometry?.kind === 'brace' ? geometry : { kind: 'brace' as const, direction: 'below' as const, spacing: 12 }
+      const fontSize = object.style.fontSize ?? 22
+      if (brace.direction === 'left' || brace.direction === 'right') {
+        const sign = brace.direction === 'right' ? 1 : -1
+        const amplitude = sign * width / 2
+        const offset = sign * brace.spacing
+        return <g {...common}><path d={`M ${offset} ${-height / 2} C ${offset + amplitude} ${-height / 4}, ${offset + amplitude} ${-height / 4}, ${offset + amplitude} 0 C ${offset + amplitude} ${height / 4}, ${offset + amplitude} ${height / 4}, ${offset} ${height / 2}`} fill="none" stroke={stroke} strokeWidth={strokeWidth}/><text x={sign * (width + brace.spacing)} y={0} textAnchor={sign > 0 ? 'start' : 'end'} dominantBaseline="middle" fill={paint?.labelColor ?? style.colors.warmAccent} fontSize={fontSize}>{String(object.properties.label ?? '')}</text></g>
+      }
+      const sign = brace.direction === 'below' ? 1 : -1
+      const amplitude = sign * height / 2
+      const offset = sign * brace.spacing
+      return <g {...common}><path d={`M ${-width / 2} ${offset} C ${-width / 4} ${offset + amplitude}, ${-width / 4} ${offset + amplitude}, 0 ${offset + amplitude} C ${width / 4} ${offset + amplitude}, ${width / 4} ${offset + amplitude}, ${width / 2} ${offset}`} fill="none" stroke={stroke} strokeWidth={strokeWidth}/><text y={sign * (height + brace.spacing)} textAnchor="middle" fill={paint?.labelColor ?? style.colors.warmAccent} fontSize={fontSize}>{String(object.properties.label ?? '')}</text></g>
+    }
     case 'axes': return <g {...common} stroke={stroke} strokeWidth={strokeWidth}><line x1={-width / 2} x2={width / 2}/><line y1={-height / 2} y2={height / 2}/>{[-2,-1,1,2].map((tick) => <line key={`x${tick}`} x1={tick * width / 5} x2={tick * width / 5} y1={-3} y2={3}/>)}</g>
     case 'graph': {
       const graphStroke = resolvedGraphStroke(object, style)
@@ -404,18 +433,16 @@ export interface CanvasThumbnailProps {
 export const CanvasThumbnail = memo(function CanvasThumbnail({ aspectRatio, shot, previewStyle }: CanvasThumbnailProps) {
   const frame = useMemo(() => logicalFrameFor(aspectRatio), [aspectRatio])
   const preview = useMemo(() => previewShotAtTime(shot, 0), [shot])
-  const markerId = `pc-thumbnail-arrow-${useId().replaceAll(':', '')}`
   const visibleObjects = preview.objects.filter((object) => object.preview.opacity > 0.001)
   return <svg className="pc-shot-thumbnail" viewBox={`0 0 ${frame.width} ${frame.height}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true" focusable="false" data-thumbnail-shot-id={shot.id} data-thumbnail-time="0">
-    <defs><marker id={markerId} markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill={previewStyle.colors.ink}/></marker></defs>
     <rect width={frame.width} height={frame.height} fill={previewStyle.colors.background}/>
     <g transform={`translate(${frame.centerX} ${frame.centerY}) scale(${preview.camera.zoom}) rotate(${-preview.camera.rotation}) translate(${-preview.camera.x} ${-preview.camera.y})`}>
-      {visibleObjects.map((object) => <RenderObject key={object.id} object={object} style={previewStyle} selected={false} effectivelyLocked={false} temporallyTransformed={false} markerId={markerId} interactive={false}/>) }
+      {visibleObjects.map((object) => <RenderObject key={object.id} object={object} style={previewStyle} selected={false} effectivelyLocked={false} temporallyTransformed={false} tipLengthLimit={0.35 * frame.width / frame.manimWidth} interactive={false}/>) }
     </g>
   </svg>
 }, (previous, next) => previous.visualRevision === next.visualRevision)
 
-export default function CanvasStage({ project, shot, playhead, previewStyle, projectRevision, previewQuality, selectedIds, authoringEnabled = true, onSelect, onCommitTransforms, onCommitKeyboardTransform, onNotice }: CanvasStageProps) {
+export default function CanvasStage({ project, shot, playhead, previewStyle, projectRevision, previewQuality, selectedIds, authoringEnabled = true, onSelect, onCommitTransforms, onCommitKeyboardTransform, onInsertShapePresetAt, onNotice }: CanvasStageProps) {
   const svgRef = useRef<SVGSVGElement | null>(null)
   const gestureRef = useRef<Gesture | null>(null)
   const [previewTransforms, setPreviewTransforms] = useState<Map<string, SceneObject['transform']>>(new Map())
@@ -423,6 +450,25 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, pro
   const [guides, setGuides] = useState<{ x?: number; y?: number }>({})
   const frame = useMemo(() => logicalFrameFor(project.settings.aspectRatio), [project.settings.aspectRatio])
   const preview = useMemo(() => previewShotAtTime(shot, playhead), [shot, playhead])
+  const dropShapePreset = (event: ReactDragEvent<SVGSVGElement>) => {
+    if (!Array.from(event.dataTransfer.types).includes(PROOFCANVAS_SHAPE_PRESET_MIME)) return
+    event.preventDefault()
+    event.stopPropagation()
+    const presetId = event.dataTransfer.getData(PROOFCANVAS_SHAPE_PRESET_MIME)
+    if (!authoringEnabled) {
+      onNotice('Pause playback before dropping a shape.')
+      return
+    }
+    if (!onInsertShapePresetAt) {
+      onNotice('Shape insertion is not available on this canvas.')
+      return
+    }
+    if (!shapePresetById(presetId)) {
+      onNotice('That shape preset is not available.')
+      return
+    }
+    onInsertShapePresetAt(presetId as ShapePresetId, cameraPoint(svgPoint(event.currentTarget, event), preview.camera, frame))
+  }
   const objects = preview.objects.map((object) => previewTransforms.has(object.id) ? { ...object, transform: previewTransforms.get(object.id)! } : object)
   const visibleObjects = objects.filter((object) => object.preview.opacity > 0.001)
   const primary = visibleObjects.find(({ id }) => id === selectedIds.at(-1))
@@ -686,12 +732,11 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, pro
   const motionExceptionCount = shot.animations.filter(({ easing }) => easing !== previewStyle.motion.easing).length
   return (
     <div className="pc-stage-wrap" data-testid="proofcanvas-stage" style={{ background: previewStyle.colors.background, aspectRatio: `${frame.width} / ${frame.height}`, '--pc-stage-ratio': frame.width / frame.height } as CSSProperties}>
-      <svg ref={svgRef} className="pc-stage" viewBox={`0 0 ${frame.width} ${frame.height}`} style={{ '--pc-stage-aspect': `${frame.width} / ${frame.height}` } as CSSProperties} data-preview-quality={previewQuality} data-authoring-enabled={authoringEnabled ? 'true' : 'false'} role="group" tabIndex={0} aria-disabled={!authoringEnabled} aria-label={`${shot.name} canvas at ${playhead.toFixed(1)} seconds${authoringEnabled ? '' : '; playback preview, editing disabled'}`} onPointerDown={(event) => { if (authoringEnabled && event.target === event.currentTarget) { event.currentTarget.focus({ preventScroll: true }); onSelect([]) } }} onPointerMove={onPointerMove} onPointerUp={endGesture} onPointerCancel={cancelPointerGesture}>
-        <defs><marker id="pc-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill={previewStyle.colors.ink}/></marker></defs>
+      <svg ref={svgRef} className="pc-stage" viewBox={`0 0 ${frame.width} ${frame.height}`} style={{ '--pc-stage-aspect': `${frame.width} / ${frame.height}` } as CSSProperties} data-preview-quality={previewQuality} data-authoring-enabled={authoringEnabled ? 'true' : 'false'} data-shape-drop-enabled={authoringEnabled && onInsertShapePresetAt ? 'true' : 'false'} role="group" tabIndex={0} aria-disabled={!authoringEnabled} aria-label={`${shot.name} canvas at ${playhead.toFixed(1)} seconds${authoringEnabled ? '' : '; playback preview, editing disabled'}`} onDragOver={(event) => { if (Array.from(event.dataTransfer.types).includes(PROOFCANVAS_SHAPE_PRESET_MIME)) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = authoringEnabled && onInsertShapePresetAt ? 'copy' : 'none' } }} onDrop={dropShapePreset} onPointerDown={(event) => { if (authoringEnabled && event.target === event.currentTarget) { event.currentTarget.focus({ preventScroll: true }); onSelect([]) } }} onPointerMove={onPointerMove} onPointerUp={endGesture} onPointerCancel={cancelPointerGesture}>
         <g data-pc-camera-transform transform={`translate(${frame.centerX} ${frame.centerY}) scale(${preview.camera.zoom}) rotate(${-preview.camera.rotation}) translate(${-preview.camera.x} ${-preview.camera.y})`}>
           {guides.x !== undefined && <line className="pc-snap-guide" data-guide-axis="x" x1={guides.x} x2={guides.x} y1={0} y2={frame.height}/>}
           {guides.y !== undefined && <line className="pc-snap-guide" data-guide-axis="y" x1={0} x2={frame.width} y1={guides.y} y2={guides.y}/>}
-          {visibleObjects.map((object) => <RenderObject key={object.id} object={object} style={previewStyle} selected={selectedIds.includes(object.id)} effectivelyLocked={Boolean(effectiveLockOwner(shot, object))} temporallyTransformed={temporalPoseIds.has(object.id)} interactive={authoringEnabled} onPointerDown={beginGesture}/>) }
+          {visibleObjects.map((object) => <RenderObject key={object.id} object={object} style={previewStyle} selected={selectedIds.includes(object.id)} effectivelyLocked={Boolean(effectiveLockOwner(shot, object))} temporallyTransformed={temporalPoseIds.has(object.id)} tipLengthLimit={0.35 * frame.width / frame.manimWidth} interactive={authoringEnabled} onPointerDown={beginGesture}/>) }
           {authoringEnabled && primary?.type === 'group' && primaryTransform && <rect
             data-group-move-target={primary.id}
             aria-hidden="true"

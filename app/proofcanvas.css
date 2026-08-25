@@ -98,6 +98,13 @@
 .pc-insert-grid button { display: grid; min-height: 54px; place-items: center; gap: 1px; }
 .pc-insert-grid button > span { color: var(--pc-warm); font-family: Georgia, serif; font-size: 19px; line-height: 1; }
 .pc-insert-grid button b { font-size: 10px; font-weight: 600; text-transform: capitalize; }
+.pc-shape-preset-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+.proofcanvas-app .pc-shape-preset-card { display: grid; min-width: 0; min-height: 76px; grid-template-columns: 24px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); align-content: start; gap: 2px 5px; padding: 6px; text-align: left; }
+.pc-shape-preset-card > span { grid-row: 1 / span 2; align-self: center; color: var(--pc-warm); font-family: Georgia, serif; font-size: 20px; line-height: 1; text-align: center; }
+.pc-shape-preset-card b { overflow: hidden; font-size: 10px; font-weight: 650; line-height: 1.2; text-overflow: ellipsis; }
+.pc-shape-preset-card small { display: -webkit-box; overflow: hidden; color: var(--pc-muted); font-size: 8px; line-height: 1.2; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.pc-shape-preset-card[draggable="true"] { cursor: grab; }
+.pc-shape-preset-card[data-dragging="true"] { border-color: var(--pc-warm); background: #e4d6c5; opacity: .72; }
 .pc-component-list { display: grid; gap: 5px; }
 .pc-component-list button { display: grid; min-height: 48px; gap: 2px; text-align: left; }
 .pc-component-list button b { font-family: var(--font-display), Georgia, serif; font-size: 13px; }
@@ -178,6 +185,12 @@
 .pc-field-grid .pc-inspector-note { color: var(--pc-muted); font-family: var(--font-mono), monospace; font-size: 9px; line-height: 1.35; }
 .pc-field-grid .pc-field-action { align-self: end; }
 .pc-field-grid .pc-check { flex-direction: row; align-items: center; color: var(--pc-ink); font-family: inherit; font-size: 11px; text-transform: none; }
+.pc-shape-properties { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 2px 0; border: 1px solid var(--pc-rule-soft); border-radius: 4px; padding: 7px; }
+.pc-shape-properties legend { padding: 0 4px; font-family: var(--font-display), Georgia, serif; font-size: 13px; text-transform: none; }
+.pc-shape-properties > label { display: grid; gap: 2px; color: var(--pc-muted); font-family: var(--font-mono), monospace; font-size: 9px; text-transform: uppercase; }
+.pc-shape-properties > h3 { border-top: 1px solid var(--pc-rule-soft); padding-top: 6px; font-family: var(--font-display), Georgia, serif; font-size: 12px; font-weight: 620; text-transform: none; }
+.pc-shape-repair { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; border-left: 2px solid var(--pc-warm); padding-left: 6px; }
+.pc-shape-repair p { margin: 0; color: var(--pc-warm); font-family: var(--font-mono), monospace; font-size: 9px; line-height: 1.3; }
 .pc-check input { width: auto; }
 .pc-lifetime-inspector { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 0 0 9px; border: 1px solid var(--pc-rule-soft); border-radius: 4px; padding: 7px; }
 .pc-lifetime-inspector legend { padding: 0 4px; font-family: var(--font-display), Georgia, serif; font-size: 13px; }

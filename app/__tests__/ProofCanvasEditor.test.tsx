@@ -758,7 +758,6 @@ describe('ProofCanvas editor client', () => {
     const tabs = [
       ['Text', [['Add text', 'text']]],
       ['Math', [['Add math', 'math'], ['Add brace', 'brace']]],
-      ['Shapes', [['Add circle', 'circle'], ['Add rectangle', 'rectangle'], ['Add line', 'line'], ['Add arrow', 'arrow']]],
       ['Graphs', [['Add coordinate axes', 'axes'], ['Add function graph', 'graph']]],
     ] as const
     for (const [tab, objectControls] of tabs) {
@@ -768,6 +767,15 @@ describe('ProofCanvas editor client', () => {
         expect(container.querySelector(`[data-object-type="${type}"]`)).toBeInTheDocument()
       }
     }
+    fireEvent.click(screen.getByRole('tab', { name: 'Shapes' }))
+    for (const label of [
+      'Rectangle', 'Rounded rectangle', 'Circle', 'Dot / point', 'Line', 'Arrow',
+      'Brace', 'Bracket', 'Highlight box', 'Underline', 'Cross-out',
+    ]) fireEvent.click(screen.getByRole('button', { name: `Insert ${label}` }))
+    for (const name of [
+      'Rectangle', 'Rounded rectangle', 'Circle', 'Dot / point', 'Line', 'Arrow',
+      'Brace', 'Bracket', 'Highlight box', 'Underline', 'Cross-out',
+    ]) expect(screen.getByRole('treeitem', { name: new RegExp(`^${name.replace('/', '\\/')};`) })).toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: 'Media' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Add raster image' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Add SVG' })).not.toBeInTheDocument()

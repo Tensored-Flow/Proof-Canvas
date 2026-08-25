@@ -169,7 +169,10 @@ LATEX_CONFORMANCE = json.loads((Path(__file__).with_name("latex_conformance.json
 @pytest.mark.parametrize("vector", LATEX_CONFORMANCE, ids=lambda vector: vector["id"])
 def test_shared_latex_conformance(vector: dict[str, object]) -> None:
     renderer = "MathTex" if vector["renderer"] == "mathtex" else "Tex"
-    statement = f"        pc_math = {renderer}({json.dumps(vector['content'])}, font_size=34.0)\n"
+    statement = (
+        f"        pc_math = {renderer}({json.dumps(vector['content'])}, font_size=34.0)\n"
+        "        pc_math.shift([0.0, 0.0, 0])\n"
+    )
     if vector["accepted"]:
         validate(source_with(statement))
     else:
@@ -178,16 +181,25 @@ def test_shared_latex_conformance(vector: dict[str, object]) -> None:
 
 
 def test_accepts_safe_mathtex_compiler_dialect() -> None:
-    validate(source_with('        pc_math = MathTex(r"\\\\frac{1}{2} \\le \\pi", font_size=34.0)\n'))
+    validate(source_with(
+        '        pc_math = MathTex(r"\\\\frac{1}{2} \\le \\pi", font_size=34.0)\n'
+        "        pc_math.shift([0.0, 0.0, 0])\n"
+    ))
 
 
 def test_accepts_safe_tex_compiler_dialect() -> None:
-    validate(source_with('        pc_text = Tex(r"Euler wrote $e^{i\\\\pi}+1=0$.", font_size=34.0)\n'))
+    validate(source_with(
+        '        pc_text = Tex(r"Euler wrote $e^{i\\\\pi}+1=0$.", font_size=34.0)\n'
+        "        pc_text.shift([0.0, 0.0, 0])\n"
+    ))
 
 
 @pytest.mark.parametrize("font_size", [1.0, 256.0])
 def test_accepts_schema_font_size_boundaries(font_size: float) -> None:
-    validate(source_with(f'        pc_math = MathTex(r"x", font_size={font_size})\n'))
+    validate(source_with(
+        f'        pc_math = MathTex(r"x", font_size={font_size})\n'
+        "        pc_math.shift([0.0, 0.0, 0])\n"
+    ))
 
 
 def test_rejects_unsafe_tex_content() -> None:
@@ -247,7 +259,7 @@ def test_rejects_mathtex_arguments_outside_compiler_dialect(arguments: str) -> N
 def test_accepts_exact_cubic_bezier_helper_only_in_transform_rate_func() -> None:
     validate(source_with_cubic_helper(
         "        pc_box = Rectangle(width=1.0, height=1.0)\n"
-        "        pc_box.move_to([0.0, 0.0, 0])\n"
+        "        pc_box.shift([0.0, 0.0, 0])\n"
         "        pc_ref = pc_box.copy()\n"
         "        self.play(Transform(pc_box, pc_ref.copy().set_opacity(1.0), run_time=1.0, "
         "rate_func=lambda x: proofcanvas_cubic_bezier(x, 0.25, -1.0, 0.75, 2.0)))\n"
@@ -331,7 +343,7 @@ def test_rejects_cubic_lambda_without_exact_helper() -> None:
 def test_rejects_positional_only_custom_easing_lambda() -> None:
     source = source_with_cubic_helper(
         "        pc_box = Rectangle(width=1.0, height=1.0)\n"
-        "        pc_box.move_to([0.0, 0.0, 0])\n"
+        "        pc_box.shift([0.0, 0.0, 0])\n"
         "        pc_ref = pc_box.copy()\n"
         "        self.play(Transform(pc_box, pc_ref.copy().set_opacity(1.0), run_time=1.0, "
         "rate_func=lambda extra, /, x: proofcanvas_cubic_bezier(x, 0.2, 0.0, 0.8, 1.0)))\n"
@@ -372,6 +384,7 @@ def test_accepts_exact_literal_graph_geometry_dialect(decorators: str) -> None:
         "VMobject().set_points_as_corners([[-1.0, 0.5, 0.0], [0.0, 0.0, 0.0]]), "
         "VMobject().set_points_as_corners([[0.1, -0.2, 0.0], [1.0, 0.5, 0.0]])"
         f"){decorators}\n"
+        "        pc_graph.shift([0.0, 0.0, 0])\n"
     ))
 
 
@@ -387,7 +400,7 @@ def test_accepts_exact_literal_graph_geometry_dialect(decorators: str) -> None:
         "        pc_graph = VGroup(VMobject().set_points_as_corners([[0.0, 0.0, 1.0], [1.0, 1.0, 0.0]]))\n",
         "        pc_graph = VGroup(VMobject().set_points_as_corners([[10000.1, 0.0, 0.0], [1.0, 1.0, 0.0]]))\n",
         "        pc_graph = VGroup(VMobject().set_points_as_corners(points=[[0.0, 0.0, 0.0], [1.0, 1.0, 0.0]]))\n",
-        "        pc_graph = VMobject()\n        pc_graph_method = pc_graph.set_points_as_corners\n",
+        "        pc_graph = VMobject()\n        pc_graph.shift([0.0, 0.0, 0])\n        pc_graph_method = pc_graph.set_points_as_corners\n",
     ],
 )
 def test_rejects_literal_graph_geometry_outside_exact_compiler_shape(statement: str) -> None:
@@ -447,23 +460,332 @@ def test_accepts_exact_scene_object_camera_and_copy_target_dialect() -> None:
         '        self.next_section("Exact compiler dialect")\n'
         '        self.camera.background_color = "#ffffff"\n'
         '        self.camera.frame.become(Rectangle(width=config.frame_width / 0.05, height=config.frame_height / 0.05).move_to([68.0, -68.0, 0]).rotate(-3600.0 * DEGREES))\n'
-        '        pc_box = Rectangle(width=1.0, height=1.0).set_fill("#abcdef", opacity=1.0).set_stroke("#123456", width=64.0).set_opacity(1.0)\n'
-        '        pc_box.move_to([-68.0, 68.0, 0])\n'
-        '        pc_box.rotate(3600.0 * DEGREES)\n'
-        '        pc_box.stretch(-0.01, 0).stretch(100.0, 1)\n'
+        '        pc_box = VMobject().set_fill("#abcdef", opacity=1.0).set_stroke("#123456", width=64.0).set_opacity(1.0)\n'
+        '        pc_box.stretch(-0.01, 0, about_point=ORIGIN).stretch(100.0, 1, about_point=ORIGIN)\n'
+        '        pc_box.rotate(3600.0 * DEGREES, about_point=ORIGIN)\n'
+        '        pc_box.shift([-68.0, 68.0, 0])\n'
         '        pc_ref = pc_box.copy()\n'
         '        pc_box.set_opacity(0.0)\n'
         '        pc_text = Text("fit", font_size=256.0).set_color("#ffffff")\n'
         '        pc_text.scale(min(0.02 / max(pc_text.width, 0.001), 60.68148148 / max(pc_text.height, 0.001)))\n'
-        '        pc_text.move_to([0.0, 0.0, 0])\n'
+        '        pc_text.shift([0.0, 0.0, 0])\n'
         '        pc_text_ref = pc_text.copy()\n'
         '        pc_group = VGroup(pc_box, pc_text)\n'
         '        self.add(pc_box, pc_text)\n'
-        '        self.play(Transform(pc_group, VGroup(pc_ref.copy().stretch(40960000.0, 0).stretch_to_fit_height(6068.14814815).stretch(-1.0, 1).rotate(7200.0 * DEGREES).move_to([1000000000.0, -1000000000.0, 0]).set_fill("#abcdef", opacity=1.0).set_stroke("#123456", width=64.0).set_opacity(1.0), pc_text_ref.copy().stretch_to_fit_width(0.0002).stretch(-1.0, 0).set_opacity(0.0)), run_time=1.0, rate_func=linear))\n'
+        '        self.play(Transform(pc_group, VGroup(pc_ref.copy().shift([68.0, -68.0, 0]).rotate(-3600.0 * DEGREES, about_point=ORIGIN).stretch(-100.0, 0, about_point=ORIGIN).stretch(0.01, 1, about_point=ORIGIN).stretch(4096.0, 0, about_point=ORIGIN).stretch_to_fit_height(60.68148148).stretch(-1.0, 0, about_point=ORIGIN).rotate(3600.0 * DEGREES, about_point=ORIGIN).shift([68.0, -68.0, 0]).set_fill("#abcdef", opacity=1.0).set_stroke("#123456", width=64.0).set_opacity(1.0), pc_text_ref.copy().shift([1.0, -1.0, 0]).set_opacity(0.0)), run_time=1.0, rate_func=linear))\n'
         '        self.play(Transform(self.camera.frame, Rectangle(width=config.frame_width / 20.0, height=config.frame_height / 20.0).move_to([0.0, 0.0, 0]).rotate(3600.0 * DEGREES), run_time=1.0, rate_func=linear))\n'
         '        self.play(Transform(pc_box, pc_box.copy().set_opacity(0.0), run_time=0.0, rate_func=linear))\n'
         '        self.clear()\n'
     ))
+
+
+def test_accepts_exact_current_arrow_become_target() -> None:
+    validate(source_with(
+        '        pc_arrow = Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, max_tip_length_to_length_ratio=0.25, tip_shape=StealthTip).set_cap_style(CapStyleType.ROUND).set_color("#123456").set_stroke("#123456", width=2.0)\n'
+        '        pc_arrow.shift([0.0, 0.0, 0])\n'
+        '        pc_arrow_ref = pc_arrow.copy()\n'
+        '        self.add(pc_arrow)\n'
+        '        self.play(Transform(pc_arrow, pc_arrow_ref.copy().become(Arrow([-1.5, 0.0, 0], [1.5, 0.0, 0], buff=0, max_tip_length_to_length_ratio=0.25, tip_shape=StealthTip).set_cap_style(CapStyleType.ROUND).set_color("#abcdef").set_stroke("#abcdef", width=3.0).stretch(-2.0, 0, about_point=ORIGIN).rotate(30.0 * DEGREES, about_point=ORIGIN).shift([1.0, -1.0, 0])).set_opacity(1.0), run_time=1.0, rate_func=linear))\n'
+    ))
+
+
+CURRENT_ROUNDED_RECTANGLE = (
+    'RoundedRectangle(corner_radius=0.2, width=2.0, height=1.0)'
+    '.set_fill("#111111", opacity=1.0).set_stroke("#222222", width=2.0)'
+)
+CURRENT_CIRCLE = (
+    'Circle(radius=1.0).stretch_to_fit_width(2.0).stretch_to_fit_height(1.0)'
+    '.set_fill("#111111", opacity=1.0).set_stroke("#222222", width=2.0)'
+)
+CURRENT_LINE = (
+    'Line([-1.0, 0.0, 0], [1.0, 0.0, 0]).set_cap_style(CapStyleType.ROUND)'
+    '.set_stroke("#222222", width=2.0)'
+)
+CURRENT_ARROW = (
+    'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, '
+    'max_tip_length_to_length_ratio=0.25, tip_shape=StealthTip)'
+    '.set_cap_style(CapStyleType.ROUND).set_color("#222222").set_stroke("#222222", width=2.0)'
+)
+CURRENT_BRACE = (
+    'VGroup(BraceBetweenPoints([-1.0, 0.0, 0], [1.0, 0.0, 0], direction=DOWN, buff=0.2)'
+    '.set_color("#222222").set_stroke("#222222", width=2.0), '
+    'Text("label", font_size=22.0).set_color("#333333").shift(DOWN * 0.55))'
+)
+
+
+def current_shape_become_source(
+    initializer: str,
+    payload: str,
+    *,
+    opacity: float = 1.0,
+) -> str:
+    return source_with(
+        f"        pc_shape = {initializer}\n"
+        "        pc_shape.shift([0.0, 0.0, 0])\n"
+        "        pc_shape_ref = pc_shape.copy()\n"
+        "        self.add(pc_shape)\n"
+        f"        self.play(Transform(pc_shape, pc_shape_ref.copy().become({payload}).set_opacity({opacity}), "
+        "run_time=1.0, rate_func=linear))\n"
+    )
+
+
+CURRENT_SHAPE_PAINT_TARGETS = [
+    pytest.param(
+        CURRENT_ROUNDED_RECTANGLE,
+        'RoundedRectangle(corner_radius=0.2, width=2.0, height=1.0)'
+        '.set_fill("#abcdef", opacity=1.0).set_stroke("#654321", width=3.0)'
+        '.shift([1.0, -1.0, 0])',
+        id="rounded-rectangle",
+    ),
+    pytest.param(
+        CURRENT_CIRCLE,
+        'Circle(radius=1.0).stretch_to_fit_width(2.0).stretch_to_fit_height(1.0)'
+        '.set_fill("#abcdef", opacity=1.0).set_stroke("#654321", width=3.0)'
+        '.shift([1.0, -1.0, 0])',
+        id="circle",
+    ),
+    pytest.param(
+        CURRENT_LINE,
+        'Line([-1.0, 0.0, 0], [1.0, 0.0, 0]).set_cap_style(CapStyleType.ROUND)'
+        '.set_stroke("#654321", width=3.0).shift([1.0, -1.0, 0])',
+        id="line",
+    ),
+    pytest.param(
+        CURRENT_ARROW,
+        'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, '
+        'max_tip_length_to_length_ratio=0.25, tip_shape=StealthTip)'
+        '.set_cap_style(CapStyleType.ROUND).set_color("#654321").set_stroke("#654321", width=3.0)'
+        '.shift([1.0, -1.0, 0])',
+        id="arrow",
+    ),
+    pytest.param(
+        CURRENT_BRACE,
+        'VGroup(BraceBetweenPoints([-1.0, 0.0, 0], [1.0, 0.0, 0], direction=DOWN, buff=0.2)'
+        '.set_color("#654321").set_stroke("#654321", width=3.0), '
+        'Text("label", font_size=22.0).set_color("#abcdef").shift(DOWN * 0.55))'
+        '.shift([1.0, -1.0, 0])',
+        id="brace",
+    ),
+]
+
+
+@pytest.mark.parametrize(("initializer", "payload"), CURRENT_SHAPE_PAINT_TARGETS)
+def test_accepts_current_shape_become_targets_with_paint_only_changes(initializer: str, payload: str) -> None:
+    validate(current_shape_become_source(initializer, payload))
+
+
+@pytest.mark.parametrize(
+    "initializer",
+    [
+        pytest.param(CURRENT_ROUNDED_RECTANGLE, id="rounded-rectangle"),
+        pytest.param(CURRENT_CIRCLE, id="circle"),
+        pytest.param(CURRENT_LINE, id="line"),
+        pytest.param(CURRENT_ARROW, id="arrow"),
+        pytest.param(CURRENT_BRACE, id="brace"),
+    ],
+)
+def test_accepts_current_shape_become_targets_with_opacity_only_changes(initializer: str) -> None:
+    payload = f"{initializer}.set_opacity(0.4).shift([1.0, -1.0, 0])"
+    validate(current_shape_become_source(initializer, payload, opacity=0.4))
+
+
+def test_rejects_current_shape_become_target_from_a_different_reference_owner() -> None:
+    payload = f"{CURRENT_ARROW}.shift([1.0, -1.0, 0])"
+    with pytest.raises(SourcePolicyError):
+        validate(source_with(
+            f"        pc_first = {CURRENT_ARROW}\n"
+            "        pc_first.shift([-1.0, 0.0, 0])\n"
+            "        pc_first_ref = pc_first.copy()\n"
+            f"        pc_second = {CURRENT_ARROW}\n"
+            "        pc_second.shift([1.0, 0.0, 0])\n"
+            "        pc_second_ref = pc_second.copy()\n"
+            "        self.add(pc_first, pc_second)\n"
+            f"        self.play(Transform(pc_second, pc_first_ref.copy().become({payload}).set_opacity(1.0), "
+            "run_time=1.0, rate_func=linear))\n"
+        ))
+
+
+@pytest.mark.parametrize(
+    ("initializer", "payload"),
+    [
+        pytest.param(
+            CURRENT_ROUNDED_RECTANGLE,
+            f"{CURRENT_CIRCLE}.shift([1.0, -1.0, 0])",
+            id="rectangle-to-circle",
+        ),
+        pytest.param(
+            CURRENT_LINE,
+            f"{CURRENT_ARROW}.shift([1.0, -1.0, 0])",
+            id="line-to-arrow",
+        ),
+        pytest.param(
+            CURRENT_ARROW,
+            f"{CURRENT_BRACE}.shift([1.0, -1.0, 0])",
+            id="arrow-to-brace",
+        ),
+    ],
+)
+def test_rejects_cross_kind_current_shape_become_targets(initializer: str, payload: str) -> None:
+    with pytest.raises(SourcePolicyError):
+        validate(current_shape_become_source(initializer, payload))
+
+
+CURRENT_SHAPE_DESCRIPTOR_MUTATIONS = [
+    pytest.param(
+        CURRENT_ARROW,
+        'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, max_tip_length_to_length_ratio=0.25, '
+        'tip_shape=StealthTip).set_cap_style(CapStyleType.SQUARE).set_color("#222222")'
+        '.set_stroke("#222222", width=2.0).shift([1.0, -1.0, 0])',
+        id="arrow-cap",
+    ),
+    pytest.param(
+        CURRENT_ARROW,
+        'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, max_tip_length_to_length_ratio=0.25, '
+        'tip_shape=ArrowCircleFilledTip).set_cap_style(CapStyleType.ROUND).set_color("#222222")'
+        '.set_stroke("#222222", width=2.0).shift([1.0, -1.0, 0])',
+        id="arrow-tip",
+    ),
+    pytest.param(
+        CURRENT_ARROW,
+        'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, max_tip_length_to_length_ratio=0.3, '
+        'tip_shape=StealthTip).set_cap_style(CapStyleType.ROUND).set_color("#222222")'
+        '.set_stroke("#222222", width=2.0).shift([1.0, -1.0, 0])',
+        id="arrow-ratio",
+    ),
+    pytest.param(
+        CURRENT_BRACE,
+        'VGroup(BraceBetweenPoints([-1.0, 0.0, 0], [1.0, 0.0, 0], direction=UP, buff=0.2)'
+        '.set_color("#222222").set_stroke("#222222", width=2.0), '
+        'Text("label", font_size=22.0).set_color("#333333").shift(UP * 0.55))'
+        '.shift([1.0, -1.0, 0])',
+        id="brace-direction",
+    ),
+    pytest.param(
+        CURRENT_BRACE,
+        'VGroup(BraceBetweenPoints([-1.0, 0.0, 0], [1.0, 0.0, 0], direction=DOWN, buff=0.3)'
+        '.set_color("#222222").set_stroke("#222222", width=2.0), '
+        'Text("label", font_size=22.0).set_color("#333333").shift(DOWN * 0.65))'
+        '.shift([1.0, -1.0, 0])',
+        id="brace-spacing",
+    ),
+    pytest.param(
+        CURRENT_BRACE,
+        'VGroup(BraceBetweenPoints([-1.0, 0.0, 0], [1.0, 0.0, 0], direction=DOWN, buff=0.2)'
+        '.set_color("#222222").set_stroke("#222222", width=2.0), '
+        'Text("changed label", font_size=22.0).set_color("#333333").shift(DOWN * 0.55))'
+        '.shift([1.0, -1.0, 0])',
+        id="brace-label",
+    ),
+    pytest.param(
+        CURRENT_ROUNDED_RECTANGLE,
+        'Rectangle(width=2.0, height=1.0).set_fill("#111111", opacity=1.0)'
+        '.set_stroke("#222222", width=2.0).shift([1.0, -1.0, 0])',
+        id="rectangle-constructor",
+    ),
+    pytest.param(
+        CURRENT_ROUNDED_RECTANGLE,
+        'RoundedRectangle(corner_radius=0.3, width=2.0, height=1.0)'
+        '.set_fill("#111111", opacity=1.0).set_stroke("#222222", width=2.0)'
+        '.shift([1.0, -1.0, 0])',
+        id="rectangle-corner",
+    ),
+]
+
+
+@pytest.mark.parametrize(("initializer", "payload"), CURRENT_SHAPE_DESCRIPTOR_MUTATIONS)
+def test_rejects_current_shape_become_descriptor_mutations(initializer: str, payload: str) -> None:
+    with pytest.raises(SourcePolicyError, match="descriptor"):
+        validate(current_shape_become_source(initializer, payload))
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        pytest.param(
+            f"pc_shape_ref.become({CURRENT_ROUNDED_RECTANGLE}.shift([1.0, -1.0, 0])).set_opacity(1.0)",
+            id="missing-reference-copy",
+        ),
+        pytest.param(
+            f"pc_shape_ref.copy().set_opacity(1.0).become({CURRENT_ROUNDED_RECTANGLE}.shift([1.0, -1.0, 0]))",
+            id="outer-method-order",
+        ),
+        pytest.param(
+            f"pc_shape_ref.copy().become({CURRENT_ROUNDED_RECTANGLE}.shift([1.0, -1.0, 0]))",
+            id="missing-final-opacity",
+        ),
+        pytest.param(
+            f"pc_shape_ref.copy().become({CURRENT_ROUNDED_RECTANGLE}.shift([1.0, -1.0, 0]), "
+            "unexpected=True).set_opacity(1.0)",
+            id="become-keyword",
+        ),
+        pytest.param(
+            'pc_shape_ref.copy().become(RoundedRectangle(corner_radius=0.2, width=2.0, height=1.0)'
+            '.set_stroke("#222222", width=2.0).set_fill("#111111", opacity=1.0)'
+            '.shift([1.0, -1.0, 0])).set_opacity(1.0)',
+            id="payload-paint-order",
+        ),
+        pytest.param(
+            f"pc_shape_ref.copy().become({CURRENT_ROUNDED_RECTANGLE}.shift([1.0, -1.0, 0])"
+            ".set_opacity(0.4)).set_opacity(0.4)",
+            id="payload-placement-order",
+        ),
+        pytest.param(
+            f"pc_shape_ref.copy().become({CURRENT_ROUNDED_RECTANGLE}.shift([1.0, -1.0, 0]))"
+            '.set_stroke("#222222", width=2.0).set_opacity(1.0)',
+            id="extra-outer-paint",
+        ),
+    ],
+)
+def test_rejects_malformed_current_shape_become_method_dialects(target: str) -> None:
+    with pytest.raises(SourcePolicyError):
+        validate(source_with(
+            f"        pc_shape = {CURRENT_ROUNDED_RECTANGLE}\n"
+            "        pc_shape.shift([0.0, 0.0, 0])\n"
+            "        pc_shape_ref = pc_shape.copy()\n"
+            "        self.add(pc_shape)\n"
+            f"        self.play(Transform(pc_shape, {target}, run_time=1.0, rate_func=linear))\n"
+        ))
+
+
+@pytest.mark.parametrize(
+    ("constructor", "target_chain"),
+    [
+        ('Rectangle(width=1.0, height=1.0)', '.set_color("#abcdef").set_opacity(1.0)'),
+        (
+            'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0)',
+            '.set_color("#abcdef").set_stroke("#abcdef", width=3.0).set_opacity(1.0)',
+        ),
+        (
+            'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, max_tip_length_to_length_ratio=0.25, tip_shape=StealthTip).set_cap_style(CapStyleType.ROUND).set_color("#123456").set_stroke("#123456", width=2.0)',
+            '.set_color("#abcdef").set_opacity(1.0)',
+        ),
+        (
+            'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, max_tip_length_to_length_ratio=0.25, tip_shape=StealthTip).set_cap_style(CapStyleType.ROUND).set_color("#123456").set_stroke("#123456", width=2.0)',
+            '.set_stroke("#abcdef", width=3.0).set_opacity(1.0)',
+        ),
+        (
+            'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, max_tip_length_to_length_ratio=0.25, tip_shape=StealthTip).set_cap_style(CapStyleType.ROUND).set_color("#123456").set_stroke("#123456", width=2.0)',
+            '.set_color("#abcdef").set_stroke("#123456", width=3.0).set_opacity(1.0)',
+        ),
+        (
+            'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, max_tip_length_to_length_ratio=0.25, tip_shape=StealthTip).set_cap_style(CapStyleType.ROUND).set_color("#123456").set_stroke("#123456", width=2.0)',
+            '.set_color("#abcdef").set_stroke("#abcdef", width=3.0).set_fill("#abcdef", opacity=1.0).set_opacity(1.0)',
+        ),
+        (
+            'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, max_tip_length_to_length_ratio=0.25, tip_shape=StealthTip).set_cap_style(CapStyleType.ROUND).set_color("#123456").set_stroke("#123456", width=2.0)',
+            '.set_color("#abcdef").set_stroke("#abcdef", width=3.0).set_stroke("#abcdef", width=3.0).set_opacity(1.0)',
+        ),
+    ],
+)
+def test_rejects_copy_colour_outside_exact_current_arrow_pair(constructor: str, target_chain: str) -> None:
+    with pytest.raises(SourcePolicyError):
+        validate(source_with(
+            f"        pc_object = {constructor}\n"
+            "        pc_object.shift([0.0, 0.0, 0])\n"
+            "        pc_ref = pc_object.copy()\n"
+            "        self.add(pc_object)\n"
+            f"        self.play(Transform(pc_object, pc_ref.copy(){target_chain}, run_time=1.0, rate_func=linear))\n"
+        ))
 
 
 @pytest.mark.parametrize(
@@ -515,22 +837,22 @@ def test_rejects_copy_targets_nested_or_mixed_outside_the_animated_family() -> N
     sources = [
         source_with(
             "        pc_box = Rectangle(width=1.0, height=1.0)\n"
-            "        pc_box.move_to([0.0, 0.0, 0])\n"
+            "        pc_box.shift([0.0, 0.0, 0])\n"
             "        pc_ref = pc_box.copy()\n"
             "        pc_target = VGroup(pc_ref.copy().set_opacity(1.0))\n"
         ),
         source_with(
             "        pc_box = Rectangle(width=1.0, height=1.0)\n"
-            "        pc_box.move_to([0.0, 0.0, 0])\n"
+            "        pc_box.shift([0.0, 0.0, 0])\n"
             "        pc_ref = pc_box.copy()\n"
             "        self.play(Transform(pc_box, VGroup(pc_ref.copy().set_opacity(1.0), Rectangle(width=1.0, height=1.0)), run_time=1.0, rate_func=linear))\n"
         ),
         source_with(
             "        pc_box = Rectangle(width=1.0, height=1.0)\n"
-            "        pc_box.move_to([0.0, 0.0, 0])\n"
+            "        pc_box.shift([0.0, 0.0, 0])\n"
             "        pc_box_ref = pc_box.copy()\n"
             "        pc_other = Rectangle(width=1.0, height=1.0)\n"
-            "        pc_other.move_to([1.0, 0.0, 0])\n"
+            "        pc_other.shift([1.0, 0.0, 0])\n"
             "        pc_other_ref = pc_other.copy()\n"
             "        self.play(Transform(pc_box, pc_other_ref.copy().set_opacity(1.0), run_time=1.0, rate_func=linear))\n"
         ),
@@ -542,10 +864,10 @@ def test_rejects_copy_targets_nested_or_mixed_outside_the_animated_family() -> N
 
 NESTED_GROUP_PROVENANCE_PREFIX = (
     "        pc_rectangle = Rectangle(width=1.0, height=1.0)\n"
-    "        pc_rectangle.move_to([-1.0, 0.0, 0])\n"
+    "        pc_rectangle.shift([-1.0, 0.0, 0])\n"
     "        pc_rectangle_ref = pc_rectangle.copy()\n"
     "        pc_label = Text(\"label\", font_size=24.0)\n"
-    "        pc_label.move_to([1.0, 0.0, 0])\n"
+    "        pc_label.shift([1.0, 0.0, 0])\n"
     "        pc_label_ref = pc_label.copy()\n"
     "        pc_inner = VGroup(pc_rectangle)\n"
     "        pc_root = Group(pc_inner, pc_label)\n"
@@ -582,13 +904,13 @@ def test_accepts_distinct_compiler_bindings_across_two_shots() -> None:
     validate(source_with(
         "        self.next_section(\"First\")\n"
         "        pc_first = Rectangle(width=1.0, height=1.0)\n"
-        "        pc_first.move_to([0.0, 0.0, 0])\n"
+        "        pc_first.shift([0.0, 0.0, 0])\n"
         "        pc_first_ref = pc_first.copy()\n"
         "        self.add(pc_first)\n"
         "        self.clear()\n"
         "        self.next_section(\"Second\")\n"
         "        pc_second = Rectangle(width=1.0, height=1.0)\n"
-        "        pc_second.move_to([0.0, 0.0, 0])\n"
+        "        pc_second.shift([0.0, 0.0, 0])\n"
         "        pc_second_ref = pc_second.copy()\n"
         "        self.add(pc_second)\n"
     ))
@@ -608,13 +930,13 @@ def test_accepts_distinct_compiler_bindings_across_two_shots() -> None:
         "        self.add(pc_first)\n",
         (
             "        pc_second = Rectangle(width=1.0, height=1.0)\n"
-            "        pc_second.move_to([0.0, 0.0, 0])\n"
+            "        pc_second.shift([0.0, 0.0, 0])\n"
             "        self.play(Transform(pc_second, pc_first_ref.copy().set_opacity(1.0), run_time=1.0, rate_func=linear))\n"
         ),
         "        self.play(FadeIn(pc_first_group, run_time=1.0, rate_func=linear))\n",
         (
             "        pc_first = Rectangle(width=1.0, height=1.0)\n"
-            "        pc_first.move_to([0.0, 0.0, 0])\n"
+            "        pc_first.shift([0.0, 0.0, 0])\n"
         ),
     ],
 )
@@ -623,7 +945,7 @@ def test_rejects_stale_or_redeclared_bindings_after_a_shot_boundary(boundary: st
         validate(source_with(
             "        self.next_section(\"First\")\n"
             "        pc_first = Rectangle(width=1.0, height=1.0)\n"
-            "        pc_first.move_to([0.0, 0.0, 0])\n"
+            "        pc_first.shift([0.0, 0.0, 0])\n"
             "        pc_first_ref = pc_first.copy()\n"
             "        pc_first_group = VGroup(pc_first)\n"
             + boundary
@@ -663,7 +985,7 @@ def test_forbids_ast_starred_even_on_an_otherwise_allowed_constructor() -> None:
         "pc_box.stretch(0.0, 0).stretch(1.0, 1)",
         "pc_box.stretch(100.1, 0).stretch(1.0, 1)",
         "pc_box.stretch(1.0, 0)",
-        "pc_box.scale_to_fit_width(0.019)",
+        "pc_box.scale_to_fit_width(0.0111111)",
         "pc_box.scale_to_fit_height(60.68148149)",
         "pc_box.scale(2.0)",
         "pc_box.scale(min(1.0 / max(pc_box.width, 0.01), 1.0 / max(pc_box.height, 0.001)))",
@@ -701,7 +1023,7 @@ def test_rejects_direct_object_mutations_outside_compiler_shape_and_bounds(mutat
 def test_rejects_copy_targets_outside_reference_provenance_order_and_bounds(target: str) -> None:
     source = source_with(
         "        pc_box = Rectangle(width=1.0, height=1.0)\n"
-        "        pc_box.move_to([0.0, 0.0, 0])\n"
+        "        pc_box.shift([0.0, 0.0, 0])\n"
         "        pc_ref = pc_box.copy()\n"
         f"        self.play(Transform(pc_box, {target}, run_time=1.0, rate_func=linear))\n"
     )
@@ -745,17 +1067,20 @@ def test_rejects_constructor_decorators_outside_exact_style_chain(decorators: st
     "expression",
     [
         'Text("bounded", font_size=1.0)',
-        'Rectangle(width=0.02, height=60.68148148)',
-        'Circle(radius=1.0).stretch_to_fit_width(0.02).stretch_to_fit_height(60.68148148)',
-        'Line([-0.01, 0.0, 0], [0.01, 0.0, 0])',
+        'Rectangle(width=0.01111111, height=60.68148148)',
+        'Circle(radius=1.0).stretch_to_fit_width(0.01111111).stretch_to_fit_height(60.68148148)',
+        'Line([-0.00555556, 0.0, 0], [0.00555556, 0.0, 0])',
         'Arrow([-30.34074074, 0.0, 0], [30.34074074, 0.0, 0], buff=0)',
-        'Axes(x_range=[-10000.0, 10000.0, 1], y_range=[-1.0, 1.0, 1], x_length=0.02, y_length=60.68148148, tips=False)',
+        'Axes(x_range=[-10000.0, 10000.0, 1], y_range=[-1.0, 1.0, 1], x_length=0.01111111, y_length=60.68148148, tips=False)',
         'VMobject()',
         'VGroup(BraceBetweenPoints([-0.5, 0.0, 0], [0.5, 0.0, 0], direction=DOWN), Text("width", font_size=256.0).shift(DOWN * 0.45))',
     ],
 )
 def test_accepts_exact_object_constructor_argument_boundaries(expression: str) -> None:
-    validate(source_with(f"        pc_object = {expression}\n"))
+    validate(source_with(
+        f"        pc_object = {expression}\n"
+        "        pc_object.shift([0.0, 0.0, 0])\n"
+    ))
 
 
 @pytest.mark.parametrize(
@@ -764,7 +1089,7 @@ def test_accepts_exact_object_constructor_argument_boundaries(expression: str) -
         'Text("oversized", font_size=256.1)',
         'Text("oversized", color="#ffffff", font_size=24.0)',
         'Rectangle(height=1.0, width=1.0)',
-        'Rectangle(width=0.019, height=1.0)',
+        'Rectangle(width=0.0111111, height=1.0)',
         'Rectangle(width=1.0, height=60.68148149)',
         'Circle(radius=0.2)',
         'Circle(radius=1.0).stretch_to_fit_height(1.0).stretch_to_fit_width(1.0)',
@@ -786,9 +1111,94 @@ def test_rejects_object_constructor_arguments_outside_exact_shape_and_bounds(exp
 
 
 @pytest.mark.parametrize(
+    "expression",
+    [
+        'RoundedRectangle(corner_radius=0.0, width=0.01111111, height=0.01111111)',
+        'RoundedRectangle(corner_radius=7.58518518, width=60.68148148, height=15.17037036)',
+        'Line([-0.00555556, 0.0, 0], [0.00555556, 0.0, 0]).set_cap_style(CapStyleType.BUTT).set_stroke("#123456", width=0.0)',
+        'Line([-1.0, 0.0, 0], [1.0, 0.0, 0]).set_cap_style(CapStyleType.ROUND).set_stroke("#123456", width=2.0)',
+        'Line([-30.34074074, 0.0, 0], [30.34074074, 0.0, 0]).set_cap_style(CapStyleType.SQUARE).set_stroke("#123456", width=64.0)',
+        'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, max_tip_length_to_length_ratio=0.02, tip_shape=ArrowTriangleFilledTip).set_cap_style(CapStyleType.BUTT).set_color("#123456").set_stroke("#123456", width=0.0)',
+        'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, max_tip_length_to_length_ratio=0.25, tip_shape=StealthTip).set_cap_style(CapStyleType.ROUND).set_color("#123456").set_stroke("#123456", width=2.0)',
+        'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, max_tip_length_to_length_ratio=0.3, tip_shape=ArrowCircleFilledTip).set_cap_style(CapStyleType.SQUARE).set_color("#123456").set_stroke("#123456", width=3.0).set_opacity(0.5)',
+        'Arrow([-30.34074074, 0.0, 0], [30.34074074, 0.0, 0], buff=0, max_tip_length_to_length_ratio=0.45, tip_shape=ArrowSquareFilledTip).set_cap_style(CapStyleType.BUTT).set_color("#abcdef").set_stroke("#abcdef", width=64.0)',
+        'VGroup(BraceBetweenPoints([-1.0, 0.0, 0], [1.0, 0.0, 0], direction=UP, buff=0.0).set_color("#654321").set_stroke("#654321", width=0.0), Text("up", font_size=1.0).set_color("#abcdef").shift(UP * 0.0))',
+        'VGroup(BraceBetweenPoints([-1.0, 0.0, 0], [1.0, 0.0, 0], direction=DOWN, buff=60.68148148).set_color("#654321").set_stroke("#654321", width=64.0), Text("down", font_size=256.0).set_color("#abcdef").shift(DOWN * 121.36296296)).set_opacity(0.0)',
+        'VGroup(BraceBetweenPoints([0.0, -1.0, 0], [0.0, 1.0, 0], direction=LEFT, buff=0.2).set_color("#654321").set_stroke("#654321", width=2.0), Text("left", font_size=22.0).set_color("#abcdef").shift(LEFT * 0.55)).set_opacity(0.8)',
+        'VGroup(BraceBetweenPoints([0.0, -1.0, 0], [0.0, 1.0, 0], direction=RIGHT, buff=0.2).set_color("#654321").set_stroke("#654321", width=2.0), Text("right", font_size=22.0).set_color("#abcdef").shift(RIGHT * 0.55))',
+    ],
+)
+def test_accepts_exact_current_shape_compiler_dialect(expression: str) -> None:
+    validate(source_with(
+        f"        pc_object = {expression}\n"
+        "        pc_object.shift([0.0, 0.0, 0])\n"
+    ))
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        'RoundedRectangle(width=1.0, height=1.0, corner_radius=0.2)',
+        'RoundedRectangle(0.2, width=1.0, height=1.0)',
+        'RoundedRectangle(corner_radius=-0.01, width=1.0, height=1.0)',
+        'RoundedRectangle(corner_radius=0.51, width=1.0, height=1.0)',
+        'RoundedRectangle(corner_radius=0.50000002, width=1.0, height=1.0)',
+        'RoundedRectangle(corner_radius=7.58518519, width=60.68148148, height=60.68148148)',
+        'Line([-0.00555555, 0.0, 0], [0.00555555, 0.0, 0]).set_cap_style(CapStyleType.BUTT)',
+        'Line([-1.0, 0.0, 0], [1.0, 0.0, 0]).set_cap_style(CapStyleType.AUTO)',
+        'Line([-1.0, 0.0, 0], [1.0, 0.0, 0]).set_cap_style(ROUND)',
+        'Line([-1.0, 0.0, 0], [1.0, 0.0, 0]).set_cap_style("ROUND")',
+        'Line([-1.0, 0.0, 0], [1.0, 0.0, 0]).set_cap_style(CapStyleType.ROUND())',
+        'Line([-1.0, 0.0, 0], [1.0, 0.0, 0]).set_stroke("#123456", width=2.0).set_cap_style(CapStyleType.ROUND)',
+        'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], max_tip_length_to_length_ratio=0.25, buff=0, tip_shape=StealthTip).set_cap_style(CapStyleType.ROUND).set_color("#123456").set_stroke("#123456", width=2.0)',
+        'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0.1, max_tip_length_to_length_ratio=0.25, tip_shape=StealthTip).set_cap_style(CapStyleType.ROUND).set_color("#123456").set_stroke("#123456", width=2.0)',
+        'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, max_tip_length_to_length_ratio=0.0199, tip_shape=StealthTip).set_cap_style(CapStyleType.ROUND).set_color("#123456").set_stroke("#123456", width=2.0)',
+        'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, max_tip_length_to_length_ratio=0.4501, tip_shape=StealthTip).set_cap_style(CapStyleType.ROUND).set_color("#123456").set_stroke("#123456", width=2.0)',
+        'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, max_tip_length_to_length_ratio=0.25, tip_shape=ArrowTriangleTip).set_cap_style(CapStyleType.ROUND).set_color("#123456").set_stroke("#123456", width=2.0)',
+        'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, max_tip_length_to_length_ratio=0.25, tip_shape=StealthTip()).set_cap_style(CapStyleType.ROUND).set_color("#123456").set_stroke("#123456", width=2.0)',
+        'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, max_tip_length_to_length_ratio=0.25, tip_shape="StealthTip").set_cap_style(CapStyleType.ROUND).set_color("#123456").set_stroke("#123456", width=2.0)',
+        'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, max_tip_length_to_length_ratio=0.25, tip_shape=StealthTip).set_cap_style(CapStyleType.ROUND).set_stroke("#123456", width=2.0)',
+        'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, max_tip_length_to_length_ratio=0.25, tip_shape=StealthTip).set_cap_style(CapStyleType.ROUND).set_color("#123456").set_stroke("#abcdef", width=2.0)',
+        'Arrow([0.0, -1.0, 0], [0.0, 1.0, 0], buff=0, max_tip_length_to_length_ratio=0.25, tip_shape=StealthTip).set_cap_style(CapStyleType.ROUND).set_color("#123456").set_stroke("#123456", width=2.0)',
+        'Arrow([-1.0, 0.0, 0], [1.1, 0.0, 0], buff=0, max_tip_length_to_length_ratio=0.25, tip_shape=StealthTip).set_cap_style(CapStyleType.ROUND).set_color("#123456").set_stroke("#123456", width=2.0)',
+        'Arrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0).set_cap_style(CapStyleType.ROUND)',
+        'VGroup(BraceBetweenPoints([0.0, -1.0, 0], [0.0, 1.0, 0], direction=UP, buff=0.2).set_color("#654321").set_stroke("#654321", width=2.0), Text("wrong axis", font_size=22.0).set_color("#abcdef").shift(UP * 0.55))',
+        'VGroup(BraceBetweenPoints([-1.0, 0.0, 0], [1.0, 0.0, 0], direction=LEFT, buff=0.2).set_color("#654321").set_stroke("#654321", width=2.0), Text("wrong axis", font_size=22.0).set_color("#abcdef").shift(LEFT * 0.55))',
+        'VGroup(BraceBetweenPoints([-1.0, 0.0, 0], [1.0, 0.0, 0], direction=DOWN, buff=-0.01).set_color("#654321").set_stroke("#654321", width=2.0), Text("spacing", font_size=22.0).set_color("#abcdef").shift(DOWN * 0.55))',
+        'VGroup(BraceBetweenPoints([-1.0, 0.0, 0], [1.0, 0.0, 0], direction=DOWN, buff=60.68148149).set_color("#654321").set_stroke("#654321", width=2.0), Text("spacing", font_size=22.0).set_color("#abcdef").shift(DOWN * 0.55))',
+        'VGroup(BraceBetweenPoints([-1.0, 0.0, 0], [1.0, 0.0, 0], direction=ORIGIN, buff=0.2).set_color("#654321").set_stroke("#654321", width=2.0), Text("direction", font_size=22.0).set_color("#abcdef").shift(ORIGIN * 0.55))',
+        'VGroup(BraceBetweenPoints([-1.0, 0.0, 0], [1.0, 0.0, 0], direction=DOWN, buff=0.2).set_color("#654321").set_stroke("#654321", width=2.0), Text("direction", font_size=22.0).set_color("#abcdef").shift(UP * 0.55))',
+        'VGroup(BraceBetweenPoints([-1.0, 0.0, 0], [1.0, 0.0, 0], direction=DOWN, buff=0.2).set_color("#654321").set_stroke("#654321", width=2.0), Text("shift", font_size=22.0).set_color("#abcdef").shift(DOWN * -0.01))',
+        'VGroup(BraceBetweenPoints([-1.0, 0.0, 0], [1.0, 0.0, 0], direction=DOWN, buff=0.2).set_color("#654321").set_stroke("#654321", width=2.0), Text("shift", font_size=22.0).set_color("#abcdef").shift(DOWN * 121.36296297))',
+        'VGroup(BraceBetweenPoints([-1.0, 0.0, 0], [1.0, 0.0, 0], direction=DOWN, buff=0.2).set_stroke("#654321", width=2.0), Text("paint", font_size=22.0).set_color("#abcdef").shift(DOWN * 0.55))',
+        'VGroup(BraceBetweenPoints([-1.0, 0.0, 0], [1.0, 0.0, 0], direction=DOWN, buff=0.2).set_color("#654321").set_stroke("#123456", width=2.0), Text("paint", font_size=22.0).set_color("#abcdef").shift(DOWN * 0.55))',
+        'VGroup(BraceBetweenPoints([-1.0, 0.0, 0], [1.0, 0.0, 0], direction=DOWN, buff=0.2).set_color("#654321").set_stroke("#654321", width=2.0), Text("label", font_size=22.0).shift(DOWN * 0.55))',
+        'VGroup(BraceBetweenPoints([-1.0, 0.0, 0], [1.0, 0.0, 0], direction=DOWN, buff=0.2).set_color("#654321").set_stroke("#654321", width=2.0), Text("outer", font_size=22.0).set_color("#abcdef").shift(DOWN * 0.55)).set_stroke("#654321", width=2.0)',
+        'VGroup(BraceBetweenPoints([-1.0, 0.0, 0], [1.0, 0.0, 0], direction=DOWN, buff=0.2).set_color("#654321").set_stroke("#654321", width=2.0), Text("extra", font_size=22.0).set_color("#abcdef").shift(DOWN * 0.55), Circle(radius=1.0))',
+    ],
+)
+def test_rejects_current_shape_syntax_outside_exact_dialect_and_bounds(expression: str) -> None:
+    with pytest.raises(SourcePolicyError):
+        validate(source_with(f"        pc_object = {expression}\n"))
+
+
+@pytest.mark.parametrize(
     "statement",
     [
-        "        pc_box = Rectangle(width=1.0, height=1.0)\n        pc_value = pc_box.width()\n",
+        "        pc_tip = StealthTip()\n",
+        "        pc_value = CapStyleType.ROUND\n",
+        "        pc_line = Line([-1.0, 0.0, 0], [1.0, 0.0, 0])\n        pc_line.set_cap_style(CapStyleType.ROUND)\n",
+    ],
+)
+def test_rejects_shape_classes_and_cap_mutation_outside_exact_initialization(statement: str) -> None:
+    with pytest.raises(SourcePolicyError):
+        validate(source_with(statement))
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "        pc_box = Rectangle(width=1.0, height=1.0)\n        pc_box.shift([0.0, 0.0, 0])\n        pc_value = pc_box.width()\n",
         "        pc_value = self.camera.frame.width()\n",
         "        pc_value = rate_functions.there_and_back()\n",
     ],
@@ -817,7 +1227,7 @@ def test_rejects_object_and_utility_constructors_outside_exact_context(statement
     [
         "        pc_value = 1.0 / 0.0\n",
         "        pc_box = Rectangle(width=1.0, height=1.0)\n        pc_box = 1.0\n",
-        "        pc_box = Rectangle(width=1.0, height=1.0)\n        pc_box.move_to([0.0, 0.0, 0])\n        pc_ref = pc_box.copy()\n        pc_ref = 1.0\n",
+        "        pc_box = Rectangle(width=1.0, height=1.0)\n        pc_box.shift([0.0, 0.0, 0])\n        pc_ref = pc_box.copy()\n        pc_ref = 1.0\n",
     ],
 )
 def test_rejects_noncompiler_and_reassigned_bindings(statement: str) -> None:
@@ -850,7 +1260,7 @@ def test_enforces_compiler_shot_and_object_budgets() -> None:
 def test_accepts_exact_native_animation_rate_functions(rate_func: str) -> None:
     validate(source_with(
         "        pc_box = Rectangle(width=1.0, height=1.0)\n"
-        "        pc_box.move_to([0.0, 0.0, 0])\n"
+        "        pc_box.shift([0.0, 0.0, 0])\n"
         f"        self.play(FadeIn(pc_box, run_time=300.0, rate_func={rate_func}))\n"
     ))
 
@@ -858,7 +1268,7 @@ def test_accepts_exact_native_animation_rate_functions(rate_func: str) -> None:
 def test_accepts_exact_animation_container_and_indicate_boundaries() -> None:
     validate(source_with(
         "        pc_box = Rectangle(width=1.0, height=1.0)\n"
-        "        pc_box.move_to([0.0, 0.0, 0])\n"
+        "        pc_box.shift([0.0, 0.0, 0])\n"
         "        self.play(AnimationGroup("
         "Succession(Wait(300.0), group=Group(), run_time=300.0), "
         "Indicate(pc_box, color=\"#ffffff\", scale_factor=0.01, run_time=0.0, rate_func=rate_functions.there_and_back), "
@@ -888,7 +1298,7 @@ def test_rejects_animation_expressions_outside_exact_shape_and_bounds(animation:
     with pytest.raises(SourcePolicyError):
         validate(source_with(
             "        pc_box = Rectangle(width=1.0, height=1.0)\n"
-            "        pc_box.move_to([0.0, 0.0, 0])\n"
+            "        pc_box.shift([0.0, 0.0, 0])\n"
             "        pc_ref = pc_box.copy()\n"
             f"        self.play({animation})\n"
         ))
@@ -908,7 +1318,7 @@ def test_enforces_the_independent_custom_easing_lambda_budget() -> None:
         )
         return source_with_cubic_helper(
             "        pc_box = Rectangle(width=1.0, height=1.0)\n"
-            "        pc_box.move_to([0.0, 0.0, 0])\n"
+            "        pc_box.shift([0.0, 0.0, 0])\n"
             "        pc_ref = pc_box.copy()\n"
                 "        self.play(AnimationGroup(\n"
                 f"{transforms},\n"

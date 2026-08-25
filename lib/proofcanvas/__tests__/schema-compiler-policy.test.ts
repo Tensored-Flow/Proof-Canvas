@@ -166,9 +166,9 @@ test("a project at direct numeric schema bounds exercises the compiler method ma
   expect(compiled.diagnostics.some(({ severity }) => severity === "error")).toBe(false);
   expect(compiled.python).toContain("self.camera.frame.become(Rectangle(width=config.frame_width");
   expect(compiled.python).toContain("pc_uncountable_yet_zero_length.scale(min(");
-  expect(compiled.python).toContain("pc_uncountable_yet_zero_length.move_to(");
-  expect(compiled.python).toContain("pc_uncountable_yet_zero_length.rotate(3600.0 * DEGREES)");
-  expect(compiled.python).toContain("pc_uncountable_yet_zero_length.stretch(-0.01, 0).stretch(100.0, 1)");
+  expect(compiled.python).toContain("pc_uncountable_yet_zero_length.shift(");
+  expect(compiled.python).toContain("pc_uncountable_yet_zero_length.rotate(3600.0 * DEGREES, about_point=ORIGIN)");
+  expect(compiled.python).toContain("pc_uncountable_yet_zero_length.stretch(-0.01, 0, about_point=ORIGIN).stretch(100.0, 1, about_point=ORIGIN)");
   expect(compiled.python).toMatch(/pc_ref_[a-f0-9_]+ = pc_[a-z0-9_]+\.copy\(\)/);
   expect(compiled.python).toMatch(/pc_ref_[a-f0-9_]+\.copy\(\).*\.set_opacity\((?:0|1)\.0\)/);
   expect(compiled.python).toContain("Transform(self.camera.frame, Rectangle(width=config.frame_width");

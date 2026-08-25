@@ -576,6 +576,36 @@ export const MathPropertiesSchema = z.object({
   mode: z.enum(MATH_MODES),
 }).strict();
 
+/**
+ * Schema-v3 already published a generic JSON property envelope. Shape
+ * authoring uses one strict, namespaced record inside that envelope so new
+ * controls cannot accidentally activate similarly named legacy/custom keys.
+ */
+export const CurrentShapePropertiesSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("circle") }).strict(),
+  z.object({
+    kind: z.literal("rectangle"),
+    cornerRadius: z.number().finite().min(0).max(PROOFCANVAS_SCHEMA_LIMITS.cornerRadiusMax).optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal("line"),
+    lineCap: z.enum(["butt", "round", "square"]).optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal("arrow"),
+    lineCap: z.enum(["butt", "round", "square"]).optional(),
+    tipShape: z.enum(["triangle", "stealth", "circle", "square"]).optional(),
+    tipSizeRatio: z.number().finite().min(0.02).max(0.45).optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal("brace"),
+    direction: z.enum(["above", "below", "left", "right"]).optional(),
+    spacing: z.number().finite().min(0).max(PROOFCANVAS_SCHEMA_LIMITS.spacingMax).optional(),
+  }).strict(),
+]);
+
+export type CurrentShapeProperties = z.infer<typeof CurrentShapePropertiesSchema>;
+
 export function isSafeAssetSource(value: string): boolean {
   if (value.length > PROOFCANVAS_PROJECT_MAX_BYTES) return false;
   return (/^\/proofcanvas\/[a-z0-9_./-]+$/i.test(value) && !value.includes("..") && !value.includes("//"))

@@ -540,7 +540,7 @@ describe("timeline operations and compiler", () => {
     }));
     const compiled = compileManim(ProjectDocumentSchema.parse(project));
     expect(compiled.diagnostics.filter(({ severity }) => severity === "error")).toEqual([]);
-    const transformLine = compiled.python.split("\n").find((line) => line.includes("self.play(Transform(") && line.includes(".move_to(") && line.includes(".rotate(") && line.includes(".stretch("));
+    const transformLine = compiled.python.split("\n").find((line) => line.includes("self.play(Transform(") && line.includes(".shift(") && line.includes(".rotate(") && line.includes(".stretch("));
     expect(transformLine).toBeDefined();
     const style = project.styles.find(({ id }) => id === project.activeStyleId)!;
     const initial = styledTransform(previewShotAtTime(shot, 0).objects.find(({ id }) => id === object.id)!, style);
@@ -549,10 +549,14 @@ describe("timeline operations and compiler", () => {
     const expectedXStretch = final.width! * final.scaleX / (initial.width! * initial.scaleX);
     const expectedYStretch = final.height! * final.scaleY / (initial.height! * initial.scaleY);
     const coordinateScale = 14.222222 / 960;
-    expect(transformLine).toContain(`.stretch(${py(expectedXStretch)}, 0)`);
-    expect(transformLine).toContain(`.stretch(${py(expectedYStretch)}, 1)`);
-    expect(transformLine).toContain(`.rotate(${py(final.rotation - initial.rotation)} * DEGREES)`);
-    expect(transformLine).toContain(`.move_to([${py((final.x - 480) * coordinateScale)}, ${py((270 - final.y) * coordinateScale)}, 0])`);
+    const xStretches = [...transformLine!.matchAll(/\.stretch\((-?[\de.]+), 0, about_point=ORIGIN\)/g)].map((match) => Number(match[1]));
+    const yStretches = [...transformLine!.matchAll(/\.stretch\((-?[\de.]+), 1, about_point=ORIGIN\)/g)].map((match) => Number(match[1]));
+    expect(xStretches.reduce((product, value) => product * value, 1)).toBeCloseTo(expectedXStretch, 7);
+    expect(yStretches.reduce((product, value) => product * value, 1)).toBeCloseTo(expectedYStretch, 7);
+    expect(transformLine).toContain(`.rotate(${py(-initial.rotation)} * DEGREES, about_point=ORIGIN)`);
+    expect(transformLine).toContain(`.rotate(${py(final.rotation)} * DEGREES, about_point=ORIGIN)`);
+    expect(transformLine).toContain(`.shift([${py(-(initial.x - 480) * coordinateScale)}, ${py(-(270 - initial.y) * coordinateScale)}, 0])`);
+    expect(transformLine).toContain(`.shift([${py((final.x - 480) * coordinateScale)}, ${py((270 - final.y) * coordinateScale)}, 0])`);
     expect(initial.x).not.toBe(authored.x);
     expect(final.x).not.toBe(authored.x);
     expect(final.x).not.toBe(initial.x);

@@ -1,12 +1,14 @@
 import { act, fireEvent, render } from '@testing-library/react'
 import katex from 'katex'
-import CanvasStage, { canvasGestureAuthorityInvalidated, resolveCanvasKeyboardTransformIntent, serializeGraphPreviewCoordinate, temporallyTransformsObject } from '../CanvasStage'
+import CanvasStage, { CanvasThumbnail, canvasGestureAuthorityInvalidated, resolveCanvasKeyboardTransformIntent, serializeGraphPreviewCoordinate, temporallyTransformsObject } from '../CanvasStage'
 import { compileManim } from '@/lib/proofcanvas/compiler'
 import { createCantorDemoProject } from '@/lib/proofcanvas/demo'
 import { logicalFrameFor, resolutionFor, type ProofCanvasAspectRatio } from '@/lib/proofcanvas/frame'
 import * as latexAuthority from '@/lib/proofcanvas/latex'
 import * as graphAuthority from '@/lib/proofcanvas/graphExpression'
 import { ProjectDocumentSchema, cloneSerializable, type SceneObject } from '@/lib/proofcanvas/schema'
+import { resolveArrowPreviewGeometry } from '@/lib/proofcanvas/shapeGeometry'
+import { insertShapePreset, PROOFCANVAS_SHAPE_PRESET_MIME } from '@/lib/proofcanvas/shapePresets'
 
 jest.mock('@/lib/proofcanvas/latex', () => {
   const actual = jest.requireActual('@/lib/proofcanvas/latex') as typeof import('@/lib/proofcanvas/latex')
@@ -30,6 +32,20 @@ function installTestPointerEvent() {
     }
   }
   Object.defineProperty(window, 'PointerEvent', { configurable: true, value: TestPointerEvent })
+}
+
+function stageDragEvent(
+  type: 'dragover' | 'drop',
+  dataTransfer: { types: string[]; effectAllowed: string; dropEffect: string; getData(type: string): string },
+  point = { x: 0, y: 0 },
+) {
+  const event = new Event(type, { bubbles: true, cancelable: true })
+  Object.defineProperties(event, {
+    clientX: { configurable: true, value: point.x },
+    clientY: { configurable: true, value: point.y },
+    dataTransfer: { configurable: true, value: dataTransfer },
+  })
+  return event
 }
 
 test('invalidates only canvas drafts whose recorded authority is stale', () => {
@@ -805,4 +821,159 @@ test('protects a property-tracked object family from direct base-pose editing on
   expect(view.container.querySelector('.pc-selection-handles')).not.toBeInTheDocument()
   fireEvent.pointerDown(view.container.querySelector(`[data-object-id="${object.id}"]`)!, { button: 0, pointerId: 1 })
   expect(onNotice).toHaveBeenCalledWith(expect.stringMatching(/animated geometry/))
+})
+
+test('owns only the fixed shape-preset drag contract and reports every unavailable drop state', () => {
+  const project = cloneSerializable(createCantorDemoProject())
+  project.shots = [project.shots[0]]
+  project.shots[0].camera = { x: 600, y: 200, zoom: 2, rotation: 90 }
+  const parsed = ProjectDocumentSchema.parse(project)
+  const onInsertShapePresetAt = jest.fn()
+  const onNotice = jest.fn()
+  const shared = {
+    project: parsed,
+    shot: parsed.shots[0],
+    playhead: 0,
+    previewStyle: parsed.styles.find(({ id }) => id === parsed.activeStyleId)!,
+    projectRevision: 'shape-drop-contract',
+    previewQuality: parsed.settings.previewQuality,
+    selectedIds: [] as string[],
+    onSelect: jest.fn(),
+    onCommitTransforms: jest.fn(),
+    onCommitKeyboardTransform: jest.fn(),
+    onNotice,
+  }
+  const view = render(<CanvasStage {...shared} onInsertShapePresetAt={onInsertShapePresetAt}/>)
+  const svg = view.container.querySelector('svg.pc-stage') as SVGSVGElement
+  Object.defineProperty(svg, 'createSVGPoint', { configurable: true, value: () => {
+    const point = { x: 0, y: 0, matrixTransform: () => ({ x: point.x, y: point.y }) }
+    return point
+  } })
+  Object.defineProperty(svg, 'getScreenCTM', { configurable: true, value: () => ({ inverse: () => ({}) }) })
+
+  const transfer = (types: string[], value: string) => ({
+    types,
+    effectAllowed: 'copy',
+    dropEffect: 'link',
+    getData: jest.fn((type: string) => type === PROOFCANVAS_SHAPE_PRESET_MIME ? value : ''),
+  })
+
+  const unrelatedTransfer = transfer(['text/plain'], 'arrow')
+  const unrelatedDrop = stageDragEvent('drop', unrelatedTransfer)
+  fireEvent(svg, unrelatedDrop)
+  expect(unrelatedDrop.defaultPrevented).toBe(false)
+  expect(unrelatedTransfer.getData).not.toHaveBeenCalled()
+  expect(onInsertShapePresetAt).not.toHaveBeenCalled()
+  expect(onNotice).not.toHaveBeenCalled()
+
+  const invalidTransfer = transfer([PROOFCANVAS_SHAPE_PRESET_MIME], 'not-a-preset')
+  const invalidDrop = stageDragEvent('drop', invalidTransfer)
+  fireEvent(svg, invalidDrop)
+  expect(invalidDrop.defaultPrevented).toBe(true)
+  expect(onNotice).toHaveBeenLastCalledWith('That shape preset is not available.')
+  expect(onInsertShapePresetAt).not.toHaveBeenCalled()
+
+  const enabledTransfer = transfer([PROOFCANVAS_SHAPE_PRESET_MIME], 'arrow')
+  const enabledDragOver = stageDragEvent('dragover', enabledTransfer)
+  fireEvent(svg, enabledDragOver)
+  expect(enabledDragOver.defaultPrevented).toBe(true)
+  expect(enabledTransfer.dropEffect).toBe('copy')
+
+  view.rerender(<CanvasStage {...shared} authoringEnabled={false} onInsertShapePresetAt={onInsertShapePresetAt}/>)
+  expect(svg).toHaveAttribute('data-shape-drop-enabled', 'false')
+  const disabledTransfer = transfer([PROOFCANVAS_SHAPE_PRESET_MIME], 'arrow')
+  fireEvent(svg, stageDragEvent('dragover', disabledTransfer))
+  expect(disabledTransfer.dropEffect).toBe('none')
+  fireEvent(svg, stageDragEvent('drop', disabledTransfer))
+  expect(onNotice).toHaveBeenLastCalledWith('Pause playback before dropping a shape.')
+  expect(onInsertShapePresetAt).not.toHaveBeenCalled()
+
+  view.rerender(<CanvasStage {...shared} authoringEnabled/>)
+  expect(svg).toHaveAttribute('data-shape-drop-enabled', 'false')
+  fireEvent(svg, stageDragEvent('drop', transfer([PROOFCANVAS_SHAPE_PRESET_MIME], 'arrow')))
+  expect(onNotice).toHaveBeenLastCalledWith('Shape insertion is not available on this canvas.')
+
+  view.rerender(<CanvasStage {...shared} authoringEnabled onInsertShapePresetAt={onInsertShapePresetAt}/>)
+  expect(svg).toHaveAttribute('data-shape-drop-enabled', 'true')
+  const validDrop = stageDragEvent(
+    'drop',
+    transfer([PROOFCANVAS_SHAPE_PRESET_MIME], 'arrow'),
+    { x: 480, y: 270 },
+  )
+  fireEvent(svg, validDrop)
+  expect(validDrop.defaultPrevented).toBe(true)
+  expect(onInsertShapePresetAt).toHaveBeenCalledTimes(1)
+  expect(onInsertShapePresetAt).toHaveBeenCalledWith('arrow', { x: 600, y: 200 })
+})
+
+test.each([
+  ['triangle', 'butt'],
+  ['stealth', 'round'],
+  ['circle', 'square'],
+  ['square', 'butt'],
+] as const)('renders a %s Arrow tip with shared shaft paint and a %s line cap', (tipShape, lineCap) => {
+  const project = cloneSerializable(createCantorDemoProject())
+  project.shots = [project.shots[0]]
+  project.shots[0].objects = []
+  project.shots[0].animations = []
+  project.shots[0].propertyTracks = []
+  const empty = ProjectDocumentSchema.parse(project)
+  const inserted = insertShapePreset(empty, empty.shots[0].id, 'arrow')
+  const arrow = inserted.shots[0].objects.find(({ type }) => type === 'arrow')!
+  arrow.properties.shape = { kind: 'arrow', lineCap, tipShape, tipSizeRatio: 0.2 }
+  arrow.style = { stroke: '#123456', strokeWidth: 7, opacity: 0.4 }
+  const parsed = ProjectDocumentSchema.parse(inserted)
+  const frame = logicalFrameFor(parsed.settings.aspectRatio)
+  const expected = resolveArrowPreviewGeometry(
+    arrow.transform.width!,
+    tipShape,
+    0.2,
+    0.35 * frame.width / frame.manimWidth,
+  )
+  const view = render(<CanvasStage
+    project={parsed}
+    shot={parsed.shots[0]}
+    playhead={0}
+    previewStyle={parsed.styles.find(({ id }) => id === parsed.activeStyleId)!}
+    projectRevision={`arrow-preview-${tipShape}-${lineCap}`}
+    previewQuality={parsed.settings.previewQuality}
+    selectedIds={[]}
+    onSelect={jest.fn()}
+    onCommitTransforms={jest.fn()}
+    onCommitKeyboardTransform={jest.fn()}
+    onNotice={jest.fn()}
+  />)
+  const renderedArrow = view.container.querySelector('[data-object-type="arrow"]')!
+  const shaft = renderedArrow.querySelector('line:not([stroke="transparent"])')
+  const tip = renderedArrow.querySelector(`[data-arrow-tip-shape="${tipShape}"]`)
+  expect(renderedArrow).toHaveAttribute('opacity', '0.4')
+  expect(renderedArrow).toHaveAttribute('data-arrow-tip-length', String(expected.tipLength))
+  expect(renderedArrow).toHaveAttribute('data-arrow-shaft-end', String(expected.shaftEndX))
+  expect(shaft).toHaveAttribute('stroke', '#123456')
+  expect(shaft).toHaveAttribute('stroke-width', '7')
+  expect(shaft).toHaveAttribute('stroke-linecap', lineCap)
+  expect(tip).toHaveAttribute('fill', '#123456')
+  expect(tip).toHaveAttribute('stroke', '#123456')
+  expect(tip).toHaveAttribute('stroke-width', '7')
+})
+
+test('renders passive Arrow thumbnails with exact namespace-free tip geometry', () => {
+  const project = cloneSerializable(createCantorDemoProject())
+  project.shots = [project.shots[0]]
+  project.shots[0].objects = []
+  project.shots[0].animations = []
+  project.shots[0].propertyTracks = []
+  const empty = ProjectDocumentSchema.parse(project)
+  const inserted = insertShapePreset(empty, empty.shots[0].id, 'arrow')
+  const view = render(<CanvasThumbnail
+    aspectRatio={inserted.settings.aspectRatio}
+    shot={inserted.shots[0]}
+    previewStyle={inserted.styles.find(({ id }) => id === inserted.activeStyleId)!}
+    visualRevision="arrow-thumbnail"
+  />)
+  const thumbnail = view.container.querySelector('svg.pc-shot-thumbnail')!
+  expect(thumbnail.querySelector('marker')).not.toBeInTheDocument()
+  expect(thumbnail.innerHTML).not.toContain('url(#')
+  expect(thumbnail.querySelector('[data-arrow-tip-shape="triangle"]')).toBeInTheDocument()
+  expect(thumbnail.querySelector('[data-object-id]')).not.toBeInTheDocument()
 })

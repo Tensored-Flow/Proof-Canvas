@@ -69,8 +69,8 @@ describe('ProofCanvas storyboard integration', () => {
     expect(thumbnails.every((thumbnail) => thumbnail.dataset.thumbnailTime === '0')).toBe(true)
     expect(thumbnails.every((thumbnail) => thumbnail.getAttribute('aria-hidden') === 'true')).toBe(true)
     expect(thumbnails.flatMap((thumbnail) => [...thumbnail.querySelectorAll('[data-object-id]')])).toHaveLength(0)
-    const markerIds = thumbnails.map((thumbnail) => thumbnail.querySelector('marker')?.id)
-    expect(new Set(markerIds).size).toBe(markerIds.length)
+    expect(thumbnails.flatMap((thumbnail) => [...thumbnail.querySelectorAll('marker')])).toHaveLength(0)
+    expect(thumbnails.some((thumbnail) => thumbnail.innerHTML.includes('url(#'))).toBe(false)
 
     const [firstTab, secondTab] = shotTabs()
     firstTab.focus()

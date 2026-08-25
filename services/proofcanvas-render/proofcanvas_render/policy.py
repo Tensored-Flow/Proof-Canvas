@@ -73,6 +73,13 @@ class ValidatedSource:
     sha256: str
 
 
+CAP_STYLE_MEMBERS = frozenset({"BUTT", "ROUND", "SQUARE"})
+ARROW_TIP_SHAPE_NAMES = frozenset(
+    {"ArrowTriangleFilledTip", "StealthTip", "ArrowCircleFilledTip", "ArrowSquareFilledTip"}
+)
+BRACE_DIRECTION_NAMES = frozenset({"UP", "DOWN", "LEFT", "RIGHT"})
+
+
 ALLOWED_CONSTRUCTORS = frozenset(
     {
         "AnimationGroup",
@@ -91,6 +98,7 @@ ALLOWED_CONSTRUCTORS = frozenset(
         "max",
         "min",
         "Rectangle",
+        "RoundedRectangle",
         "Succession",
         "Text",
         "Transform",
@@ -101,7 +109,20 @@ ALLOWED_CONSTRUCTORS = frozenset(
     }
 )
 ALLOWED_CONSTANT_NAMES = frozenset(
-    {"DEGREES", "DOWN", "UP", "LEFT", "RIGHT", "ORIGIN", "linear", "rush_into", "rush_from", "smooth"}
+    {
+        "DEGREES",
+        "DOWN",
+        "UP",
+        "LEFT",
+        "RIGHT",
+        "ORIGIN",
+        "CapStyleType",
+        *ARROW_TIP_SHAPE_NAMES,
+        "linear",
+        "rush_into",
+        "rush_from",
+        "smooth",
+    }
 )
 ALLOWED_ATTRIBUTES = frozenset(
     {
@@ -122,10 +143,14 @@ ALLOWED_ATTRIBUTES = frozenset(
         "next_section",
         "play",
         "rotate",
+        "BUTT",
+        "ROUND",
+        "SQUARE",
         "scale",
         "scale_to_fit_height",
         "scale_to_fit_width",
         "set_color",
+        "set_cap_style",
         "set_fill",
         "set_opacity",
         "set_points_as_corners",
@@ -179,13 +204,17 @@ MAX_RATE_LAMBDAS = 1024
 MAX_OBJECTS_PER_SHOT = 256
 MAX_DIRECT_MANIM_COORDINATE = 68
 MAX_DIRECT_MANIM_DIMENSION = 60.68148148
-MIN_DIRECT_MANIM_DIMENSION = 0.02
-MIN_COPY_STRETCH = 0.00000001
-MAX_COPY_STRETCH = 40_960_000
-MAX_COPY_FIT_DIMENSION = 6068.14814815
-MIN_COPY_FIT_DIMENSION = 0.0002
+# One schema-valid editor unit in the square frame, rounded by compiler.pyNumber.
+MIN_DIRECT_MANIM_DIMENSION = 0.01111111
+MAX_DIRECT_MANIM_CORNER_RADIUS = MAX_DIRECT_MANIM_DIMENSION / 8
+MIN_ARROW_TIP_LENGTH_RATIO = 0.02
+MAX_ARROW_TIP_LENGTH_RATIO = 0.45
+MAX_BRACE_LABEL_SHIFT = MAX_DIRECT_MANIM_DIMENSION * 2
+MAX_EMITTED_DECIMAL_ROUNDING = 0.00000001
+MIN_COPY_DIMENSION_RATIO = 0.00024414
+MAX_COPY_DIMENSION_RATIO = 4_096
+MAX_COPY_SHIFT = MAX_DIRECT_MANIM_COORDINATE * 2
 MAX_DIRECT_ROTATION = 3_600
-MAX_COPY_ROTATION = 7_200
 MIN_AUTHORED_SCALE_MAGNITUDE = 0.01
 MAX_AUTHORED_SCALE_MAGNITUDE = 100
 MIN_CAMERA_ZOOM = 0.05
@@ -206,6 +235,7 @@ MOBJECT_CONSTRUCTORS = frozenset(
         "Line",
         "MathTex",
         "Rectangle",
+        "RoundedRectangle",
         "Tex",
         "Text",
         "VGroup",
@@ -226,6 +256,7 @@ SENSITIVE_METHOD_ATTRIBUTES = frozenset(
         "scale_to_fit_height",
         "scale_to_fit_width",
         "set_color",
+        "set_cap_style",
         "set_fill",
         "set_opacity",
         "set_points_as_corners",
@@ -927,7 +958,7 @@ def _validate_nodes(tree: ast.Module) -> None:
             raise SourcePolicyError(message)
         return value
 
-    def validate_vector(node: ast.expr, maximum: float, message: str) -> None:
+    def validate_vector(node: ast.expr, maximum: float, message: str) -> tuple[float, float, float]:
         if not isinstance(node, ast.List) or len(node.elts) != 3:
             raise SourcePolicyError(message)
         coordinates = [direct_number(coordinate) for coordinate in node.elts]
@@ -937,8 +968,9 @@ def _validate_nodes(tree: ast.Module) -> None:
         assert x_value is not None and y_value is not None and z_value is not None
         if abs(x_value) > maximum or abs(y_value) > maximum or z_value != 0:
             raise SourcePolicyError(message)
+        return x_value, y_value, z_value
 
-    def validate_rotation(node: ast.expr, maximum: float, message: str) -> None:
+    def validate_rotation(node: ast.expr, maximum: float, message: str) -> float:
         if not (
             isinstance(node, ast.BinOp)
             and isinstance(node.op, ast.Mult)
@@ -946,7 +978,15 @@ def _validate_nodes(tree: ast.Module) -> None:
             and node.right.id == "DEGREES"
         ):
             raise SourcePolicyError(message)
-        bounded_number(node.left, -maximum, maximum, message)
+        return bounded_number(node.left, -maximum, maximum, message)
+
+    def has_exact_origin_keyword(call: ast.Call) -> bool:
+        return (
+            len(call.keywords) == 1
+            and call.keywords[0].arg == "about_point"
+            and isinstance(call.keywords[0].value, ast.Name)
+            and call.keywords[0].value.id == "ORIGIN"
+        )
 
     def validate_style_method(name: str, call: ast.Call) -> None:
         if name == "set_color":
@@ -988,30 +1028,109 @@ def _validate_nodes(tree: ast.Module) -> None:
             raise SourcePolicyError("Text arguments are outside the exact compiler dialect")
         bounded_number(call.keywords[0].value, 1, 256, "Text font size is outside the schema bounds")
 
-    def validate_linear_constructor(call: ast.Call, *, arrow: bool = False, brace: bool = False) -> None:
-        expected_keywords = ["buff"] if arrow else ["direction"] if brace else []
-        if len(call.args) != 2 or [keyword.arg for keyword in call.keywords] != expected_keywords:
+    def validate_symmetric_linear_endpoints(call: ast.Call, axis: str) -> None:
+        if len(call.args) != 2:
             raise SourcePolicyError("Linear primitive arguments are outside the exact compiler dialect")
         for endpoint in call.args:
             validate_vector(endpoint, MAX_DIRECT_MANIM_DIMENSION / 2, "Linear primitive endpoints are outside the compiler bounds")
         start = call.args[0]
         end = call.args[1]
         assert isinstance(start, ast.List) and isinstance(end, ast.List)
-        start_x = direct_number(start.elts[0])
-        end_x = direct_number(end.elts[0])
+        primary_index = 0 if axis == "horizontal" else 1
+        secondary_index = 1 if axis == "horizontal" else 0
+        start_primary = direct_number(start.elts[primary_index])
+        end_primary = direct_number(end.elts[primary_index])
         if (
-            start_x is None
-            or end_x is None
-            or not MIN_DIRECT_MANIM_DIMENSION / 2 <= end_x <= MAX_DIRECT_MANIM_DIMENSION / 2
-            or start_x != -end_x
-            or direct_number(start.elts[1]) != 0
-            or direct_number(end.elts[1]) != 0
+            start_primary is None
+            or end_primary is None
+            or not MIN_DIRECT_MANIM_DIMENSION / 2 <= end_primary <= MAX_DIRECT_MANIM_DIMENSION / 2
+            or start_primary != -end_primary
+            or direct_number(start.elts[secondary_index]) != 0
+            or direct_number(end.elts[secondary_index]) != 0
         ):
             raise SourcePolicyError("Linear primitive endpoints are outside the exact compiler dialect")
-        if arrow and direct_number(call.keywords[0].value) != 0:
+
+    def validate_linear_constructor(call: ast.Call, *, arrow: bool = False) -> bool:
+        keyword_names = [keyword.arg for keyword in call.keywords]
+        current_arrow = arrow and keyword_names == ["buff", "max_tip_length_to_length_ratio", "tip_shape"]
+        legacy_arrow = arrow and keyword_names == ["buff"]
+        if (not arrow and keyword_names) or (arrow and not (legacy_arrow or current_arrow)):
+            raise SourcePolicyError("Linear primitive arguments are outside the exact compiler dialect")
+        validate_symmetric_linear_endpoints(call, "horizontal")
+        if not arrow:
+            return False
+        if direct_number(call.keywords[0].value) != 0:
             raise SourcePolicyError("Arrow buff is outside the exact compiler dialect")
-        if brace and not (isinstance(call.keywords[0].value, ast.Name) and call.keywords[0].value.id == "DOWN"):
+        if current_arrow:
+            bounded_number(
+                call.keywords[1].value,
+                MIN_ARROW_TIP_LENGTH_RATIO,
+                MAX_ARROW_TIP_LENGTH_RATIO,
+                "Arrow tip ratio is outside the schema bounds",
+            )
+            tip_shape = call.keywords[2].value
+            if not isinstance(tip_shape, ast.Name) or tip_shape.id not in ARROW_TIP_SHAPE_NAMES:
+                raise SourcePolicyError("Arrow tip shape is outside the exact compiler dialect")
+        return current_arrow
+
+    def validate_brace_constructor(call: ast.Call) -> tuple[str, bool]:
+        keyword_names = [keyword.arg for keyword in call.keywords]
+        legacy_brace = keyword_names == ["direction"]
+        current_brace = keyword_names == ["direction", "buff"]
+        if len(call.args) != 2 or not (legacy_brace or current_brace):
+            raise SourcePolicyError("Brace arguments are outside the exact compiler dialect")
+        direction_node = call.keywords[0].value
+        if not isinstance(direction_node, ast.Name) or direction_node.id not in BRACE_DIRECTION_NAMES:
             raise SourcePolicyError("Brace direction is outside the exact compiler dialect")
+        direction = direction_node.id
+        if legacy_brace and direction != "DOWN":
+            raise SourcePolicyError("Legacy brace direction is outside the exact compiler dialect")
+        validate_symmetric_linear_endpoints(
+            call,
+            "horizontal" if direction in {"UP", "DOWN"} else "vertical",
+        )
+        if current_brace:
+            bounded_number(
+                call.keywords[1].value,
+                0,
+                MAX_DIRECT_MANIM_DIMENSION,
+                "Brace spacing is outside the compiler bounds",
+            )
+        return direction, current_brace
+
+    def validate_cap_style_method(call: ast.Call) -> None:
+        if (
+            call.keywords
+            or len(call.args) != 1
+            or not isinstance(call.args[0], ast.Attribute)
+            or _attribute_parts(call.args[0]) != ["CapStyleType", call.args[0].attr]
+            or call.args[0].attr not in CAP_STYLE_MEMBERS
+        ):
+            raise SourcePolicyError("Line cap is outside the exact compiler dialect")
+        approved_sensitive_call_ids.add(id(call))
+
+    def validate_directional_shift(call: ast.Call, direction: str, *, legacy: bool = False) -> None:
+        if call.keywords or len(call.args) != 1:
+            raise SourcePolicyError("Brace label shift is outside the exact compiler dialect")
+        offset = call.args[0]
+        if not (
+            isinstance(offset, ast.BinOp)
+            and isinstance(offset.op, ast.Mult)
+            and isinstance(offset.left, ast.Name)
+            and offset.left.id == direction
+        ):
+            raise SourcePolicyError("Brace label shift direction is outside the exact compiler dialect")
+        if legacy:
+            if direct_number(offset.right) != 0.45:
+                raise SourcePolicyError("Legacy brace label shift is outside the exact compiler dialect")
+        else:
+            bounded_number(
+                offset.right,
+                0,
+                MAX_BRACE_LABEL_SHIFT,
+                "Brace label shift is outside the compiler bounds",
+            )
+        approved_sensitive_call_ids.add(id(call))
 
     def validate_axes_range(node: ast.expr, name: str) -> None:
         if not isinstance(node, ast.List) or len(node.elts) != 3:
@@ -1048,6 +1167,29 @@ def _validate_nodes(tree: ast.Module) -> None:
                     MAX_DIRECT_MANIM_DIMENSION,
                     "Rectangle dimensions are outside the compiler bounds",
                 )
+        elif constructor == "RoundedRectangle":
+            if root.args or [keyword.arg for keyword in root.keywords] != ["corner_radius", "width", "height"]:
+                raise SourcePolicyError("RoundedRectangle arguments are outside the exact compiler dialect")
+            corner_radius = bounded_number(
+                root.keywords[0].value,
+                0,
+                MAX_DIRECT_MANIM_CORNER_RADIUS,
+                "RoundedRectangle corner radius is outside the compiler bounds",
+            )
+            width = bounded_number(
+                root.keywords[1].value,
+                MIN_DIRECT_MANIM_DIMENSION,
+                MAX_DIRECT_MANIM_DIMENSION,
+                "RoundedRectangle width is outside the compiler bounds",
+            )
+            height = bounded_number(
+                root.keywords[2].value,
+                MIN_DIRECT_MANIM_DIMENSION,
+                MAX_DIRECT_MANIM_DIMENSION,
+                "RoundedRectangle height is outside the compiler bounds",
+            )
+            if corner_radius - min(width, height) / 2 > MAX_EMITTED_DECIMAL_ROUNDING:
+                raise SourcePolicyError("RoundedRectangle corner radius exceeds its exact compiler dimensions")
         elif constructor == "Circle":
             if root.args or [keyword.arg for keyword in root.keywords] != ["radius"] or direct_number(root.keywords[0].value) != 1:
                 raise SourcePolicyError("Circle arguments are outside the exact compiler dialect")
@@ -1066,8 +1208,24 @@ def _validate_nodes(tree: ast.Module) -> None:
             return "leaf", 2
         elif constructor == "Line":
             validate_linear_constructor(root)
+            if methods and methods[0][0] == "set_cap_style":
+                validate_cap_style_method(methods[0][1])
+                return "leaf", 1
         elif constructor == "Arrow":
-            validate_linear_constructor(root, arrow=True)
+            current_arrow = validate_linear_constructor(root, arrow=True)
+            if current_arrow:
+                if [name for name, _ in methods[:3]] != ["set_cap_style", "set_color", "set_stroke"]:
+                    raise SourcePolicyError("Current Arrow requires the exact cap and paint chain")
+                validate_cap_style_method(methods[0][1])
+                validate_style_method("set_color", methods[1][1])
+                validate_style_method("set_stroke", methods[2][1])
+                color = direct_hex(methods[1][1].args[0])
+                stroke = direct_hex(methods[2][1].args[0])
+                if color is None or color != stroke:
+                    raise SourcePolicyError("Arrow tip and stroke colours must match the compiler paint")
+                return "leaf", 1
+            if any(name == "set_cap_style" for name, _ in methods):
+                raise SourcePolicyError("Legacy Arrow cannot contain a current-dialect cap setter")
         elif constructor == "Axes":
             if root.args or [keyword.arg for keyword in root.keywords] != ["x_range", "y_range", "x_length", "y_length", "tips"]:
                 raise SourcePolicyError("Axes arguments are outside the exact compiler dialect")
@@ -1092,40 +1250,61 @@ def _validate_nodes(tree: ast.Module) -> None:
             raise SourcePolicyError("Generated source contains an unsupported object constructor")
         return "leaf", 0
 
-    def validate_brace_label_shift(call: ast.Call, assignment_root: ast.Call) -> None:
-        if call.keywords or len(call.args) != 1:
-            raise SourcePolicyError("Brace label shift is outside the exact compiler dialect")
-        root, methods = method_chain(call)
-        if (
-            not isinstance(root, ast.Call)
-            or not isinstance(root.func, ast.Name)
-            or root.func.id != "Text"
-            or [name for name, _ in methods] != ["shift"]
-        ):
-            raise SourcePolicyError("Brace label shift requires the direct compiler Text receiver")
-        offset = call.args[0]
+    def validate_brace_aggregate(root: ast.Call, methods: list[tuple[str, ast.Call]]) -> int:
+        if root.keywords or len(root.args) != 2:
+            raise SourcePolicyError("Brace aggregate is outside the exact compiler dialect")
+        brace_root, brace_methods = method_chain(root.args[0])
+        label_root, label_methods = method_chain(root.args[1])
         if not (
-            isinstance(offset, ast.BinOp)
-            and isinstance(offset.op, ast.Mult)
-            and isinstance(offset.left, ast.Name)
-            and offset.left.id == "DOWN"
-            and direct_number(offset.right) == 0.45
-            and isinstance(assignment_root.func, ast.Name)
-            and assignment_root.func.id == "VGroup"
-            and len(assignment_root.args) == 2
-            and assignment_root.args[1] is call
-            and isinstance(assignment_root.args[0], ast.Call)
-            and isinstance(assignment_root.args[0].func, ast.Name)
-            and assignment_root.args[0].func.id == "BraceBetweenPoints"
+            isinstance(brace_root, ast.Call)
+            and isinstance(brace_root.func, ast.Name)
+            and brace_root.func.id == "BraceBetweenPoints"
+            and isinstance(label_root, ast.Call)
+            and isinstance(label_root.func, ast.Name)
+            and label_root.func.id == "Text"
         ):
-            raise SourcePolicyError("Brace label shift is outside the exact compiler dialect")
-        assert isinstance(root, ast.Call)
-        validate_text_constructor(root, MAX_BRACE_LABEL_CHARS)
-        brace = assignment_root.args[0]
-        assert isinstance(brace, ast.Call)
-        validate_linear_constructor(brace, brace=True)
-        approved_mobject_constructor_call_ids.update({id(root), id(brace)})
-        approved_sensitive_call_ids.add(id(call))
+            raise SourcePolicyError("Brace aggregate requires exact direct compiler children")
+
+        direction, current_brace = validate_brace_constructor(brace_root)
+        validate_text_constructor(label_root, MAX_BRACE_LABEL_CHARS)
+        approved_mobject_constructor_call_ids.update({id(brace_root), id(label_root)})
+
+        brace_method_names = [name for name, _ in brace_methods]
+        label_method_names = [name for name, _ in label_methods]
+        outer_method_names = [name for name, _ in methods]
+        if current_brace:
+            if brace_method_names != ["set_color", "set_stroke"]:
+                raise SourcePolicyError("Brace body requires the exact compiler paint chain")
+            if label_method_names != ["set_color", "shift"]:
+                raise SourcePolicyError("Brace label requires the exact compiler colour and shift chain")
+            if outer_method_names not in ([], ["set_opacity"]):
+                raise SourcePolicyError("Brace aggregate permits only the exact optional compiler opacity")
+
+            validate_style_method("set_color", brace_methods[0][1])
+            validate_style_method("set_stroke", brace_methods[1][1])
+            body_color = direct_hex(brace_methods[0][1].args[0])
+            body_stroke = direct_hex(brace_methods[1][1].args[0])
+            if body_color is None or body_color != body_stroke:
+                raise SourcePolicyError("Brace body colour and stroke must match the compiler paint")
+            validate_style_method("set_color", label_methods[0][1])
+            validate_directional_shift(label_methods[1][1], direction)
+            approved_sensitive_call_ids.update(
+                {id(brace_methods[0][1]), id(brace_methods[1][1]), id(label_methods[0][1])}
+            )
+            if methods:
+                validate_style_method("set_opacity", methods[0][1])
+                approved_sensitive_call_ids.add(id(methods[0][1]))
+            return len(methods)
+
+        if brace_method_names or label_method_names != ["shift"]:
+            raise SourcePolicyError("Legacy brace children are outside the exact compiler dialect")
+        if outer_method_names not in ([], ["set_stroke"], ["set_stroke", "set_opacity"]):
+            raise SourcePolicyError("Legacy brace decorators are outside the exact compiler dialect")
+        validate_directional_shift(label_methods[0][1], direction, legacy=True)
+        for name, call in methods:
+            validate_style_method(name, call)
+            approved_sensitive_call_ids.add(id(call))
+        return len(methods)
 
     def validate_initialization_expression(expression: ast.expr, known_objects: set[str]) -> str | None:
         root, methods = method_chain(expression)
@@ -1136,34 +1315,21 @@ def _validate_nodes(tree: ast.Module) -> None:
         if id(root) in literal_geometries:
             return "leaf"
 
-        for nested in ast.walk(root):
-            if (
-                isinstance(nested, ast.Call)
-                and isinstance(nested.func, ast.Attribute)
-                and nested.func.attr == "shift"
-            ):
-                validate_brace_label_shift(nested, root)
-
+        first_child_root, _ = method_chain(root.args[0]) if root.args else (None, [])
+        second_child_root, _ = method_chain(root.args[1]) if len(root.args) > 1 else (None, [])
         brace_group = (
             root.func.id == "VGroup"
             and not root.keywords
             and len(root.args) == 2
-            and isinstance(root.args[0], ast.Call)
-            and isinstance(root.args[0].func, ast.Name)
-            and root.args[0].func.id == "BraceBetweenPoints"
-            and isinstance(root.args[1], ast.Call)
-            and isinstance(root.args[1].func, ast.Attribute)
-            and root.args[1].func.attr == "shift"
+            and isinstance(first_child_root, ast.Call)
+            and isinstance(first_child_root.func, ast.Name)
+            and first_child_root.func.id == "BraceBetweenPoints"
+            and isinstance(second_child_root, ast.Call)
+            and isinstance(second_child_root.func, ast.Name)
+            and second_child_root.func.id == "Text"
         )
         if brace_group:
-            if not any(
-                isinstance(nested, ast.Call)
-                and isinstance(nested.func, ast.Attribute)
-                and nested.func.attr == "shift"
-                for nested in ast.walk(root)
-            ):
-                raise SourcePolicyError("Brace aggregate is outside the exact compiler dialect")
-            kind, method_index = "leaf", 0
+            kind, method_index = "leaf", validate_brace_aggregate(root, methods)
         else:
             kind, method_index = validate_object_constructor(root, methods, known_objects)
 
@@ -1177,6 +1343,94 @@ def _validate_nodes(tree: ast.Module) -> None:
             approved_sensitive_call_ids.add(id(call))
             last_style = position
         return kind
+
+    def exact_current_shape_kind(root: ast.expr, methods: list[tuple[str, ast.Call]]) -> str | None:
+        if not isinstance(root, ast.Call) or not isinstance(root.func, ast.Name):
+            return None
+        constructor = root.func.id
+        method_names = [name for name, _ in methods]
+        shape_kind: str | None = None
+        style_names: list[str]
+        if constructor in {"Rectangle", "RoundedRectangle"}:
+            shape_kind = "rectangle"
+            style_names = method_names
+        elif constructor == "Circle" and method_names[:2] == ["stretch_to_fit_width", "stretch_to_fit_height"]:
+            shape_kind = "circle"
+            style_names = method_names[2:]
+        elif constructor == "Line" and method_names[:1] == ["set_cap_style"]:
+            shape_kind = "line"
+            style_names = method_names[1:]
+        elif (
+            constructor == "Arrow"
+            and [keyword.arg for keyword in root.keywords]
+            == ["buff", "max_tip_length_to_length_ratio", "tip_shape"]
+            and method_names[:1] == ["set_cap_style"]
+        ):
+            shape_kind = "arrow"
+            style_names = method_names[1:]
+        elif constructor == "VGroup" and len(root.args) == 2:
+            brace_root, _ = method_chain(root.args[0])
+            if (
+                isinstance(brace_root, ast.Call)
+                and isinstance(brace_root.func, ast.Name)
+                and brace_root.func.id == "BraceBetweenPoints"
+                and [keyword.arg for keyword in brace_root.keywords] == ["direction", "buff"]
+                and method_names in ([], ["set_opacity"])
+            ):
+                return "brace"
+            return None
+        else:
+            return None
+
+        opacity_suffix = style_names[-1:] == ["set_opacity"]
+        paint_names = style_names[:-1] if opacity_suffix else style_names
+        exact_paint_names = {
+            "rectangle": (["set_fill", "set_stroke"],),
+            "circle": (["set_fill", "set_stroke"],),
+            "line": (["set_stroke"],),
+            "arrow": (["set_color", "set_stroke"],),
+        }
+        return shape_kind if paint_names in exact_paint_names[shape_kind] else None
+
+    def current_shape_descriptor(
+        root: ast.expr,
+        methods: list[tuple[str, ast.Call]],
+        shape_kind: str,
+    ) -> tuple[object, ...]:
+        assert isinstance(root, ast.Call) and isinstance(root.func, ast.Name)
+        if shape_kind == "rectangle":
+            corner_radius = direct_number(root.keywords[0].value) if root.func.id == "RoundedRectangle" else None
+            return (shape_kind, root.func.id, corner_radius)
+        if shape_kind == "circle":
+            return (shape_kind, "Circle")
+        if shape_kind == "line":
+            cap = methods[0][1].args[0]
+            assert isinstance(cap, ast.Attribute)
+            return (shape_kind, cap.attr)
+        if shape_kind == "arrow":
+            cap = methods[0][1].args[0]
+            tip_shape = root.keywords[2].value
+            assert isinstance(cap, ast.Attribute) and isinstance(tip_shape, ast.Name)
+            return (
+                shape_kind,
+                cap.attr,
+                direct_number(root.keywords[1].value),
+                tip_shape.id,
+            )
+        assert shape_kind == "brace"
+        brace_root, brace_methods = method_chain(root.args[0])
+        label_root, label_methods = method_chain(root.args[1])
+        assert isinstance(brace_root, ast.Call) and isinstance(label_root, ast.Call)
+        direction = brace_root.keywords[0].value
+        assert isinstance(direction, ast.Name)
+        assert isinstance(label_root.args[0], ast.Constant) and isinstance(label_root.args[0].value, str)
+        return (
+            shape_kind,
+            direction.id,
+            direct_number(brace_root.keywords[1].value),
+            label_root.args[0].value,
+            direct_number(label_root.keywords[0].value),
+        )
 
     def validate_camera_dimension(node: ast.expr, attribute_name: str) -> float:
         if not (
@@ -1250,32 +1504,49 @@ def _validate_nodes(tree: ast.Module) -> None:
             approved_utility_call_ids.add(id(quotient.right))
         approved_utility_call_ids.add(id(minimum))
 
-    def validate_direct_object_call(call: ast.Call, object_name: str) -> str:
+    def validate_direct_object_call(call: ast.Call, object_name: str) -> tuple[str, object | None]:
         root, methods = method_chain(call)
         if not isinstance(root, ast.Name) or root.id != object_name:
             raise SourcePolicyError("Direct object mutation requires the current compiler object")
         names = [name for name, _ in methods]
-        if names == ["move_to"]:
+        detail: object | None = None
+        if names == ["shift"]:
             if call.keywords or len(call.args) != 1:
                 raise SourcePolicyError("Object position is outside the exact compiler dialect")
-            validate_vector(call.args[0], MAX_DIRECT_MANIM_COORDINATE, "Object position is outside the compiler bounds")
-            operation = "move"
+            detail = validate_vector(
+                call.args[0],
+                MAX_DIRECT_MANIM_COORDINATE,
+                "Object position is outside the compiler bounds",
+            )
+            operation = "shift"
         elif names == ["rotate"]:
-            if call.keywords or len(call.args) != 1:
+            if len(call.args) != 1 or not has_exact_origin_keyword(call):
                 raise SourcePolicyError("Object rotation is outside the exact compiler dialect")
-            validate_rotation(call.args[0], MAX_DIRECT_ROTATION, "Object rotation is outside the compiler bounds")
+            detail = validate_rotation(
+                call.args[0],
+                MAX_DIRECT_ROTATION,
+                "Object rotation is outside the compiler bounds",
+            )
             operation = "rotate"
         elif names == ["stretch", "stretch"]:
+            scales: list[float] = []
             for (name, stretch_call), axis in zip(methods, (0, 1), strict=True):
                 assert name == "stretch"
-                if stretch_call.keywords or len(stretch_call.args) != 2 or direct_number(stretch_call.args[1]) != axis:
+                if (
+                    len(stretch_call.args) != 2
+                    or direct_number(stretch_call.args[1]) != axis
+                    or not has_exact_origin_keyword(stretch_call)
+                ):
                     raise SourcePolicyError("Object scale stretch is outside the exact compiler dialect")
-                bounded_nonzero_magnitude(
-                    stretch_call.args[0],
-                    MIN_AUTHORED_SCALE_MAGNITUDE,
-                    MAX_AUTHORED_SCALE_MAGNITUDE,
-                    "Object scale is outside the schema bounds",
+                scales.append(
+                    bounded_nonzero_magnitude(
+                        stretch_call.args[0],
+                        MIN_AUTHORED_SCALE_MAGNITUDE,
+                        MAX_AUTHORED_SCALE_MAGNITUDE,
+                        "Object scale is outside the schema bounds",
+                    )
                 )
+            detail = tuple(scales)
             operation = "stretch"
         elif names in (["scale_to_fit_width"], ["scale_to_fit_height"]):
             if call.keywords or len(call.args) != 1:
@@ -1312,7 +1583,208 @@ def _validate_nodes(tree: ast.Module) -> None:
         else:
             raise SourcePolicyError("Generated source contains a noncompiler direct object mutation")
         approved_sensitive_call_ids.update(id(method_call) for _, method_call in methods)
-        return operation
+        return operation, detail
+
+    def is_exact_local_stretch(
+        call: ast.Call,
+        axis: int,
+        minimum: float,
+        maximum: float,
+        *,
+        reject_identity: bool = True,
+    ) -> bool:
+        value = direct_number(call.args[0]) if len(call.args) == 2 else None
+        return (
+            value is not None
+            and minimum <= abs(value) <= maximum
+            and (not reject_identity or value != 1)
+            and direct_number(call.args[1]) == axis
+            and has_exact_origin_keyword(call)
+        )
+
+    def is_exact_dimension_phase(methods: list[tuple[str, ast.Call]]) -> bool:
+        if len(methods) > 2:
+            return False
+        axes: list[int] = []
+        for name, call in methods:
+            if name == "stretch":
+                axis = int(direct_number(call.args[1])) if len(call.args) == 2 and direct_number(call.args[1]) in {0, 1} else -1
+                if axis < 0 or not is_exact_local_stretch(
+                    call,
+                    axis,
+                    MIN_COPY_DIMENSION_RATIO,
+                    MAX_COPY_DIMENSION_RATIO,
+                ):
+                    return False
+            elif name in {"stretch_to_fit_width", "stretch_to_fit_height"}:
+                axis = 0 if name == "stretch_to_fit_width" else 1
+                value = direct_number(call.args[0]) if len(call.args) == 1 else None
+                if call.keywords or value is None or not MIN_DIRECT_MANIM_DIMENSION <= value <= MAX_DIRECT_MANIM_DIMENSION:
+                    return False
+            else:
+                return False
+            axes.append(axis)
+        return axes == sorted(set(axes))
+
+    def is_exact_target_scale_phase(methods: list[tuple[str, ast.Call]]) -> bool:
+        if len(methods) > 2:
+            return False
+        axes: list[int] = []
+        for name, call in methods:
+            axis = int(direct_number(call.args[1])) if len(call.args) == 2 and direct_number(call.args[1]) in {0, 1} else -1
+            if (
+                name != "stretch"
+                or axis < 0
+                or not is_exact_local_stretch(
+                    call,
+                    axis,
+                    MIN_AUTHORED_SCALE_MAGNITUDE,
+                    MAX_AUTHORED_SCALE_MAGNITUDE,
+                )
+            ):
+                return False
+            axes.append(axis)
+        return axes == sorted(set(axes))
+
+    def reciprocal_matches_emitted(start: float, inverse: float) -> bool:
+        tolerance = MAX_EMITTED_DECIMAL_ROUNDING * (abs(start) + abs(inverse) + 1)
+        return abs(start * inverse - 1) <= tolerance
+
+    def validate_generic_rebuild_geometry(
+        geometry: list[tuple[str, ast.Call]],
+        owner: str,
+    ) -> None:
+        pose = initialization_poses[owner]
+        index = 0
+        start_shift = pose["shift"]
+        assert isinstance(start_shift, tuple)
+        if start_shift[:2] != (0.0, 0.0):
+            if index >= len(geometry) or geometry[index][0] != "shift":
+                raise SourcePolicyError("Copy rebuild must first reset the proven compiler position")
+            reset_call = geometry[index][1]
+            reset = validate_vector(reset_call.args[0], MAX_DIRECT_MANIM_COORDINATE, "Copy reset is outside the compiler bounds") if not reset_call.keywords and len(reset_call.args) == 1 else None
+            if reset != (-start_shift[0], -start_shift[1], 0.0):
+                raise SourcePolicyError("Copy rebuild position reset does not match its proven compiler owner")
+            index += 1
+
+        start_rotation = pose["rotation"]
+        assert isinstance(start_rotation, float)
+        if start_rotation != 0:
+            if index >= len(geometry) or geometry[index][0] != "rotate":
+                raise SourcePolicyError("Copy rebuild must invert the proven compiler rotation")
+            rotate_call = geometry[index][1]
+            if len(rotate_call.args) != 1 or not has_exact_origin_keyword(rotate_call):
+                raise SourcePolicyError("Copy inverse rotation requires the exact local origin")
+            inverse_rotation = validate_rotation(
+                rotate_call.args[0],
+                MAX_DIRECT_ROTATION,
+                "Copy inverse rotation is outside the compiler bounds",
+            )
+            if inverse_rotation != -start_rotation:
+                raise SourcePolicyError("Copy inverse rotation does not match its proven compiler owner")
+            index += 1
+
+        for axis, key in ((0, "scale_x"), (1, "scale_y")):
+            start_scale = pose[key]
+            assert isinstance(start_scale, float)
+            if start_scale == 1:
+                continue
+            if index >= len(geometry) or geometry[index][0] != "stretch":
+                raise SourcePolicyError("Copy rebuild must invert the proven compiler local scale")
+            stretch_call = geometry[index][1]
+            if not is_exact_local_stretch(
+                stretch_call,
+                axis,
+                MIN_AUTHORED_SCALE_MAGNITUDE,
+                MAX_AUTHORED_SCALE_MAGNITUDE,
+                reject_identity=False,
+            ):
+                raise SourcePolicyError("Copy inverse scale requires the exact local origin and axis order")
+            inverse_scale = direct_number(stretch_call.args[0])
+            assert inverse_scale is not None
+            if not reciprocal_matches_emitted(start_scale, inverse_scale):
+                raise SourcePolicyError("Copy inverse scale does not match its proven compiler owner")
+            index += 1
+
+        if index >= len(geometry) or geometry[-1][0] != "shift":
+            raise SourcePolicyError("Copy rebuild requires one final compiler shift")
+        final_shift = geometry[-1][1]
+        if final_shift.keywords or len(final_shift.args) != 1:
+            raise SourcePolicyError("Copy target shift is outside the exact compiler dialect")
+        validate_vector(final_shift.args[0], MAX_DIRECT_MANIM_COORDINATE, "Copy target shift is outside the compiler bounds")
+
+        target_methods = geometry[index:-1]
+        target_rotation: tuple[str, ast.Call] | None = None
+        if target_methods and target_methods[-1][0] == "rotate":
+            target_rotation = target_methods.pop()
+            rotate_call = target_rotation[1]
+            if len(rotate_call.args) != 1 or not has_exact_origin_keyword(rotate_call):
+                raise SourcePolicyError("Copy target rotation requires the exact local origin")
+            angle = validate_rotation(
+                rotate_call.args[0],
+                MAX_DIRECT_ROTATION,
+                "Copy target rotation is outside the compiler bounds",
+            )
+            if angle == 0:
+                raise SourcePolicyError("Compiler copy targets omit an identity rotation")
+
+        phase_split = next(
+            (
+                split
+                for split in range(len(target_methods) + 1)
+                if is_exact_dimension_phase(target_methods[:split])
+                and is_exact_target_scale_phase(target_methods[split:])
+            ),
+            None,
+        )
+        if phase_split is None:
+            raise SourcePolicyError("Copy local dimension and scale phases are outside the exact compiler order")
+        approved_sensitive_call_ids.update(id(call) for _, call in geometry)
+
+    def validate_current_shape_payload(
+        expression: ast.expr,
+        expected_kind: str,
+        expected_descriptor: tuple[object, ...],
+    ) -> None:
+        payload_root, payload_methods = method_chain(expression)
+        if not payload_methods or payload_methods[-1][0] != "shift":
+            raise SourcePolicyError("Current shape targets require one final local placement shift")
+        placement_start = len(payload_methods) - 1
+        shift_call = payload_methods[-1][1]
+        if shift_call.keywords or len(shift_call.args) != 1:
+            raise SourcePolicyError("Current shape target shift is outside the exact compiler dialect")
+        validate_vector(shift_call.args[0], MAX_DIRECT_MANIM_COORDINATE, "Current shape target shift is outside the compiler bounds")
+
+        if placement_start and payload_methods[placement_start - 1][0] == "rotate":
+            placement_start -= 1
+            rotate_call = payload_methods[placement_start][1]
+            if len(rotate_call.args) != 1 or not has_exact_origin_keyword(rotate_call):
+                raise SourcePolicyError("Current shape target rotation requires the exact local origin")
+            angle = validate_rotation(
+                rotate_call.args[0],
+                MAX_DIRECT_ROTATION,
+                "Current shape target rotation is outside the compiler bounds",
+            )
+            if angle == 0:
+                raise SourcePolicyError("Compiler current shape targets omit an identity rotation")
+
+        local_stretches: list[tuple[str, ast.Call]] = []
+        while placement_start and payload_methods[placement_start - 1][0] == "stretch" and len(local_stretches) < 2:
+            placement_start -= 1
+            local_stretches.insert(0, payload_methods[placement_start])
+        if not is_exact_target_scale_phase(local_stretches):
+            raise SourcePolicyError("Current shape target scale is outside the exact local-axis order")
+
+        prefix_expression: ast.expr = payload_methods[placement_start - 1][1] if placement_start else payload_root
+        if validate_initialization_expression(prefix_expression, object_names) != "leaf":
+            raise SourcePolicyError("Current shape target payload is not an exact compiler primitive")
+        prefix_root, prefix_methods = method_chain(prefix_expression)
+        actual_kind = exact_current_shape_kind(prefix_root, prefix_methods)
+        if actual_kind != expected_kind:
+            raise SourcePolicyError("Current shape target kind does not match its proven compiler owner")
+        if current_shape_descriptor(prefix_root, prefix_methods, actual_kind) != expected_descriptor:
+            raise SourcePolicyError("Current shape target descriptor does not match its proven compiler owner")
+        approved_sensitive_call_ids.update(id(call) for _, call in payload_methods[placement_start:])
 
     def validate_copy_target(expression: ast.expr, references: dict[str, str]) -> str:
         root, methods = method_chain(expression)
@@ -1321,77 +1793,71 @@ def _validate_nodes(tree: ast.Module) -> None:
         copy_call = methods[0][1]
         if copy_call.args or copy_call.keywords:
             raise SourcePolicyError("Compiler reference copy cannot accept arguments")
+        owner = references[root.id]
         approved_sensitive_call_ids.add(id(copy_call))
-        index = 1
 
-        if index < len(methods) and methods[index][0] in {"stretch", "stretch_to_fit_width"}:
-            name, geometry_call = methods[index]
-            if geometry_call.keywords:
-                raise SourcePolicyError("Horizontal copy geometry is outside the exact compiler dialect")
-            if name == "stretch":
-                if len(geometry_call.args) != 2 or direct_number(geometry_call.args[1]) != 0:
-                    raise SourcePolicyError("Horizontal copy stretch requires axis zero")
-                bounded_nonzero_magnitude(geometry_call.args[0], MIN_COPY_STRETCH, MAX_COPY_STRETCH, "Horizontal copy stretch is outside the compiler bounds")
-            else:
-                if len(geometry_call.args) != 1:
-                    raise SourcePolicyError("Horizontal copy fit is outside the exact compiler dialect")
-                bounded_number(geometry_call.args[0], MIN_COPY_FIT_DIMENSION, MAX_COPY_FIT_DIMENSION, "Horizontal copy fit is outside the compiler bounds")
-            approved_sensitive_call_ids.add(id(geometry_call))
-            index += 1
-            if name == "stretch_to_fit_width" and index < len(methods) and methods[index][0] == "stretch":
-                reflection = methods[index][1]
-                if reflection.keywords or len(reflection.args) != 2 or direct_number(reflection.args[0]) != -1 or direct_number(reflection.args[1]) != 0:
-                    raise SourcePolicyError("Horizontal reflection is outside the exact compiler dialect")
-                approved_sensitive_call_ids.add(id(reflection))
-                index += 1
+        current_shape_kind = object_shape_kinds.get(owner)
+        method_names = [name for name, _ in methods]
+        if current_shape_kind is not None and "become" in method_names:
+            if method_names != ["copy", "become", "set_opacity"]:
+                raise SourcePolicyError("Current shape become copies require the exact compiler target")
+            become_call = methods[1][1]
+            if become_call.keywords or len(become_call.args) != 1:
+                raise SourcePolicyError("Current shape become arguments are outside the exact compiler dialect")
+            validate_current_shape_payload(
+                become_call.args[0],
+                current_shape_kind,
+                object_shape_descriptors[owner],
+            )
+            validate_style_method("set_opacity", methods[2][1])
+            approved_sensitive_call_ids.update({id(become_call), id(methods[2][1])})
+            return owner
 
-        if index < len(methods) and methods[index][0] in {"stretch", "stretch_to_fit_height"}:
-            name, geometry_call = methods[index]
-            if geometry_call.keywords:
-                raise SourcePolicyError("Vertical copy geometry is outside the exact compiler dialect")
-            if name == "stretch":
-                if len(geometry_call.args) != 2 or direct_number(geometry_call.args[1]) != 1:
-                    raise SourcePolicyError("Vertical copy stretch requires axis one")
-                bounded_nonzero_magnitude(geometry_call.args[0], MIN_COPY_STRETCH, MAX_COPY_STRETCH, "Vertical copy stretch is outside the compiler bounds")
-            else:
-                if len(geometry_call.args) != 1:
-                    raise SourcePolicyError("Vertical copy fit is outside the exact compiler dialect")
-                bounded_number(geometry_call.args[0], MIN_COPY_FIT_DIMENSION, MAX_COPY_FIT_DIMENSION, "Vertical copy fit is outside the compiler bounds")
-            approved_sensitive_call_ids.add(id(geometry_call))
-            index += 1
-            if name == "stretch_to_fit_height" and index < len(methods) and methods[index][0] == "stretch":
-                reflection = methods[index][1]
-                if reflection.keywords or len(reflection.args) != 2 or direct_number(reflection.args[0]) != -1 or direct_number(reflection.args[1]) != 1:
-                    raise SourcePolicyError("Vertical reflection is outside the exact compiler dialect")
-                approved_sensitive_call_ids.add(id(reflection))
-                index += 1
+        style_names = {"set_color", "set_fill", "set_stroke", "set_opacity"}
+        style_index = next(
+            (index for index in range(1, len(methods)) if methods[index][0] in style_names),
+            len(methods),
+        )
+        geometry = methods[1:style_index]
+        if len(geometry) == 1 and geometry[0][0] == "shift":
+            shift_call = geometry[0][1]
+            if shift_call.keywords or len(shift_call.args) != 1:
+                raise SourcePolicyError("Pure copy shift is outside the exact compiler dialect")
+            delta = validate_vector(shift_call.args[0], MAX_COPY_SHIFT, "Pure copy shift is outside the compiler bounds")
+            if delta[:2] == (0.0, 0.0):
+                raise SourcePolicyError("Compiler copy targets omit an identity shift")
+            approved_sensitive_call_ids.add(id(shift_call))
+        elif geometry:
+            validate_generic_rebuild_geometry(geometry, owner)
 
-        if index < len(methods) and methods[index][0] == "rotate":
-            rotate_call = methods[index][1]
-            if rotate_call.keywords or len(rotate_call.args) != 1:
-                raise SourcePolicyError("Copy rotation is outside the exact compiler dialect")
-            validate_rotation(rotate_call.args[0], MAX_COPY_ROTATION, "Copy rotation is outside the compiler bounds")
-            approved_sensitive_call_ids.add(id(rotate_call))
-            index += 1
-
-        if index < len(methods) and methods[index][0] == "move_to":
-            move_call = methods[index][1]
-            if move_call.keywords or len(move_call.args) != 1:
-                raise SourcePolicyError("Copy position is outside the exact compiler dialect")
-            validate_vector(move_call.args[0], MAX_DERIVED_NUMERIC_LITERAL, "Copy position is outside the compiler bounds")
-            approved_sensitive_call_ids.add(id(move_call))
-            index += 1
-
-        for style_name in ("set_fill", "set_stroke"):
-            if index < len(methods) and methods[index][0] == style_name:
-                validate_style_method(style_name, methods[index][1])
-                approved_sensitive_call_ids.add(id(methods[index][1]))
-                index += 1
+        index = style_index
+        if current_shape_kind == "arrow":
+            if index < len(methods) and methods[index][0] == "set_color":
+                color_call = methods[index][1]
+                if index + 1 >= len(methods) or methods[index + 1][0] != "set_stroke":
+                    raise SourcePolicyError("Current Arrow copy colour requires the exact compiler stroke pair")
+                stroke_call = methods[index + 1][1]
+                validate_style_method("set_color", color_call)
+                validate_style_method("set_stroke", stroke_call)
+                if direct_hex(color_call.args[0]) != direct_hex(stroke_call.args[0]):
+                    raise SourcePolicyError("Arrow copy tip and stroke colours must match the compiler paint")
+                approved_sensitive_call_ids.update({id(color_call), id(stroke_call)})
+                index += 2
+            elif index < len(methods) and methods[index][0] in {"set_fill", "set_stroke"}:
+                raise SourcePolicyError("Current Arrow copy paint requires the exact compiler colour and stroke pair")
+        elif index < len(methods) and methods[index][0] == "set_color":
+            raise SourcePolicyError("Copy set_color is reserved for proven current Arrow references")
+        else:
+            for style_name in ("set_fill", "set_stroke"):
+                if index < len(methods) and methods[index][0] == style_name:
+                    validate_style_method(style_name, methods[index][1])
+                    approved_sensitive_call_ids.add(id(methods[index][1]))
+                    index += 1
         if index >= len(methods) or methods[index][0] != "set_opacity" or index != len(methods) - 1:
             raise SourcePolicyError("Compiler Transform copy targets require one final opacity setter")
         validate_style_method("set_opacity", methods[index][1])
         approved_sensitive_call_ids.add(id(methods[index][1]))
-        return references[root.id]
+        return owner
 
     def validate_rate_expression(expression: ast.expr) -> None:
         if isinstance(expression, ast.Name) and expression.id in {"linear", "rush_into", "rush_from", "smooth"}:
@@ -1416,45 +1882,67 @@ def _validate_nodes(tree: ast.Module) -> None:
 
     object_names: set[str] = set()
     object_kinds: dict[str, str] = {}
+    object_shape_kinds: dict[str, str] = {}
+    object_shape_descriptors: dict[str, tuple[object, ...]] = {}
     reference_owners: dict[str, str] = {}
     reference_by_owner: dict[str, str] = {}
     group_children: dict[str, tuple[str, ...]] = {}
     group_constructors: dict[str, str] = {}
     initialization_states: dict[str, dict[str, bool]] = {}
+    initialization_poses: dict[str, dict[str, object]] = {}
     claimed_bindings: set[str] = set()
 
     def new_initialization_state() -> dict[str, bool]:
         return {
             "dimension": False,
-            "move": False,
-            "rotate": False,
             "stretch": False,
+            "rotate": False,
+            "shift": False,
             "reference": False,
             "opacity": False,
         }
 
-    def apply_initialization_operation(object_name: str, operation: str) -> None:
+    def new_initialization_pose() -> dict[str, object]:
+        return {
+            "scale_x": 1.0,
+            "scale_y": 1.0,
+            "rotation": 0.0,
+            "shift": (0.0, 0.0, 0.0),
+        }
+
+    def apply_initialization_operation(object_name: str, operation: str, detail: object | None) -> None:
         state = initialization_states[object_name]
         if operation == "dimension":
             if any(state.values()):
                 raise SourcePolicyError("Object dimension fitting must be the first direct compiler initialization")
-        elif operation == "move":
-            if state["move"] or state["rotate"] or state["stretch"] or state["reference"] or state["opacity"]:
-                raise SourcePolicyError("Object move_to is duplicated or outside the compiler initialization order")
-        elif operation == "rotate":
-            if not state["move"] or state["rotate"] or state["stretch"] or state["reference"] or state["opacity"]:
-                raise SourcePolicyError("Object rotate is outside the compiler initialization order")
         elif operation == "stretch":
-            if not state["move"] or state["stretch"] or state["reference"] or state["opacity"]:
+            if state["stretch"] or state["rotate"] or state["shift"] or state["reference"] or state["opacity"]:
                 raise SourcePolicyError("Object stretch is outside the compiler initialization order")
+            assert isinstance(detail, tuple) and len(detail) == 2
+            if detail == (1.0, 1.0):
+                raise SourcePolicyError("Compiler object initialization omits an identity scale pair")
+            initialization_poses[object_name]["scale_x"] = detail[0]
+            initialization_poses[object_name]["scale_y"] = detail[1]
+        elif operation == "rotate":
+            if state["rotate"] or state["shift"] or state["reference"] or state["opacity"]:
+                raise SourcePolicyError("Object rotate is outside the compiler initialization order")
+            assert isinstance(detail, float)
+            if detail == 0:
+                raise SourcePolicyError("Compiler object initialization omits an identity rotation")
+            initialization_poses[object_name]["rotation"] = detail
+        elif operation == "shift":
+            if state["shift"] or state["reference"] or state["opacity"]:
+                raise SourcePolicyError("Object shift is duplicated or outside the compiler initialization order")
+            assert isinstance(detail, tuple) and len(detail) == 3
+            initialization_poses[object_name]["shift"] = detail
         elif operation == "opacity":
-            if not state["move"] or state["opacity"]:
+            if not state["shift"] or not state["reference"] or state["opacity"]:
                 raise SourcePolicyError("Object hidden opacity is outside the compiler initialization order")
         state[operation] = True
 
     def require_initialized_leaves(names: set[str] | None = None) -> None:
         candidates = object_names if names is None else names
-        if any(object_kinds.get(name) == "leaf" and not initialization_states[name]["move"] for name in candidates):
+        if any(object_kinds.get(name) == "leaf" and not initialization_states[name]["shift"] for name in candidates):
             raise SourcePolicyError("Compiler leaf objects must be positioned before scene operations")
 
     def validate_transform_target(expression: ast.expr, target_name: str) -> None:
@@ -1602,11 +2090,14 @@ def _validate_nodes(tree: ast.Module) -> None:
     def reset_active_shot_provenance() -> None:
         object_names.clear()
         object_kinds.clear()
+        object_shape_kinds.clear()
+        object_shape_descriptors.clear()
         reference_owners.clear()
         reference_by_owner.clear()
         group_children.clear()
         group_constructors.clear()
         initialization_states.clear()
+        initialization_poses.clear()
 
     for statement in construct.body:
         if isinstance(statement, ast.Assign):
@@ -1638,7 +2129,7 @@ def _validate_nodes(tree: ast.Module) -> None:
                     or copy_call.args
                     or copy_call.keywords
                     or copy_root.id in reference_by_owner
-                    or (object_kinds.get(copy_root.id) == "leaf" and (state is None or not state["move"] or state["opacity"]))
+                    or (object_kinds.get(copy_root.id) == "leaf" and (state is None or not state["shift"] or state["opacity"]))
                 ):
                     raise SourcePolicyError("Reference copies must immediately snapshot the current compiler object")
                 reference_owners[target.id] = copy_root.id
@@ -1657,8 +2148,13 @@ def _validate_nodes(tree: ast.Module) -> None:
                 object_names.add(target.id)
                 object_kinds[target.id] = kind
                 initialization_states[target.id] = new_initialization_state()
+                initialization_poses[target.id] = new_initialization_pose()
                 claimed_bindings.add(target.id)
                 root, methods = method_chain(statement.value)
+                shape_kind = exact_current_shape_kind(root, methods)
+                if shape_kind is not None:
+                    object_shape_kinds[target.id] = shape_kind
+                    object_shape_descriptors[target.id] = current_shape_descriptor(root, methods, shape_kind)
                 if kind == "group" and isinstance(root, ast.Call):
                     group_children[target.id] = tuple(argument.id for argument in root.args if isinstance(argument, ast.Name))
                     assert isinstance(root.func, ast.Name)
@@ -1688,6 +2184,7 @@ def _validate_nodes(tree: ast.Module) -> None:
             elif method == "clear":
                 if call.args or call.keywords:
                     raise SourcePolicyError("self.clear must be the exact zero-argument compiler statement")
+                require_initialized_leaves()
                 reset_active_shot_provenance()
             elif method == "next_section":
                 if (
@@ -1702,6 +2199,7 @@ def _validate_nodes(tree: ast.Module) -> None:
                 if shot_count > MAX_COMPILER_SHOTS:
                     raise SourcePolicyError("Generated source contains too many compiler shots")
                 shot_object_count = 0
+                require_initialized_leaves()
                 reset_active_shot_provenance()
             elif method == "wait":
                 if call.keywords or len(call.args) != 1 or direct_number(call.args[0]) != 0:
@@ -1727,8 +2225,10 @@ def _validate_nodes(tree: ast.Module) -> None:
 
         if current_object is None or object_kinds.get(current_object) != "leaf":
             raise SourcePolicyError("Direct object calls require the current compiler leaf binding")
-        operation = validate_direct_object_call(call, current_object)
-        apply_initialization_operation(current_object, operation)
+        operation, detail = validate_direct_object_call(call, current_object)
+        apply_initialization_operation(current_object, operation, detail)
+
+    require_initialized_leaves()
 
     for node in ast.walk(tree):
         if id(node) in helper_node_ids:

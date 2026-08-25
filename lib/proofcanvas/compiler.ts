@@ -35,6 +35,16 @@ import {
   type CompilerSchedule,
 } from "./compilerSchedule";
 import { analyzeGraphExpression } from "./graphExpression";
+import {
+  isCurrentShapeType,
+  resolveShapeDimensions,
+  resolveShapeGeometry,
+  resolveShapePaint,
+  shapeAuthoringIssue,
+  type ArrowTipShape,
+  type BraceDirection,
+  type ShapeLineCap,
+} from "./shapeGeometry";
 
 export interface CompilerDiagnostic {
   severity: "info" | "warning" | "error";
@@ -55,12 +65,21 @@ export interface CompileResult {
 }
 
 const MAX_HIDDEN_TARGET_DIAGNOSTICS = 64;
+const MAX_SHAPE_SETTINGS_DIAGNOSTICS = 64;
 
 function boundedCompilerDiagnostics(input: CompilerDiagnostic[]): CompilerDiagnostic[] {
   const output: CompilerDiagnostic[] = [];
   const hiddenTargets = new Set<string>();
   let omittedHiddenTargets = 0;
+  let shapeSettingsCount = 0;
+  let omittedShapeSettings = 0;
   for (const diagnostic of input) {
+    if (diagnostic.code === "SHAPE_SETTINGS_INVALID_FALLBACK") {
+      shapeSettingsCount += 1;
+      if (shapeSettingsCount <= MAX_SHAPE_SETTINGS_DIAGNOSTICS) output.push(diagnostic);
+      else omittedShapeSettings += 1;
+      continue;
+    }
     if (diagnostic.code !== "ANIMATION_TARGET_HIDDEN") {
       output.push(diagnostic);
       continue;
@@ -75,6 +94,11 @@ function boundedCompilerDiagnostics(input: CompilerDiagnostic[]): CompilerDiagno
     severity: "info",
     code: "ANIMATION_TARGET_HIDDEN_TRUNCATED",
     message: `${omittedHiddenTargets} additional hidden animation targets were deterministically omitted from diagnostics.`,
+  });
+  if (omittedShapeSettings > 0) output.push({
+    severity: "info",
+    code: "SHAPE_SETTINGS_INVALID_FALLBACK_TRUNCATED",
+    message: `${omittedShapeSettings} additional malformed shape settings were deterministically omitted from diagnostics.`,
   });
   return output;
 }
@@ -230,24 +254,87 @@ function variableMaps(project: ProjectDocument): CompilerVariableMaps {
   return { objects, references };
 }
 
+function manimPoint(transform: SceneObject["transform"], project: ProjectDocument): Readonly<{ x: number; y: number }> {
+  return editorPointToManim(project.settings.aspectRatio, transform);
+}
+
+function vectorLiteral(x: number, y: number): string {
+  return `[${pyNumber(x)}, ${pyNumber(y)}, 0]`;
+}
+
 function coordinate(object: SceneObject, project: ProjectDocument): string {
-  const { x, y } = editorPointToManim(project.settings.aspectRatio, object.transform);
+  const { x, y } = manimPoint(object.transform, project);
+  return vectorLiteral(x, y);
+}
+
+function transformCoordinate(transform: SceneObject["transform"], project: ProjectDocument): string {
+  const { x, y } = manimPoint(transform, project);
+  return vectorLiteral(x, y);
+}
+
+function placementChain(transform: SceneObject["transform"], project: ProjectDocument): string {
+  const parts: string[] = [];
+  if (transform.scaleX !== 1) parts.push(`.stretch(${pyNumber(transform.scaleX)}, 0, about_point=ORIGIN)`);
+  if (transform.scaleY !== 1) parts.push(`.stretch(${pyNumber(transform.scaleY)}, 1, about_point=ORIGIN)`);
+  if (transform.rotation) parts.push(`.rotate(${pyNumber(transform.rotation)} * DEGREES, about_point=ORIGIN)`);
+  parts.push(`.shift(${transformCoordinate(transform, project)})`);
+  return parts.join("");
+}
+
+function coordinateDelta(
+  start: SceneObject["transform"],
+  target: SceneObject["transform"],
+  project: ProjectDocument,
+): string {
+  const startPoint = manimPoint(start, project);
+  const targetPoint = manimPoint(target, project);
+  const x = targetPoint.x - startPoint.x;
+  const y = targetPoint.y - startPoint.y;
   return `[${pyNumber(x)}, ${pyNumber(y)}, 0]`;
 }
 
 function size(value: number | undefined, project: ProjectDocument): number {
-  return Math.max(0.02, editorLengthToManim(project.settings.aspectRatio, value ?? 40));
+  return editorLengthToManim(project.settings.aspectRatio, value ?? 40);
 }
 
+function shapeOffset(value: number, project: ProjectDocument): number {
+  return Math.max(0, editorLengthToManim(project.settings.aspectRatio, value));
+}
+
+const MANIM_CAP_STYLE: Readonly<Record<ShapeLineCap, string>> = {
+  butt: "BUTT",
+  round: "ROUND",
+  square: "SQUARE",
+};
+
+const MANIM_ARROW_TIP: Readonly<Record<ArrowTipShape, string>> = {
+  triangle: "ArrowTriangleFilledTip",
+  stealth: "StealthTip",
+  circle: "ArrowCircleFilledTip",
+  square: "ArrowSquareFilledTip",
+};
+
+const MANIM_BRACE_DIRECTION: Readonly<Record<BraceDirection, string>> = {
+  above: "UP",
+  below: "DOWN",
+  left: "LEFT",
+  right: "RIGHT",
+};
+
 function styleChain(object: SceneObject, style: StylePack): string {
+  if (isCurrentShapeType(object.type)) {
+    const paint = resolveShapePaint(object, style);
+    if (!paint) return "";
+    const parts: string[] = [];
+    if (object.type === "arrow") parts.push(`.set_color(${pyString(paint.stroke)})`);
+    if (paint.fill !== null) parts.push(`.set_fill(${pyString(paint.fill)}, opacity=1.0)`);
+    // Brace children own distinct body/label colours inside the aggregate.
+    if (object.type !== "brace") parts.push(`.set_stroke(${pyString(paint.stroke)}, width=${pyNumber(paint.strokeWidth)})`);
+    if (paint.opacity !== 1) parts.push(`.set_opacity(${pyNumber(paint.opacity)})`);
+    return parts.join("");
+  }
   const color = object.style.color ?? object.style.stroke ?? style.colors.ink;
-  const fill = object.style.fill ?? (
-    object.type === "circle"
-      ? style.colors.background
-      : object.type === "rectangle"
-        ? style.colors.ink
-        : undefined
-  );
+  const fill = object.style.fill;
   const graphStroke = object.type === "graph" ? resolvedGraphStroke(object, style) : null;
   const stroke = graphStroke?.stroke ?? object.style.stroke ?? color;
   const strokeWidth = graphStroke?.strokeWidth ?? object.style.strokeWidth ?? style.strokes.regular;
@@ -264,7 +351,9 @@ function visualTargetChain(object: SceneObject & { preview?: { opacity: number }
   if (object.style.fill && objectTypeSupportsStyleProperty(object.type, "fill")) parts.push(`.set_fill(${pyString(object.style.fill)}, opacity=1.0)`);
   if ((object.type === "graph" || object.style.stroke || object.style.strokeWidth !== undefined) && objectTypeSupportsStyleProperty(object.type, "stroke")) {
     const graphStroke = object.type === "graph" ? resolvedGraphStroke(object, style) : null;
-    parts.push(`.set_stroke(${pyString(graphStroke?.stroke ?? object.style.stroke ?? object.style.color ?? style.colors.ink)}, width=${pyNumber(graphStroke?.strokeWidth ?? object.style.strokeWidth ?? style.strokes.regular)})`);
+    const stroke = graphStroke?.stroke ?? object.style.stroke ?? style.colors.ink;
+    if (object.type === "arrow") parts.push(`.set_color(${pyString(stroke)})`);
+    parts.push(`.set_stroke(${pyString(stroke)}, width=${pyNumber(graphStroke?.strokeWidth ?? object.style.strokeWidth ?? style.strokes.regular)})`);
   }
   if (objectTypeSupportsStyleProperty(object.type, "opacity")) parts.push(`.set_opacity(${pyNumber(object.preview?.opacity ?? object.style.opacity ?? 1)})`);
   return parts.join("");
@@ -292,8 +381,9 @@ function primitiveExpression(
   style: StylePack,
   diagnostics: CompilerDiagnostic[],
 ): string {
-  const width = size(object.transform.width, project);
-  const height = size(object.transform.height, project);
+  const shapeDimensions = resolveShapeDimensions(object);
+  const width = size(isCurrentShapeType(object.type) ? shapeDimensions.width : object.transform.width, project);
+  const height = size(isCurrentShapeType(object.type) ? shapeDimensions.height : object.transform.height, project);
   const content = typeof object.properties.content === "string" ? object.properties.content : object.name;
   switch (object.type) {
     case "text":
@@ -315,15 +405,39 @@ function primitiveExpression(
     }
     case "circle":
       return `Circle(radius=1.0).stretch_to_fit_width(${pyNumber(width)}).stretch_to_fit_height(${pyNumber(height)})`;
-    case "rectangle":
-      return `Rectangle(width=${pyNumber(width)}, height=${pyNumber(height)})`;
-    case "line":
-      return `Line([-${pyNumber(width / 2)}, 0, 0], [${pyNumber(width / 2)}, 0, 0])`;
-    case "arrow":
-      return `Arrow([-${pyNumber(width / 2)}, 0, 0], [${pyNumber(width / 2)}, 0, 0], buff=0)`;
+    case "rectangle": {
+      const geometry = resolveShapeGeometry(object, style);
+      const radius = geometry?.kind === "rectangle" ? shapeOffset(geometry.cornerRadius, project) : 0;
+      return radius > 0
+        ? `RoundedRectangle(corner_radius=${pyNumber(radius)}, width=${pyNumber(width)}, height=${pyNumber(height)})`
+        : `Rectangle(width=${pyNumber(width)}, height=${pyNumber(height)})`;
+    }
+    case "line": {
+      const geometry = resolveShapeGeometry(object, style);
+      const cap = geometry?.kind === "line" ? geometry.lineCap : "butt";
+      return `Line([-${pyNumber(width / 2)}, 0, 0], [${pyNumber(width / 2)}, 0, 0]).set_cap_style(CapStyleType.${MANIM_CAP_STYLE[cap]})`;
+    }
+    case "arrow": {
+      const geometry = resolveShapeGeometry(object, style);
+      const arrow = geometry?.kind === "arrow" ? geometry : null;
+      const cap = arrow?.lineCap ?? "butt";
+      const tipShape = arrow?.tipShape ?? "triangle";
+      const tipSizeRatio = arrow?.tipSizeRatio ?? 0.25;
+      return `Arrow([-${pyNumber(width / 2)}, 0, 0], [${pyNumber(width / 2)}, 0, 0], buff=0, max_tip_length_to_length_ratio=${pyNumber(tipSizeRatio)}, tip_shape=${MANIM_ARROW_TIP[tipShape]}).set_cap_style(CapStyleType.${MANIM_CAP_STYLE[cap]})`;
+    }
     case "brace": {
+      const geometry = resolveShapeGeometry(object, style);
+      const brace = geometry?.kind === "brace" ? geometry : { direction: "below" as const, spacing: 12 };
+      const paint = resolveShapePaint(object, style)!;
+      const direction = MANIM_BRACE_DIRECTION[brace.direction];
+      const vertical = brace.direction === "left" || brace.direction === "right";
+      const endpoints = vertical
+        ? `[0, -${pyNumber(height / 2)}, 0], [0, ${pyNumber(height / 2)}, 0]`
+        : `[-${pyNumber(width / 2)}, 0, 0], [${pyNumber(width / 2)}, 0, 0]`;
+      const spacing = shapeOffset(brace.spacing, project);
+      const labelShift = shapeOffset((vertical ? shapeDimensions.width : shapeDimensions.height) + brace.spacing, project);
       const label = typeof object.properties.label === "string" ? object.properties.label : "";
-      return `VGroup(BraceBetweenPoints([-${pyNumber(width / 2)}, 0, 0], [${pyNumber(width / 2)}, 0, 0], direction=DOWN), Text(${pyString(label)}, font_size=${pyNumber(object.style.fontSize ?? 22)}).shift(DOWN * 0.45))`;
+      return `VGroup(BraceBetweenPoints(${endpoints}, direction=${direction}, buff=${pyNumber(spacing)}).set_color(${pyString(paint.stroke)}).set_stroke(${pyString(paint.stroke)}, width=${pyNumber(paint.strokeWidth)}), Text(${pyString(label)}, font_size=${pyNumber(object.style.fontSize ?? 22)}).set_color(${pyString(paint.labelColor)}).shift(${direction} * ${pyNumber(labelShift)}))`;
     }
     case "axes": {
       const xMin = finite(object.properties.xMin, -5);
@@ -450,6 +564,22 @@ function safeDerivedTransform(
   return { ...fallback };
 }
 
+type CompilerTargetObject = SceneObject & { preview?: { opacity: number } };
+
+function currentShapeTransformTarget(
+  targetObject: CompilerTargetObject,
+  targetTransform: SceneObject["transform"],
+  referenceVariable: string,
+  project: ProjectDocument,
+  style: StylePack,
+  diagnostics: CompilerDiagnostic[],
+): string {
+  const exactTarget: SceneObject = { ...targetObject, transform: targetTransform };
+  const primitive = `${primitiveExpression(exactTarget, project, style, diagnostics)}${styleChain(exactTarget, style)}${placementChain(targetTransform, project)}`;
+  const opacity = targetObject.preview?.opacity ?? targetObject.style.opacity ?? 1;
+  return `${referenceVariable}.copy().become(${primitive}).set_opacity(${pyNumber(opacity)})`;
+}
+
 function copyTransformTarget(
   object: SceneObject,
   transformAtStart: SceneObject["transform"],
@@ -458,38 +588,58 @@ function copyTransformTarget(
   project: ProjectDocument,
 ): string {
   const parts = [`${variable}.copy()`];
-  if (targetTransform.width !== transformAtStart.width || targetTransform.scaleX !== transformAtStart.scaleX) {
+  const dimensionsUnchanged = targetTransform.width === transformAtStart.width && targetTransform.height === transformAtStart.height;
+  const localPoseUnchanged = targetTransform.rotation === transformAtStart.rotation
+    && targetTransform.scaleX === transformAtStart.scaleX
+    && targetTransform.scaleY === transformAtStart.scaleY;
+  const positionUnchanged = targetTransform.x === transformAtStart.x && targetTransform.y === transformAtStart.y;
+  if (dimensionsUnchanged && localPoseUnchanged) {
+    if (!positionUnchanged) parts.push(`.shift(${coordinateDelta(transformAtStart, targetTransform, project)})`);
+    return parts.join("");
+  }
+
+  const startPoint = manimPoint(transformAtStart, project);
+  if (startPoint.x || startPoint.y) parts.push(`.shift(${vectorLiteral(-startPoint.x, -startPoint.y)})`);
+  if (transformAtStart.rotation) parts.push(`.rotate(${pyNumber(-transformAtStart.rotation)} * DEGREES, about_point=ORIGIN)`);
+  if (transformAtStart.scaleX !== 1) parts.push(`.stretch(${pyNumber(1 / transformAtStart.scaleX)}, 0, about_point=ORIGIN)`);
+  if (transformAtStart.scaleY !== 1) parts.push(`.stretch(${pyNumber(1 / transformAtStart.scaleY)}, 1, about_point=ORIGIN)`);
+
+  if (targetTransform.width !== transformAtStart.width) {
     if (targetTransform.width !== undefined && transformAtStart.width !== undefined) {
-      const ratio = targetTransform.width * targetTransform.scaleX / (transformAtStart.width * transformAtStart.scaleX);
-      parts.push(`.stretch(${pyNumber(ratio)}, 0)`);
-    } else if (targetTransform.width === undefined && transformAtStart.width === undefined) {
-      parts.push(`.stretch(${pyNumber(targetTransform.scaleX / transformAtStart.scaleX)}, 0)`);
+      parts.push(`.stretch(${pyNumber(targetTransform.width / transformAtStart.width)}, 0, about_point=ORIGIN)`);
     } else {
-      const width = size(targetTransform.width ?? object.transform.width ?? 40, project) * Math.abs(targetTransform.scaleX);
+      const width = size(targetTransform.width ?? object.transform.width ?? 40, project);
       parts.push(`.stretch_to_fit_width(${pyNumber(width)})`);
-      if (targetTransform.scaleX < 0) parts.push(".stretch(-1.0, 0)");
     }
   }
-  if (targetTransform.height !== transformAtStart.height || targetTransform.scaleY !== transformAtStart.scaleY) {
+  if (targetTransform.height !== transformAtStart.height) {
     if (targetTransform.height !== undefined && transformAtStart.height !== undefined) {
-      const ratio = targetTransform.height * targetTransform.scaleY / (transformAtStart.height * transformAtStart.scaleY);
-      parts.push(`.stretch(${pyNumber(ratio)}, 1)`);
-    } else if (targetTransform.height === undefined && transformAtStart.height === undefined) {
-      parts.push(`.stretch(${pyNumber(targetTransform.scaleY / transformAtStart.scaleY)}, 1)`);
+      parts.push(`.stretch(${pyNumber(targetTransform.height / transformAtStart.height)}, 1, about_point=ORIGIN)`);
     } else {
-      const height = size(targetTransform.height ?? object.transform.height ?? 40, project) * Math.abs(targetTransform.scaleY);
+      const height = size(targetTransform.height ?? object.transform.height ?? 40, project);
       parts.push(`.stretch_to_fit_height(${pyNumber(height)})`);
-      if (targetTransform.scaleY < 0) parts.push(".stretch(-1.0, 1)");
     }
   }
-  if (targetTransform.rotation !== transformAtStart.rotation) {
-    parts.push(`.rotate(${pyNumber(targetTransform.rotation - transformAtStart.rotation)} * DEGREES)`);
-  }
-  if (targetTransform.x !== transformAtStart.x || targetTransform.y !== transformAtStart.y) {
-    const proxy = { ...object, transform: targetTransform };
-    parts.push(`.move_to(${coordinate(proxy, project)})`);
-  }
+  if (targetTransform.scaleX !== 1) parts.push(`.stretch(${pyNumber(targetTransform.scaleX)}, 0, about_point=ORIGIN)`);
+  if (targetTransform.scaleY !== 1) parts.push(`.stretch(${pyNumber(targetTransform.scaleY)}, 1, about_point=ORIGIN)`);
+  if (targetTransform.rotation) parts.push(`.rotate(${pyNumber(targetTransform.rotation)} * DEGREES, about_point=ORIGIN)`);
+  parts.push(`.shift(${transformCoordinate(targetTransform, project)})`);
   return parts.join("");
+}
+
+function absoluteLeafTarget(
+  object: SceneObject,
+  targetObject: CompilerTargetObject,
+  referenceTransform: SceneObject["transform"],
+  targetTransform: SceneObject["transform"],
+  referenceVariable: string,
+  project: ProjectDocument,
+  style: StylePack,
+  diagnostics: CompilerDiagnostic[],
+): string {
+  return isCurrentShapeType(object.type)
+    ? currentShapeTransformTarget(targetObject, targetTransform, referenceVariable, project, style, diagnostics)
+    : `${copyTransformTarget(object, referenceTransform, targetTransform, referenceVariable, project)}${visualTargetChain(targetObject, style)}`;
 }
 
 function semanticAnimationTarget(animation: SceneAnimation, transformAtStart: SceneObject["transform"]): SceneObject["transform"] {
@@ -543,7 +693,16 @@ function absoluteGroupTarget(
       authored,
     );
     const endObject = endMap.get(object.id) ?? object;
-    return `${copyTransformTarget(object, authored, styledTarget, references.get(object.id)!, project)}${visualTargetChain(endObject, style)}`;
+    return absoluteLeafTarget(
+      object,
+      endObject,
+      authored,
+      styledTarget,
+      references.get(object.id)!,
+      project,
+      style,
+      diagnostics,
+    );
   };
   const children = shot.objects.filter((child) => child.parentId === group.id && isRenderableObject(child, shot, objectMap));
   return `${groupClass(group, shot)}(${children.map(expressionFor).join(", ")})`;
@@ -780,7 +939,16 @@ function animationExpression(
     );
     const variable = variables.get(targetId)!;
     if (event.kind === "lifetime-enter") {
-      const exactTarget = `${copyTransformTarget(object, referenceTransform, targetTransform, references.get(targetId)!, project)}${visualTargetChain(targetObjectMap.get(targetId) ?? object, activeStyle)}`;
+      const exactTarget = absoluteLeafTarget(
+        object,
+        targetObjectMap.get(targetId) ?? object,
+        referenceTransform,
+        targetTransform,
+        references.get(targetId)!,
+        project,
+        activeStyle,
+        diagnostics,
+      );
       return `Succession(Transform(${variable}, ${exactTarget}, run_time=0.0, rate_func=linear), FadeIn(${variable}, run_time=0.0, rate_func=linear), group=Group(), run_time=0.0)`;
     }
     const nativeEntrance = canUseNativeEntrance(animation, object, shot, objectMap, firstVisibility);
@@ -813,7 +981,16 @@ function animationExpression(
           diagnostics,
           animation.id,
         )
-        : `${copyTransformTarget(object, referenceTransform, targetTransform, references.get(targetId)!, project)}${visualTargetChain(targetObjectMap.get(targetId) ?? object, activeStyle)}`;
+        : absoluteLeafTarget(
+          object,
+          targetObjectMap.get(targetId) ?? object,
+          referenceTransform,
+          targetTransform,
+          references.get(targetId)!,
+          project,
+          activeStyle,
+          diagnostics,
+        );
     }
     const hiddenAtStart = previewTargetIsHidden(object, shot, objectMap, previewObjectMap);
     return targetAnimation(
@@ -1042,6 +1219,18 @@ export function compileManim(input: ProjectDocument): CompileResult {
   const schedules = parsedProject.shots.map((shot) => buildCompilerSchedule(shot, parsedProject.settings.frameRate, reservedIds));
   const project: ProjectDocument = { ...parsedProject, shots: schedules.map(({ shot }) => shot) };
   const diagnostics: CompilerDiagnostic[] = [];
+  for (const shot of project.shots) {
+    for (const object of shot.objects) {
+      const issue = shapeAuthoringIssue(object);
+      if (!issue) continue;
+      diagnostics.push({
+        severity: "warning",
+        code: "SHAPE_SETTINGS_INVALID_FALLBACK",
+        message: `${issue.message} Published V3 payload was preserved and deterministic legacy geometry was rendered instead.`,
+        objectId: object.id,
+      });
+    }
+  }
   diagnostics.push({
     severity: "info",
     code: "RENDER_SETTINGS_EXTERNAL",
@@ -1173,11 +1362,11 @@ export function compileManim(input: ProjectDocument): CompileResult {
         lines.push(`        ${variable} = ${primitiveExpression(styledObject, project, style, diagnostics)}${styleChain(styledObject, style)}`);
         const dimensions = dimensionChain(styledObject, variable, project);
         if (dimensions) lines.push(`        ${variable}${dimensions}`);
-        lines.push(`        ${variable}.move_to(${coordinate(styledObject, project)})`);
-        if (styledObject.transform.rotation) lines.push(`        ${variable}.rotate(${pyNumber(styledObject.transform.rotation)} * DEGREES)`);
         if (styledObject.transform.scaleX !== 1 || styledObject.transform.scaleY !== 1) {
-          lines.push(`        ${variable}.stretch(${pyNumber(styledObject.transform.scaleX)}, 0).stretch(${pyNumber(styledObject.transform.scaleY)}, 1)`);
+          lines.push(`        ${variable}.stretch(${pyNumber(styledObject.transform.scaleX)}, 0, about_point=ORIGIN).stretch(${pyNumber(styledObject.transform.scaleY)}, 1, about_point=ORIGIN)`);
         }
+        if (styledObject.transform.rotation) lines.push(`        ${variable}.rotate(${pyNumber(styledObject.transform.rotation)} * DEGREES, about_point=ORIGIN)`);
+        lines.push(`        ${variable}.shift(${coordinate(styledObject, project)})`);
         referenceTransforms.set(object.id, { ...styledObject.transform });
       }
       const reference = references.get(object.id);

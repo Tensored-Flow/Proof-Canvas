@@ -26,7 +26,9 @@ import { beginEditorShotSequencePlayback, buildEditorShotSequence, commitEditorS
 import { allocateId, collectProjectIds } from '@/lib/proofcanvas/ids'
 import { applyOperations, duplicateObjects, effectiveLockOwner, effectiveVisibilityOwner, inspectOperations, type ManualSceneOperation } from '@/lib/proofcanvas/operations'
 import { previewShotAtTime } from '@/lib/proofcanvas/preview'
-import { PROOFCANVAS_BRACE_LABEL_MAX_CHARS, PROOFCANVAS_PROJECT_MAX_BYTES, PROOFCANVAS_SCHEMA_LIMITS, PROOFCANVAS_TEXT_MAX_CHARS, ProjectDocumentSchema, SceneOperationSchema, animationAuthoringCompatibilityIssue, canonicalProjectJson, cloneSerializable, mathPropertiesFor, objectTypeSupportsStyleProperty, parseProjectDocument, type AnimationType, type Easing, type MathProperties, type ProjectDocument, type PropertyKeyframe, type PropertyTrack, type SceneAnimation, type SceneObject, type SceneOperation, type Shot } from '@/lib/proofcanvas/schema'
+import { PROOFCANVAS_BRACE_LABEL_MAX_CHARS, PROOFCANVAS_PROJECT_MAX_BYTES, PROOFCANVAS_SCHEMA_LIMITS, PROOFCANVAS_TEXT_MAX_CHARS, ProjectDocumentSchema, SceneOperationSchema, animationAuthoringCompatibilityIssue, canonicalProjectJson, cloneSerializable, mathPropertiesFor, objectTypeSupportsStyleProperty, parseProjectDocument, type AnimationType, type CurrentShapeProperties, type Easing, type MathProperties, type ProjectDocument, type PropertyKeyframe, type PropertyTrack, type SceneAnimation, type SceneObject, type SceneOperation, type Shot } from '@/lib/proofcanvas/schema'
+import { ARROW_TIP_SHAPES, BRACE_DIRECTIONS, MAX_ARROW_TIP_SIZE_RATIO, MIN_ARROW_TIP_SIZE_RATIO, SHAPE_LINE_CAPS, isCurrentShapeType, lineEndpointsForTransform, resolveShapeDimensions, resolveShapeGeometry, resolveShapePaint, shapeAuthoringIssue, transformFromLineEndpoints, type ArrowTipShape, type BraceDirection, type ShapeLineCap } from '@/lib/proofcanvas/shapeGeometry'
+import { PROOFCANVAS_SHAPE_PRESET_MIME, SHAPE_PRESETS, insertShapePreset, searchShapePresets, shapePresetById, type ShapePresetId } from '@/lib/proofcanvas/shapePresets'
 import { EDITORIAL_INK_STYLE_ID, RAW_MANIM_STYLE_ID, resolvedGraphStroke, styleById } from '@/lib/proofcanvas/styles'
 import { propertyTrackKey } from '@/lib/proofcanvas/timeline'
 
@@ -42,13 +44,25 @@ const OBJECT_TYPES: ReadonlyArray<{ type: Exclude<SceneObject['type'], 'group' |
   { type: 'text', label: 'text', tab: 'text', keywords: 'title heading paragraph label narration' },
   { type: 'math', label: 'math', tab: 'math', keywords: 'latex equation formula expression' },
   { type: 'brace', label: 'brace', tab: 'math', keywords: 'annotation measure label' },
-  { type: 'circle', label: 'circle', tab: 'shapes', keywords: 'ellipse disk' },
-  { type: 'rectangle', label: 'rectangle', tab: 'shapes', keywords: 'box panel square' },
-  { type: 'line', label: 'line', tab: 'shapes', keywords: 'segment rule' },
-  { type: 'arrow', label: 'arrow', tab: 'shapes', keywords: 'vector connector' },
   { type: 'axes', label: 'coordinate axes', tab: 'graphs', keywords: 'plot coordinate plane chart' },
   { type: 'graph', label: 'function graph', tab: 'graphs', keywords: 'plot curve function' },
 ]
+const SHAPE_PRESET_ICONS: Readonly<Record<ShapePresetId, string>> = {
+  rectangle: '□',
+  'rounded-rectangle': '▢',
+  circle: '○',
+  'dot-point': '•',
+  line: '—',
+  arrow: '→',
+  brace: '⏟',
+  bracket: '[',
+  'highlight-box': '▧',
+  underline: '_',
+  'cross-out': '×',
+}
+const ENDPOINT_AUTHORITY_PROPERTIES: ReadonlySet<PropertyTrack['property']> = new Set(['x', 'y', 'width', 'rotation', 'scale', 'scaleX'])
+const ENDPOINT_ANCESTOR_AUTHORITY_PROPERTIES: ReadonlySet<PropertyTrack['property']> = new Set(['x', 'y', 'width', 'height', 'rotation', 'scale', 'scaleX', 'scaleY'])
+const BRACE_AXIS_AUTHORITY_PROPERTIES: ReadonlySet<PropertyTrack['property']> = new Set(['width', 'height', 'rotation', 'scale', 'scaleX', 'scaleY'])
 const ANIMATION_TYPES: AnimationType[] = ['appear', 'fade-in', 'fade-out', 'write', 'create', 'move', 'scale', 'transform', 'emphasise', 'camera-focus']
 const EASINGS: Easing[] = ['linear', 'ease-in', 'ease-out', 'ease-in-out', 'editorial', 'spring-soft', 'there-and-back']
 const TIMELINE_LANE_COUNT = 4
@@ -385,12 +399,36 @@ function newObject(type: Exclude<SceneObject['type'], 'group'>, id: string, inde
     case 'rectangle': return { ...base, transform: { ...base.transform, width: 150, height: 78 }, style: { stroke: '#252722', opacity: 0.22 }, properties: {} }
     case 'line': return { ...base, transform: { ...base.transform, width: 180, height: 2 }, style: { stroke: '#655f55', strokeWidth: 1 }, properties: {} }
     case 'arrow': return { ...base, transform: { ...base.transform, width: 160, height: 18 }, style: { stroke: '#71402d', strokeWidth: 2 }, properties: {} }
-    case 'brace': return { ...base, transform: { ...base.transform, width: 220, height: 34 }, style: { stroke: '#71402d', fontSize: 18 }, properties: { label: 'n pieces', orientation: 'below' } }
+    case 'brace': return { ...base, transform: { ...base.transform, width: 220, height: 34 }, style: { stroke: '#71402d', fontSize: 18 }, properties: { label: 'n pieces', shape: { kind: 'brace', direction: 'below', spacing: 12 } } }
     case 'axes': return { ...base, transform: { ...base.transform, width: 240, height: 150 }, properties: { xMin: -3, xMax: 3, yMin: -2, yMax: 4 } }
     case 'graph': return { ...base, transform: { ...base.transform, width: 240, height: 150 }, style: { stroke: '#315866', strokeWidth: 2 }, properties: { expression: { kind: 'power', base: { kind: 'variable' }, exponent: 2 }, xMin: -3, xMax: 3 } }
     case 'image': return { ...base, name: 'Image asset', properties: { source: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' } }
     case 'svg': return { ...base, name: 'SVG asset', properties: { source: '/proofcanvas/assets/editorial-mark.svg' } }
   }
+}
+
+function objectAndAncestorIds(shot: Shot, object: SceneObject): ReadonlySet<string> {
+  const ids = new Set<string>()
+  let cursor: SceneObject | undefined = object
+  while (cursor && !ids.has(cursor.id)) {
+    ids.add(cursor.id)
+    cursor = cursor.parentId ? shot.objects.find(({ id }) => id === cursor?.parentId) : undefined
+  }
+  return ids
+}
+
+function objectFamilyHasPropertyAuthority(
+  shot: Shot,
+  object: SceneObject,
+  properties: ReadonlySet<PropertyTrack['property']>,
+  ancestorProperties: ReadonlySet<PropertyTrack['property']> = properties,
+): boolean {
+  const owners = objectAndAncestorIds(shot, object)
+  return shot.propertyTracks.some((track) => (
+    track.target.kind === 'object'
+    && owners.has(track.target.objectId)
+    && (track.target.objectId === object.id ? properties : ancestorProperties).has(track.property)
+  ))
 }
 
 function download(name: string, type: string, contents: string) {
@@ -518,6 +556,7 @@ export default function ProofCanvasEditor({
   const { activeShotId, selection, playhead } = workspace
   const [libraryTab, setLibraryTab] = useState<LibraryTab>('text')
   const [librarySearch, setLibrarySearch] = useState('')
+  const [draggedShapePresetId, setDraggedShapePresetId] = useState<ShapePresetId | null>(null)
   const [animationType, setAnimationType] = useState<AnimationType>('fade-in')
   const [lifetimeInputRevision, setLifetimeInputRevision] = useState(0)
   const [timelineDraft, setTimelineDraft] = useState<{ id: string; start: number; duration: number } | null>(null)
@@ -1339,6 +1378,44 @@ export default function ProofCanvasEditor({
     if (commitOps([{ type: 'add-object', object }], `Insert ${type}`)) setSelectedIds([object.id])
   }
 
+  const insertShapePresetAt = useCallback((presetId: ShapePresetId, origin?: { x: number; y: number }) => {
+    try {
+      const current = authorityRef.current
+      if (current.isPlaying) {
+        setStatus('Pause sequence playback before inserting a shape.')
+        return false
+      }
+      const definition = shapePresetById(presetId)
+      if (!definition) {
+        setStatus('That shape preset is not available.')
+        return false
+      }
+      const latestProject = current.history.present
+      const latestShot = latestProject.shots.find(({ id }) => id === current.workspace.activeShotId) ?? latestProject.shots[0]
+      const insertionPoint = origin ?? (() => {
+        const camera = previewShotAtTime(latestShot, current.workspace.playhead).camera
+        return { x: camera.x, y: camera.y }
+      })()
+      const before = new Set(latestShot.objects.map(({ id }) => id))
+      const next = insertShapePreset(latestProject, latestShot.id, definition.id, insertionPoint)
+      const nextShot = next.shots.find(({ id }) => id === latestShot.id)!
+      const inserted = nextShot.objects.filter(({ id }) => !before.has(id))
+      const insertedIds = new Set(inserted.map(({ id }) => id))
+      const insertedRootIds = inserted
+        .filter(({ parentId }) => !parentId || !insertedIds.has(parentId))
+        .map(({ id }) => id)
+      if (!insertedRootIds.length) throw new Error('Shape preset did not produce an editable root object')
+      if (commitDocument(next, `Insert ${definition.name}`)) {
+        setSelectedIds(insertedRootIds)
+        return true
+      }
+      return false
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Shape insertion failed')
+      return false
+    }
+  }, [commitDocument, setSelectedIds])
+
   const insertComponent = (componentId: SemanticComponentId) => {
     try {
       const latestProject = historyRef.current.present
@@ -1439,6 +1516,92 @@ export default function ProofCanvasEditor({
     return commitOps([{ type: 'update-object', objectId: primary.id, patch }], label)
   }
 
+  const commitShapeSettings = useCallback((
+    objectId: string,
+    shape: CurrentShapeProperties,
+    label: string,
+    transform?: Partial<SceneObject['transform']>,
+  ) => {
+    const current = authorityRef.current
+    if (current.isPlaying) {
+      setStatus('Pause sequence playback before editing shape geometry.')
+      return false
+    }
+    const latestProject = current.history.present
+    const latestShot = latestProject.shots.find(({ id }) => id === current.workspace.activeShotId) ?? latestProject.shots[0]
+    const latestObject = latestShot.objects.find(({ id }) => id === objectId)
+    if (!latestObject || !isCurrentShapeType(latestObject.type) || latestObject.type !== shape.kind) {
+      setStatus('The selected shape is no longer available.')
+      return false
+    }
+    if (effectiveLockOwner(latestShot, latestObject)) {
+      setStatus('Unlock the shape and its ancestors before editing its geometry.')
+      return false
+    }
+    return commitOps([{
+      type: 'update-object',
+      objectId,
+      patch: {
+        ...(transform ? { transform } : {}),
+        // Operations merge the outer properties envelope shallowly. Replace
+        // the complete strict shape record so sibling shape controls survive.
+        properties: { shape },
+      },
+    }], label)
+  }, [commitOps])
+
+  const commitLineEndpoint = useCallback((
+    objectId: string,
+    endpoint: 'start' | 'end',
+    axis: 'x' | 'y',
+    value: number,
+  ) => {
+    if (!Number.isFinite(value)) {
+      setStatus('Line endpoints must be finite numbers.')
+      return false
+    }
+    const current = authorityRef.current
+    if (current.isPlaying) {
+      setStatus('Pause sequence playback before editing line endpoints.')
+      return false
+    }
+    const latestProject = current.history.present
+    const latestShot = latestProject.shots.find(({ id }) => id === current.workspace.activeShotId) ?? latestProject.shots[0]
+    const latestObject = latestShot.objects.find(({ id }) => id === objectId)
+    if (!latestObject || (latestObject.type !== 'line' && latestObject.type !== 'arrow')) {
+      setStatus('The selected line is no longer available.')
+      return false
+    }
+    if (effectiveLockOwner(latestShot, latestObject)) {
+      setStatus('Unlock the line and its ancestors before editing its endpoints.')
+      return false
+    }
+    if (objectFamilyHasPropertyAuthority(latestShot, latestObject, ENDPOINT_AUTHORITY_PROPERTIES, ENDPOINT_ANCESTOR_AUTHORITY_PROPERTIES)) {
+      setStatus('Remove the dependent object or ancestor position, width, rotation, or scale track before editing endpoints.')
+      return false
+    }
+    const endpoints = lineEndpointsForTransform(latestObject.transform)
+    if (!endpoints) {
+      setStatus('The current line transform cannot be represented as finite endpoints.')
+      return false
+    }
+    const nextEndpoints = {
+      start: { ...endpoints.start },
+      end: { ...endpoints.end },
+    }
+    nextEndpoints[endpoint][axis] = value
+    const transform = transformFromLineEndpoints(latestObject.transform, nextEndpoints)
+    if (!transform) {
+      setStatus('Those endpoints are coincident or outside the editable shape bounds.')
+      return false
+    }
+    return commitOps([{
+      type: 'update-object',
+      objectId,
+      patch: { transform },
+    }], `Set ${endpoint} ${axis.toUpperCase()} endpoint`)
+  }, [commitOps])
+
   const commitMathProperties = (next: MathProperties, baseAuthorityKey: string) => {
     const current = authorityRef.current
     const latestProject = current.history.present
@@ -1498,10 +1661,11 @@ export default function ProofCanvasEditor({
       return source.transform[property] ?? (property === 'width' ? 60 : property === 'height' ? 30 : property.startsWith('scale') ? 1 : 0)
     }
     if (property === 'scale') return (source.transform.scaleX + source.transform.scaleY) / 2
-    if (property === 'opacity') return source.style.opacity ?? 1
-    if (property === 'fill') return source.style.fill ?? source.style.color ?? (primary.type === 'circle' ? previewStyle.colors.background : previewStyle.colors.ink)
-    if (property === 'stroke') return primary.type === 'graph' ? resolvedGraphStroke(source, previewStyle, shot.objects).stroke : source.style.stroke ?? previewStyle.colors.ink
-    if (property === 'strokeWidth') return primary.type === 'graph' ? resolvedGraphStroke(source, previewStyle, shot.objects).strokeWidth : source.style.strokeWidth ?? previewStyle.strokes.regular
+    const shapePaint = isCurrentShapeType(primary.type) ? resolveShapePaint(primaryPreview, previewStyle) : null
+    if (property === 'opacity') return shapePaint?.opacity ?? source.style.opacity ?? 1
+    if (property === 'fill') return shapePaint?.fill ?? source.style.fill ?? source.style.color ?? (primary.type === 'circle' ? previewStyle.colors.background : previewStyle.colors.ink)
+    if (property === 'stroke') return primary.type === 'graph' ? resolvedGraphStroke(source, previewStyle, shot.objects).stroke : shapePaint?.stroke ?? source.style.stroke ?? previewStyle.colors.ink
+    if (property === 'strokeWidth') return primary.type === 'graph' ? resolvedGraphStroke(source, previewStyle, shot.objects).strokeWidth : shapePaint?.strokeWidth ?? source.style.strokeWidth ?? previewStyle.strokes.regular
     return 0
   }
 
@@ -1682,6 +1846,7 @@ export default function ProofCanvasEditor({
         : event.key === 'ArrowLeft' ? LIBRARY_TABS[(index - 1 + LIBRARY_TABS.length) % LIBRARY_TABS.length]
           : LIBRARY_TABS[(index + 1) % LIBRARY_TABS.length]
     setLibraryTab(next)
+    setLibrarySearch('')
     window.requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-library-tab="${next}"]`)?.focus())
   }
 
@@ -2461,6 +2626,7 @@ export default function ProofCanvasEditor({
 
   const normalizedLibrarySearch = librarySearch.trim().toLowerCase()
   const visibleObjectTypes = OBJECT_TYPES.filter((item) => item.tab === libraryTab && (!normalizedLibrarySearch || `${item.label} ${item.keywords}`.includes(normalizedLibrarySearch)))
+  const visibleShapePresets = libraryTab === 'shapes' ? searchShapePresets(librarySearch) : []
   const visibleComponents = SEMANTIC_COMPONENTS.filter((component) => !normalizedLibrarySearch || `${component.name} ${component.description}`.toLowerCase().includes(normalizedLibrarySearch))
   const visibleCommands = EDITOR_COMMANDS.filter((command) => !commandSearch.trim() || `${command.label} ${command.shortcut}`.toLowerCase().includes(commandSearch.trim().toLowerCase()))
   const aiCommandVisible = !commandSearch.trim() || 'ai structured edit assistant review'.includes(commandSearch.trim().toLowerCase())
@@ -2502,6 +2668,125 @@ export default function ProofCanvasEditor({
     ? project.shots.find(({ id }) => id === shotDialog.shotId) ?? null
     : null
 
+  const primaryShapeGeometry = primary ? resolveShapeGeometry(primary, previewStyle) : null
+  const primaryShapeAuthoringIssue = primary ? shapeAuthoringIssue(primary) : undefined
+  const primaryShapeDimensions = primary && primaryShapeGeometry ? resolveShapeDimensions(primary) : null
+  const primaryLineEndpoints = primary && (primary.type === 'line' || primary.type === 'arrow')
+    ? lineEndpointsForTransform(primary.transform)
+    : null
+  const primaryEndpointAuthority = Boolean(
+    primary
+    && (primary.type === 'line' || primary.type === 'arrow')
+    && objectFamilyHasPropertyAuthority(shot, primary, ENDPOINT_AUTHORITY_PROPERTIES, ENDPOINT_ANCESTOR_AUTHORITY_PROPERTIES),
+  )
+  const primaryBraceAxisAuthority = Boolean(
+    primary?.type === 'brace'
+    && objectFamilyHasPropertyAuthority(shot, primary, BRACE_AXIS_AUTHORITY_PROPERTIES),
+  )
+
+  const commitEndpointInput = (
+    event: ReactFocusEvent<HTMLInputElement>,
+    endpoint: 'start' | 'end',
+    axis: 'x' | 'y',
+    currentValue: number,
+  ) => {
+    if (!primary) return
+    const next = Number(event.currentTarget.value)
+    if (Object.is(next, currentValue)) return
+    if (!commitLineEndpoint(primary.id, endpoint, axis, next)) event.currentTarget.value = String(currentValue)
+  }
+
+  const commitBraceDirection = (direction: BraceDirection) => {
+    if (!primary || primary.type !== 'brace' || primaryShapeGeometry?.kind !== 'brace' || !primaryShapeDimensions) return false
+    const wasVertical = primaryShapeGeometry.direction === 'left' || primaryShapeGeometry.direction === 'right'
+    const becomesVertical = direction === 'left' || direction === 'right'
+    const crossesAxis = wasVertical !== becomesVertical
+    if (crossesAxis && primaryBraceAxisAuthority) {
+      setStatus('Remove the dependent object or ancestor dimension, rotation, or scale track before changing the brace axis.')
+      return false
+    }
+    return commitShapeSettings(
+      primary.id,
+      { kind: 'brace', direction, spacing: primaryShapeGeometry.spacing },
+      'Set brace direction',
+      crossesAxis ? { width: primaryShapeDimensions.height, height: primaryShapeDimensions.width } : undefined,
+    )
+  }
+
+  const renderShapeProperties = () => {
+    if (!primary || !primaryShapeGeometry || !primaryShapeDimensions) return null
+    const disabled = isPlaying || primaryEffectivelyLocked
+    return <fieldset className="pc-shape-properties pc-wide" disabled={disabled}>
+      <legend>Shape geometry</legend>
+      {primaryShapeAuthoringIssue && <div className="pc-wide pc-shape-repair" role="status">
+        <p>{primaryShapeAuthoringIssue.message}</p>
+        <button type="button" onClick={() => commitShapeSettings(primary.id, primaryShapeGeometry, 'Repair shape settings')}>Repair shape settings</button>
+      </div>}
+      {primaryShapeGeometry.kind === 'rectangle' && <label className="pc-wide">Corner radius<input
+        key={`${primary.id}-corner-radius-${primaryShapeGeometry.cornerRadius}`}
+        type="number"
+        min={0}
+        max={Math.min(PROOFCANVAS_SCHEMA_LIMITS.cornerRadiusMax, primaryShapeDimensions.width / 2, primaryShapeDimensions.height / 2)}
+        step="0.1"
+        aria-label="Corner radius"
+        defaultValue={primaryShapeGeometry.cornerRadius}
+        onBlur={(event) => commitNumericInput(event, {
+          key: 'cornerRadius',
+          label: 'Corner radius',
+          fallback: primaryShapeGeometry.cornerRadius,
+          min: 0,
+          max: Math.min(PROOFCANVAS_SCHEMA_LIMITS.cornerRadiusMax, primaryShapeDimensions.width / 2, primaryShapeDimensions.height / 2),
+        }, primaryShapeGeometry.cornerRadius, (cornerRadius) => commitShapeSettings(primary.id, { kind: 'rectangle', cornerRadius }, 'Set corner radius'))}
+      /></label>}
+      {primaryShapeGeometry.kind === 'line' && <label className="pc-wide">Line cap<select aria-label="Line cap" value={primaryShapeGeometry.lineCap} onChange={(event) => commitShapeSettings(primary.id, { kind: 'line', lineCap: event.target.value as ShapeLineCap }, 'Set line cap')}>{SHAPE_LINE_CAPS.map((cap) => <option key={cap} value={cap}>{cap}</option>)}</select></label>}
+      {primaryShapeGeometry.kind === 'arrow' && <>
+        <label>Line cap<select aria-label="Line cap" value={primaryShapeGeometry.lineCap} onChange={(event) => commitShapeSettings(primary.id, { kind: 'arrow', lineCap: event.target.value as ShapeLineCap, tipShape: primaryShapeGeometry.tipShape, tipSizeRatio: primaryShapeGeometry.tipSizeRatio }, 'Set arrow line cap')}>{SHAPE_LINE_CAPS.map((cap) => <option key={cap} value={cap}>{cap}</option>)}</select></label>
+        <label>Arrow tip<select aria-label="Arrow tip" value={primaryShapeGeometry.tipShape} onChange={(event) => commitShapeSettings(primary.id, { kind: 'arrow', lineCap: primaryShapeGeometry.lineCap, tipShape: event.target.value as ArrowTipShape, tipSizeRatio: primaryShapeGeometry.tipSizeRatio }, 'Set arrow tip')}>{ARROW_TIP_SHAPES.map((tip) => <option key={tip} value={tip}>{tip}</option>)}</select></label>
+        <label className="pc-wide">Arrow tip size<input
+          key={`${primary.id}-tip-size-${primaryShapeGeometry.tipSizeRatio}`}
+          type="number"
+          min={MIN_ARROW_TIP_SIZE_RATIO}
+          max={MAX_ARROW_TIP_SIZE_RATIO}
+          step="0.01"
+          aria-label="Arrow tip size"
+          defaultValue={primaryShapeGeometry.tipSizeRatio}
+          onBlur={(event) => commitNumericInput(event, { key: 'tipSizeRatio', label: 'Arrow tip size', fallback: primaryShapeGeometry.tipSizeRatio, min: MIN_ARROW_TIP_SIZE_RATIO, max: MAX_ARROW_TIP_SIZE_RATIO }, primaryShapeGeometry.tipSizeRatio, (tipSizeRatio) => commitShapeSettings(primary.id, { kind: 'arrow', lineCap: primaryShapeGeometry.lineCap, tipShape: primaryShapeGeometry.tipShape, tipSizeRatio }, 'Set arrow tip size'))}
+        /></label>
+      </>}
+      {primaryShapeGeometry.kind === 'brace' && <>
+        <label>Brace direction<select aria-label="Brace direction" value={primaryShapeGeometry.direction} onChange={(event) => commitBraceDirection(event.target.value as BraceDirection)}>{BRACE_DIRECTIONS.map((direction) => <option key={direction} value={direction}>{direction}</option>)}</select></label>
+        <label>Brace spacing<input
+          key={`${primary.id}-brace-spacing-${primaryShapeGeometry.spacing}`}
+          type="number"
+          min={0}
+          max={PROOFCANVAS_SCHEMA_LIMITS.spacingMax}
+          step="0.1"
+          aria-label="Brace spacing"
+          defaultValue={primaryShapeGeometry.spacing}
+          onBlur={(event) => commitNumericInput(event, { key: 'spacing', label: 'Brace spacing', fallback: primaryShapeGeometry.spacing, min: 0, max: PROOFCANVAS_SCHEMA_LIMITS.spacingMax }, primaryShapeGeometry.spacing, (spacing) => commitShapeSettings(primary.id, { kind: 'brace', direction: primaryShapeGeometry.direction, spacing }, 'Set brace spacing'))}
+        /></label>
+        {primaryBraceAxisAuthority && <p className="pc-wide pc-inspector-note" role="status">Brace axis changes are unavailable while an object or ancestor dimension, rotation, or scale track owns this geometry.</p>}
+      </>}
+      {(primaryShapeGeometry.kind === 'line' || primaryShapeGeometry.kind === 'arrow') && primaryLineEndpoints && <>
+        <h3 className="pc-wide">Authored endpoints</h3>
+        {(['start', 'end'] as const).flatMap((endpoint) => (['x', 'y'] as const).map((axis) => {
+          const value = primaryLineEndpoints[endpoint][axis]
+          const label = `${endpoint === 'start' ? 'Start' : 'End'} ${axis.toUpperCase()}`
+          return <label key={`${endpoint}-${axis}`}>{label}<input
+            key={`${primary.id}-${endpoint}-${axis}-${value}`}
+            type="number"
+            step="any"
+            aria-label={label}
+            defaultValue={value}
+            disabled={primaryEndpointAuthority}
+            onBlur={(event) => commitEndpointInput(event, endpoint, axis, value)}
+          /></label>
+        }))}
+        {primaryEndpointAuthority && <p className="pc-wide pc-inspector-note" role="status">Endpoint editing is unavailable while an object or ancestor position, width, rotation, or scale track owns this line.</p>}
+      </>}
+    </fieldset>
+  }
+
   return (
     <div className="proofcanvas-app" role="application" aria-label="ProofCanvas editor" aria-busy={leavePending} data-testid="proofcanvas-editor" data-pc-editor data-project-id={project.metadata.id} data-schema-version={project.schemaVersion} data-active-shot-id={shot.id} data-selection-kind={selection.kind} data-history-past-count={history.past.length} data-history-future-count={history.future.length} data-durable={durableProject ? 'true' : 'false'} data-server-revision={durableProject ? serverRevision : undefined} data-save-state={durableProject ? saveState : undefined} data-left-collapsed={leftPanelCollapsed ? 'true' : 'false'} data-right-collapsed={rightPanelCollapsed ? 'true' : 'false'} data-timeline-collapsed={timelineCollapsed ? 'true' : 'false'} style={{ '--pc-left-width': leftPanelCollapsed ? '0px' : `${leftPanelWidth}px`, '--pc-right-width': rightPanelCollapsed ? '0px' : `${rightPanelWidth}px`, '--pc-timeline-height': timelineCollapsed ? '150px' : `${timelineHeight}px` } as CSSProperties}>
       <div className="pc-desktop-notice" aria-label="Desktop viewport required"><strong>A wider workspace is required</strong><span>ProofCanvas is a desktop editor. Use a viewport at least 1024 px wide; your project remains safely autosaved.</span></div>
@@ -2530,7 +2815,31 @@ export default function ProofCanvasEditor({
       <aside className="pc-left" aria-label="Object and layer library">
         <section className="pc-library-section"><div className="pc-section-heading"><div><span>Insert</span><h2>Library</h2></div><button type="button" onClick={() => setLeftPanelCollapsed(true)} aria-label="Collapse library panel">‹</button></div><div role="tablist" aria-label="Insert library" className="pc-library-tabs">{LIBRARY_TABS.map((tab) => <button type="button" role="tab" key={tab} aria-selected={libraryTab === tab} tabIndex={libraryTab === tab ? 0 : -1} data-library-tab={tab} onKeyDown={(event) => selectLibraryTab(event, tab)} onClick={() => { setLibraryTab(tab); setLibrarySearch('') }}>{tab[0].toUpperCase() + tab.slice(1)}</button>)}</div>
           {libraryTab !== 'styles' && <label className="pc-library-search"><span className="pc-visually-hidden">Search library</span><input type="search" aria-label="Search library" placeholder={`Search ${libraryTab}`} value={librarySearch} onChange={(event) => setLibrarySearch(event.target.value)}/><span aria-hidden="true">⌕</span></label>}
-          {(['text', 'math', 'shapes', 'graphs'] as LibraryTab[]).includes(libraryTab) && <div className="pc-insert-grid">{visibleObjectTypes.map(({ type, label }) => <button key={type} type="button" onClick={() => insertObject(type)} disabled={isPlaying} aria-label={`Add ${label}`} data-object-type={type}><span aria-hidden="true">{type === 'text' ? 'T' : type === 'math' ? '∑' : type === 'brace' ? '⏟' : type === 'circle' ? '○' : type === 'rectangle' ? '□' : type === 'line' ? '—' : type === 'arrow' ? '→' : type === 'axes' ? '⌗' : 'ƒ'}</span><b>{label}</b></button>)}{visibleObjectTypes.length === 0 && <p className="pc-library-empty" role="status">No {libraryTab} items match “{librarySearch}”.</p>}</div>}
+          {(['text', 'math', 'graphs'] as LibraryTab[]).includes(libraryTab) && <div className="pc-insert-grid">{visibleObjectTypes.map(({ type, label }) => <button key={type} type="button" onClick={() => insertObject(type)} disabled={isPlaying} aria-label={`Add ${label}`} data-object-type={type}><span aria-hidden="true">{type === 'text' ? 'T' : type === 'math' ? '∑' : type === 'brace' ? '⏟' : type === 'axes' ? '⌗' : 'ƒ'}</span><b>{label}</b></button>)}{visibleObjectTypes.length === 0 && <p className="pc-library-empty" role="status">No {libraryTab} items match “{librarySearch}”.</p>}</div>}
+          {libraryTab === 'shapes' && <div className="pc-shape-preset-grid" data-shape-preset-count={SHAPE_PRESETS.length}>{visibleShapePresets.map((preset) => <button
+            key={preset.id}
+            type="button"
+            className="pc-shape-preset-card"
+            draggable={!isPlaying}
+            disabled={isPlaying}
+            aria-label={`Insert ${preset.name}`}
+            title={`${preset.name} — ${preset.description}`}
+            data-shape-preset-id={preset.id}
+            data-shape-preset-composition={preset.composition}
+            data-dragging={draggedShapePresetId === preset.id ? 'true' : 'false'}
+            onClick={() => insertShapePresetAt(preset.id)}
+            onDragStart={(event) => {
+              if (authorityRef.current.isPlaying || !shapePresetById(preset.id)) {
+                event.preventDefault()
+                setStatus('Pause sequence playback before dragging a shape.')
+                return
+              }
+              event.dataTransfer.effectAllowed = 'copy'
+              event.dataTransfer.setData(PROOFCANVAS_SHAPE_PRESET_MIME, preset.id)
+              setDraggedShapePresetId(preset.id)
+            }}
+            onDragEnd={() => setDraggedShapePresetId(null)}
+          ><span aria-hidden="true">{SHAPE_PRESET_ICONS[preset.id]}</span><b>{preset.name}</b><small>{preset.description}</small></button>)}{visibleShapePresets.length === 0 && <p className="pc-library-empty" role="status">No shapes match “{librarySearch}”.</p>}</div>}
           {libraryTab === 'components' && <div className="pc-component-list">{visibleComponents.map((component) => { const labels: Record<SemanticComponentId, string> = { 'mathematical-title': 'Insert mathematical title', 'proposition-statement': 'Insert proposition or definition', 'equation-chain': 'Insert equation chain', 'annotated-diagram': 'Insert annotated diagram', 'focus-callout': 'Insert focus callout', 'recursive-intervals': 'Insert recursive interval construction' }; return <button key={component.id} type="button" onClick={() => insertComponent(component.id)} disabled={isPlaying} title={component.description} aria-label={labels[component.id]} data-component-id={component.id}><b>{component.name}</b><small>{component.description}</small></button> })}{visibleComponents.length === 0 && <p className="pc-library-empty" role="status">No components match “{librarySearch}”.</p>}</div>}
           {libraryTab === 'styles' && <div className="pc-style-library" role="radiogroup" aria-label="Library output styles"><button type="button" role="radio" aria-checked={project.activeStyleId === EDITORIAL_INK_STYLE_ID} tabIndex={project.activeStyleId === EDITORIAL_INK_STYLE_ID ? 0 : -1} disabled={isPlaying} data-style-surface="library" data-style-id={EDITORIAL_INK_STYLE_ID} onKeyDown={(event) => navigateStyleRadios(event, EDITORIAL_INK_STYLE_ID, 'library')} onClick={() => selectOutputStyle(EDITORIAL_INK_STYLE_ID, 'Editorial Ink')}><i data-style-swatch="editorial"/><span><b>Editorial Ink</b><small>Warm restrained proof-film system</small></span></button><button type="button" role="radio" aria-checked={project.activeStyleId === RAW_MANIM_STYLE_ID} tabIndex={project.activeStyleId === RAW_MANIM_STYLE_ID ? 0 : -1} disabled={isPlaying} data-style-surface="library" data-style-id={RAW_MANIM_STYLE_ID} onKeyDown={(event) => navigateStyleRadios(event, RAW_MANIM_STYLE_ID, 'library')} onClick={() => selectOutputStyle(RAW_MANIM_STYLE_ID, 'Raw Manim')}><i data-style-swatch="raw"/><span><b>Raw Manim</b><small>Direct geometric defaults</small></span></button></div>}
         </section>
@@ -2556,7 +2865,7 @@ export default function ProofCanvasEditor({
           </div>
           <button type="button" onClick={() => setRightPanelCollapsed((value) => !value)} aria-pressed={!rightPanelCollapsed} aria-label={rightPanelCollapsed ? 'Show inspector panel' : 'Hide inspector panel'}>Inspector</button>
         </div>
-        <IsolatedCanvasStage clock={playbackClockRef.current} isPlaying={isPlaying} pausedPlayhead={playhead} previewStyleId={previewStyle.id} project={project} projectRevision={projectRevision} shot={shot} previewStyle={previewStyle} previewQuality={project.settings.previewQuality} selectedIds={selectedRootIds} authoringEnabled={!isPlaying} onSelect={(ids) => setSelectedIds(selectionRootIds(shot, ids))} onNotice={setStatus} onCommitTransforms={(updates, label) => commitOps(updates.map(({ objectId, transform }) => ({ type: 'update-object', objectId, patch: { transform } })), label)} onCommitKeyboardTransform={commitCanvasKeyboardTransform}/>
+        <IsolatedCanvasStage clock={playbackClockRef.current} isPlaying={isPlaying} pausedPlayhead={playhead} previewStyleId={previewStyle.id} project={project} projectRevision={projectRevision} shot={shot} previewStyle={previewStyle} previewQuality={project.settings.previewQuality} selectedIds={selectedRootIds} authoringEnabled={!isPlaying} onSelect={(ids) => setSelectedIds(selectionRootIds(shot, ids))} onNotice={setStatus} onCommitTransforms={(updates, label) => commitOps(updates.map(({ objectId, transform }) => ({ type: 'update-object', objectId, patch: { transform } })), label)} onCommitKeyboardTransform={commitCanvasKeyboardTransform} onInsertShapePresetAt={insertShapePresetAt}/>
         <p className="pc-status" role="status" aria-label="Editor status">{status}</p>
       </section>
 
@@ -2580,6 +2889,7 @@ export default function ProofCanvasEditor({
             {renderObjectPropertyField('scale', 'Scale', { ...signedScaleBounds, step: 0.05, familyLock: true })}
             {renderObjectPropertyField('scaleX', 'Scale X', { ...signedScaleBounds, step: 0.05, familyLock: true })}
             {renderObjectPropertyField('scaleY', 'Scale Y', { ...signedScaleBounds, step: 0.05, familyLock: true })}
+            {renderShapeProperties()}
             {primary.type !== 'group' && renderObjectPropertyField('opacity', 'Opacity', { min: 0, max: 1, step: 0.05 })}
             {(primary.type === 'text' || primary.type === 'math' || primary.type === 'brace') && <label>Font size<input key={`${primary.id}-font-size-${primary.style.fontSize ?? 22}`} type="number" min={PROOFCANVAS_SCHEMA_LIMITS.fontSizeMin} max={PROOFCANVAS_SCHEMA_LIMITS.fontSizeMax} aria-label="Font size" defaultValue={primary.style.fontSize ?? 22} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => { const value = primary.style.fontSize ?? 22; commitNumericInput(event, { key: 'fontSize', label: 'Font size', fallback: value, min: PROOFCANVAS_SCHEMA_LIMITS.fontSizeMin, max: PROOFCANVAS_SCHEMA_LIMITS.fontSizeMax }, value, (next) => commitPatch({ style: { fontSize: next } }, 'Set font size')) }}/></label>}
             {primary.type === 'text' && <label className="pc-wide">Content<textarea aria-label="Content" rows={3} maxLength={PROOFCANVAS_TEXT_MAX_CHARS} defaultValue={String(primary.properties.content ?? '')} key={`${primary.id}-content-${String(primary.properties.content ?? '')}`} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => { const current = String(primary.properties.content ?? ''); commitTextInput(event, current, 'Content', (value) => commitPatch({ properties: { content: value } }, 'Edit content')) }}/></label>}

@@ -11,6 +11,7 @@ import {
 } from "./schema";
 import { effectiveObjectLifetime } from "./timeline";
 import { analyzeGraphExpression, type GraphExpressionDiagnosticCode } from "./graphExpression";
+import { isCurrentShapeType, shapeAuthoringIssue, type ShapeAuthoringIssue } from "./shapeGeometry";
 
 /** Audio transport/mux support belongs to M4 and remains a render-time capability failure. */
 export const AUTHORING_POLICY_EXCLUDED_COMPILER_CODES = Object.freeze([
@@ -28,9 +29,9 @@ export type ProjectAuthoringTransitionAnalysis =
   | Readonly<{ allowed: true; authorityUnchanged?: true; previousIssues?: readonly TimelineAuthoringIssueSignature[]; nextIssues?: readonly TimelineAuthoringIssueSignature[] }>
   | Readonly<{
     allowed: false;
-    reason: "animation-compatibility" | "introduced-graph-authority" | "modified-graph-authority" | "introduced-timeline-authority" | "modified-timeline-authority";
+    reason: "animation-compatibility" | "introduced-shape-authority" | "modified-shape-authority" | "introduced-graph-authority" | "modified-graph-authority" | "introduced-timeline-authority" | "modified-timeline-authority";
     message: string;
-    issue?: TimelineAuthoringIssueSignature | GraphAuthoringIssueSignature;
+    issue?: TimelineAuthoringIssueSignature | GraphAuthoringIssueSignature | ShapeAuthoringIssueSignature;
   }>;
 
 export interface GraphAuthoringIssueSignature {
@@ -41,6 +42,13 @@ export interface GraphAuthoringIssueSignature {
   authorityFingerprint: string;
   analysisHash: string;
   message: string;
+}
+
+export interface ShapeAuthoringIssueSignature extends ShapeAuthoringIssue {
+  shotId: string;
+  objectId: string;
+  signature: string;
+  authorityFingerprint: string;
 }
 
 function canonicalAuthorityBytes(value: unknown): string {
@@ -196,6 +204,65 @@ function projectGraphAuthorityFingerprint(project: ProjectDocument): string {
   )));
 }
 
+function projectShapeAuthorityFingerprint(project: ProjectDocument): string {
+  return canonicalAuthorityBytes([...project.shots].sort((left, right) => left.id.localeCompare(right.id)).flatMap((shot) => (
+    [...shot.objects]
+      .filter(({ type }) => isCurrentShapeType(type))
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((object) => ({
+        shotId: shot.id,
+        objectId: object.id,
+        type: object.type,
+        hasShape: Object.prototype.hasOwnProperty.call(object.properties, "shape"),
+        shape: object.properties.shape,
+      }))
+  )));
+}
+
+/** Present-but-invalid V3 shape records that new authoring may repair but never create or mutate. */
+export function projectShapeAuthoringIssues(project: ProjectDocument): ShapeAuthoringIssueSignature[] {
+  const issues: ShapeAuthoringIssueSignature[] = [];
+  for (const shot of project.shots) {
+    for (const object of shot.objects) {
+      const issue = shapeAuthoringIssue(object);
+      if (!issue) continue;
+      issues.push({
+        ...issue,
+        shotId: shot.id,
+        objectId: object.id,
+        signature: `${shot.id}\u0000${object.id}`,
+        authorityFingerprint: canonicalAuthorityBytes({
+          type: object.type,
+          hasShape: Object.prototype.hasOwnProperty.call(object.properties, "shape"),
+          shape: object.properties.shape,
+        }),
+      });
+    }
+  }
+  return issues.sort((left, right) => left.signature.localeCompare(right.signature));
+}
+
+function shapeTransitionIssue(previous: ProjectDocument, next: ProjectDocument): Exclude<ProjectAuthoringTransitionAnalysis, { allowed: true }> | undefined {
+  if (projectShapeAuthorityFingerprint(previous) === projectShapeAuthorityFingerprint(next)) return undefined;
+  const previousBySignature = new Map(projectShapeAuthoringIssues(previous).map((issue) => [issue.signature, issue]));
+  for (const issue of projectShapeAuthoringIssues(next)) {
+    const prior = previousBySignature.get(issue.signature);
+    if (!prior) return {
+      allowed: false,
+      reason: "introduced-shape-authority",
+      issue,
+      message: `Authoring would introduce renderer-fallback ${issue.code}: shot ${issue.shotId}, object ${issue.objectId}. ${issue.message}`,
+    };
+    if (prior.authorityFingerprint !== issue.authorityFingerprint) return {
+      allowed: false,
+      reason: "modified-shape-authority",
+      issue,
+      message: `Legacy renderer-fallback shape authority cannot be modified while it remains invalid: shot ${issue.shotId}, object ${issue.objectId}. Repair it to valid ${issue.code === "SHAPE_SETTINGS_KIND_MISMATCH" ? "matching" : "bounded"} settings, remove the shape record, or leave it unchanged.`,
+    };
+  }
+  return undefined;
+}
+
 /** Complete fatal graph geometry authority for a parsed project. */
 export function projectGraphAuthoringIssues(project: ProjectDocument): GraphAuthoringIssueSignature[] {
   const issues: GraphAuthoringIssueSignature[] = [];
@@ -270,6 +337,10 @@ export function projectAuthoringIssue(project: ProjectDocument): string | undefi
       if (issue) return `Project contains renderer-rejected animation ${animation.id} in shot ${shot.id}: ${issue}`;
     }
   }
+  const shapeIssue = projectShapeAuthoringIssues(project)[0];
+  if (shapeIssue) {
+    return `Project contains renderer-fallback ${shapeIssue.code}: shot ${shapeIssue.shotId}, object ${shapeIssue.objectId}. ${shapeIssue.message}`;
+  }
   const graphIssue = projectGraphAuthoringIssues(project)[0];
   if (graphIssue) {
     return `Project contains renderer-rejected ${graphIssue.code}: shot ${graphIssue.shotId}, object ${graphIssue.objectId}. ${graphIssue.message}`;
@@ -301,6 +372,8 @@ export function analyzeProjectAuthoringTransition(
 ): ProjectAuthoringTransitionAnalysis {
   const animationIssue = projectAnimationAuthoringTransitionIssue(previous, next);
   if (animationIssue) return { allowed: false, reason: "animation-compatibility", message: animationIssue };
+  const shapeIssue = shapeTransitionIssue(previous, next);
+  if (shapeIssue) return shapeIssue;
   const graphIssue = graphTransitionIssue(previous, next);
   if (graphIssue) return graphIssue;
   if (projectTimelineAuthorityFingerprint(previous) === projectTimelineAuthorityFingerprint(next)) {

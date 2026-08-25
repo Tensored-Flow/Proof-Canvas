@@ -102,7 +102,7 @@ describe("chronological compiler schedule", () => {
         message: expect.stringContaining("Hold-owned x interval"),
       }),
     ]));
-    expect(compiled.python).not.toContain("move_to([-2.66666662");
+    expect(compiled.python).not.toContain(".copy().shift([2.66666662, 0.0, 0])");
 
     const touching = scheduleProject();
     touching.shots[0].duration = 3;
@@ -394,7 +394,7 @@ describe("chronological compiler schedule", () => {
     }));
     const compiled = compileManim(valid);
     expect(compiled.diagnostics.filter(({ severity }) => severity === "error")).toEqual([]);
-    expect(compiled.python).toMatch(/Succession\(Wait\(1\.0\), Transform\([^\n]+move_to\(\[-3\.51111106, 1\.03703702, 0\]\)[^\n]+set_opacity\(0\.0\)[^\n]+run_time=0\.0/);
+    expect(compiled.python).toMatch(/Succession\(Wait\(1\.0\), Transform\([^\n]+\.copy\(\)\.shift\(\[1\.82222219, 0\.0, 0\]\)[^\n]+set_opacity\(0\.0\)[^\n]+run_time=0\.0/);
     expect(compiled.python).toContain("# Animation component 2: 2.0s to 3.0s");
   });
 
@@ -519,7 +519,7 @@ describe("chronological compiler schedule", () => {
     const valid = ProjectDocumentSchema.parse(project);
     const compiled = compileManim(valid);
     expect(compiled.python).toContain("run_time=1e-8, rate_func=rate_functions.there_and_back");
-    expect(compiled.python).toContain("move_to([-5.31851844, 1.03703702, 0])");
+    expect(compiled.python).toContain(".copy().shift([0.01481481, 0.0, 0]).set_opacity(1.0)");
     expect(compiled.diagnostics.some(({ code }) => code === "ZERO_EVENT_WITHOUT_POSITIVE_ENVELOPE")).toBe(false);
     expect(estimateManimTimelineDurationUpperBound(valid, 30)).toBeCloseTo(1 / 30);
 
@@ -549,7 +549,7 @@ describe("chronological compiler schedule", () => {
       properties: { deltaX: 60 },
     }];
     const groupCompiled = compileManim(ProjectDocumentSchema.parse(groupProject));
-    expect(groupCompiled.python).toContain("move_to([-4.44444437, 1.03703702, 0])");
+    expect(groupCompiled.python).toContain(".copy().shift([0.88888888, 0.0, 0]).set_opacity(1.0)");
     expect(groupCompiled.python).toContain("run_time=1e-8, rate_func=rate_functions.there_and_back");
 
     const cameraProject = scheduleProject();
@@ -826,7 +826,7 @@ describe("chronological compiler schedule", () => {
     expect(previewShotAtTime(groupValid.shots[0], 2).objects.find(({ id }) => id === leaf.id)?.transform.x).toBe(120);
     const groupSource = compileManim(groupValid).python;
     expect(groupSource).toContain("rate_func=rate_functions.there_and_back");
-    expect(groupSource).toMatch(/Transform\(pc_there_and_back_group, VGroup\([^\n]+\.move_to\(\[-2\.66666662, 1\.03703702, 0\]\)/);
+    expect(groupSource).toMatch(/Transform\(pc_there_and_back_group, VGroup\([^\n]+\.copy\(\)\.shift\(\[2\.66666662, 0\.0, 0\]\)/);
 
     const fadeProject = scheduleProject();
     fadeProject.shots[0].animations = [{
