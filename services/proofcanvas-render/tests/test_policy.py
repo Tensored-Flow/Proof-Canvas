@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from pathlib import Path
 
 import pytest
 
@@ -65,13 +67,43 @@ def validate(source: str) -> None:
     validate_generated_source(source, hashlib.sha256(source.encode("utf-8")).hexdigest())
 
 
+LATEX_CONFORMANCE = json.loads((Path(__file__).with_name("latex_conformance.json")).read_text(encoding="utf-8"))["vectors"]
+
+
+@pytest.mark.parametrize("vector", LATEX_CONFORMANCE, ids=lambda vector: vector["id"])
+def test_shared_latex_conformance(vector: dict[str, object]) -> None:
+    renderer = "MathTex" if vector["renderer"] == "mathtex" else "Tex"
+    statement = f"        pc_math = {renderer}({json.dumps(vector['content'])}, font_size=34.0)\n"
+    if vector["accepted"]:
+        validate(source_with(statement))
+    else:
+        with pytest.raises(SourcePolicyError, match="safe compiler dialect"):
+            validate(source_with(statement))
+
+
 def test_accepts_safe_mathtex_compiler_dialect() -> None:
     validate(source_with('        pc_math = MathTex(r"\\\\frac{1}{2} \\le \\pi", font_size=34.0)\n'))
 
 
+def test_accepts_safe_tex_compiler_dialect() -> None:
+    validate(source_with('        pc_text = Tex(r"Euler wrote $e^{i\\\\pi}+1=0$.", font_size=34.0)\n'))
+
+
+@pytest.mark.parametrize("font_size", [1.0, 256.0])
+def test_accepts_schema_font_size_boundaries(font_size: float) -> None:
+    validate(source_with(f'        pc_math = MathTex(r"x", font_size={font_size})\n'))
+
+
+def test_rejects_unsafe_tex_content() -> None:
+    content = r"\input{/etc/hostname}"
+    with pytest.raises(SourcePolicyError, match="Tex content is outside"):
+        validate(source_with(f"        pc_text = Tex({json.dumps(content)}, font_size=34.0)\n"))
+
+
 @pytest.mark.parametrize("command", ["input", "include", "write", "openin", "openout", "read", "special"])
 def test_rejects_file_and_process_latex_commands(command: str) -> None:
-    source = source_with(f'        pc_math = MathTex(r"\\\\{command}{{/etc/hostname}}", font_size=34.0)\n')
+    content = f"\\{command}{{/etc/hostname}}"
+    source = source_with(f"        pc_math = MathTex({json.dumps(content)}, font_size=34.0)\n")
 
     with pytest.raises(SourcePolicyError, match="safe compiler dialect"):
         validate(source)
@@ -102,7 +134,8 @@ def test_rejects_constructor_alias_calls() -> None:
     [
         "",
         ", color=\"#ffffff\"",
-        ", font_size=1.0",
+        ", font_size=0.99",
+        ", font_size=257.0",
         ", font_size=pc_font_size",
         ", font_size=34.0, tex_template=None",
     ],

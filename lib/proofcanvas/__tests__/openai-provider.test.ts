@@ -98,6 +98,50 @@ test("rejects inherited-lock mutations even when the child itself is unlocked", 
   }, CONFIGURATION, client)).rejects.toThrow(/locked object/);
 });
 
+test("rejects provider-authored malformed LaTeX through the shared operation authority", async () => {
+  const project = createCantorDemoProject();
+  project.shots[0].objects.find(({ id }) => id === "object-equation-chain")!.locked = false;
+  project.shots[0].objects.find(({ id }) => id === "object-equation-length")!.locked = false;
+  const { client } = clientReturning({
+    intention: "Replace the selected equation.",
+    summary: ["Replace the equation."],
+    operations: [{
+      type: "update-object",
+      objectId: "object-equation-length",
+      patch: [{ field: "property", key: "content", value: { kind: "string", value: "\\frac{1" } }],
+    }],
+  });
+
+  await expect(proposeWithOpenAi({
+    project,
+    shotId: SHOT,
+    selectedObjectIds: ["object-equation-length"],
+    instruction: "Replace this equation.",
+  }, CONFIGURATION, client)).rejects.toThrow(/character 6/);
+});
+
+test.each([0.99, 257])("rejects provider-authored font size %s outside the shared authoring bounds", async (fontSize) => {
+  const project = createCantorDemoProject();
+  project.shots[0].objects.find(({ id }) => id === "object-equation-chain")!.locked = false;
+  project.shots[0].objects.find(({ id }) => id === "object-equation-length")!.locked = false;
+  const { client } = clientReturning({
+    intention: "Resize the selected equation.",
+    summary: ["Resize the equation."],
+    operations: [{
+      type: "update-object",
+      objectId: "object-equation-length",
+      patch: [{ field: "style.fontSize", value: fontSize }],
+    }],
+  });
+
+  await expect(proposeWithOpenAi({
+    project,
+    shotId: SHOT,
+    selectedObjectIds: ["object-equation-length"],
+    instruction: "Resize this equation.",
+  }, CONFIGURATION, client)).rejects.toThrow(/no valid structured operation proposal/);
+});
+
 test("rejects every provider-authored unlock operation", async () => {
   const { client } = clientReturning({
     intention: "Unlock the equation.",

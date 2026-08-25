@@ -260,6 +260,35 @@ class GeneratedScene(MovingCameraScene):
     assert widths[2] / widths[4] == pytest.approx(1.5, abs=0.15)
 
 
+def test_tex_and_mathtex_even_backslashes_render_as_plain_line_breaks(tmp_path: Path) -> None:
+    source = """from manim import *
+import math
+
+class GeneratedScene(MovingCameraScene):
+    def construct(self):
+        pc_text = Tex(r"First line\\\\input and $\\sqrt[x_1]{y}+x^\\alpha+\\text{Area = 2x}$", font_size=34.0).shift(LEFT)
+        pc_math = MathTex(r"x\\\\y", font_size=34.0).shift(RIGHT)
+        self.add(pc_text, pc_math)
+        self.wait(0.1)
+"""
+    render_probe(tmp_path, source, expected_frames=1)
+
+
+def test_mathtex_schema_font_size_boundaries_render_in_pinned_manim(tmp_path: Path) -> None:
+    source = """from manim import *
+import math
+
+class GeneratedScene(MovingCameraScene):
+    def construct(self):
+        pc_small = MathTex(r"\\frac{\\sqrt[3]{x}}{\\mathbf{y}}", font_size=1.0).shift(LEFT)
+        pc_large = MathTex(r"\\left\\{z\\right\\}", font_size=256.0).shift(RIGHT)
+        pc_controls = MathTex(r"{\\left(x\\right)} + x^{\\sqrt{2}} + x^\\alpha + \\text{Area = 2x}", font_size=34.0).shift(DOWN)
+        self.add(pc_small, pc_large, pc_controls)
+        self.wait(0.1)
+"""
+    render_probe(tmp_path, source, expected_frames=1)
+
+
 def test_explicit_wait_wrapper_preserves_canonical_point_three_seconds(tmp_path: Path) -> None:
     source = """from manim import *
 import math

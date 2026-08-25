@@ -4,6 +4,7 @@ import katex from 'katex'
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { previewShotAtTime } from '@/lib/proofcanvas/preview'
 import { addTimelineTimes, compareTimelineTimes, logicalFrameFor, type LogicalFrame } from '@/lib/proofcanvas/frame'
+import { analyzeMathProperties, texContentSegments, type MathMode } from '@/lib/proofcanvas/latex'
 import { applyOperations, effectiveLockOwner } from '@/lib/proofcanvas/operations'
 import { objectTypeSupportsStyleProperty, type ProjectDocument, type SceneObject, type Shot, type StylePack } from '@/lib/proofcanvas/schema'
 import { styledDisplayTransform, styledTransform } from '@/lib/proofcanvas/styles'
@@ -67,10 +68,74 @@ function cameraPoint(point: { x: number; y: number }, camera: ShotPreviewCamera,
 
 type ShotPreviewCamera = ReturnType<typeof previewShotAtTime>['camera']
 
-function MathHtml({ content }: { content: string }) {
-  const html = useMemo(() => katex.renderToString(content, { throwOnError: false, strict: 'error', trust: false, output: 'html' }), [content])
-  return <span dangerouslySetInnerHTML={{ __html: html }} />
+function KatexMath({ content, mode }: { content: string; mode: MathMode }) {
+  const rendered = useMemo(() => {
+    try {
+      return { ok: true as const, html: katex.renderToString(content, {
+        displayMode: mode === 'display',
+        maxExpand: 256,
+        output: 'html',
+        strict: 'error',
+        throwOnError: true,
+        trust: false,
+      }) }
+    } catch {
+      return { ok: false as const }
+    }
+  }, [content, mode])
+  return rendered.ok
+    ? <span dangerouslySetInnerHTML={{ __html: rendered.html }} />
+    : <span className="pc-math-diagnostic" role="img" aria-label="Mathematical content error: browser preview could not parse this expression.">LaTeX error · browser preview could not parse this expression.</span>
 }
+
+function texPlainTextForPreview(content: string): string {
+  let output = ''
+  for (let index = 0; index < content.length; index += 1) {
+    if (/[ \t\r\n]/.test(content[index])) {
+      while (index + 1 < content.length && /[ \t\r\n]/.test(content[index + 1])) index += 1
+      if (output.at(-1) !== ' ' && output.at(-1) !== '\n') output += ' '
+      continue
+    }
+    if (content[index] !== '\\' || content[index + 1] === undefined) {
+      output += content[index]
+      continue
+    }
+    const escaped = content[index + 1]
+    index += 1
+    if (escaped === '\\') output = `${output.endsWith(' ') ? output.slice(0, -1) : output}\n`
+    else if (escaped === ',') output += '\u2009'
+    else if (escaped === ';') output += '\u2003'
+    else if (escaped === ':') output += '\u2005'
+    else if (escaped !== '!') output += escaped
+  }
+  return output
+}
+
+function TexHtml({ content }: { content: string }) {
+  const segments = texContentSegments(content)
+  if (!segments.some(({ kind }) => kind === 'math')) {
+    return <span className="pc-tex-content">{texPlainTextForPreview(content)}</span>
+  }
+  return <span className="pc-tex-content">{segments.map((segment, index) => (
+    segment.kind === 'text'
+      ? <span key={`${index}-text`}>{texPlainTextForPreview(segment.content)}</span>
+      : <KatexMath key={`${index}-math`} content={segment.content} mode="inline" />
+  ))}</span>
+}
+
+const MathHtml = memo(function MathHtml({ content, renderer, mode }: { content: unknown; renderer: unknown; mode: unknown }) {
+  const analysis = useMemo(() => analyzeMathProperties({ content, renderer, mode }), [content, mode, renderer])
+  if (!analysis.ok) {
+    const message = analysis.ok ? 'Mathematical content is invalid.' : analysis.message
+    return <span className="pc-math-diagnostic" role="img" aria-label={`Mathematical content error: ${message}`}>LaTeX error · {message}</span>
+  }
+  const properties = analysis.properties
+  return <span className={`pc-math-render pc-math-${properties.mode}`} data-math-renderer={properties.renderer} data-math-mode={properties.mode}>
+    {properties.renderer === 'mathtex'
+      ? <KatexMath content={properties.content} mode={properties.mode}/>
+      : <TexHtml content={properties.content}/>}
+  </span>
+})
 
 export function temporallyTransformsObject(shot: Shot, objectId: string, time: number): boolean {
   const targetFamily = new Set<string>()
@@ -226,7 +291,7 @@ function RenderObject({ object, style, selected, effectivelyLocked, temporallyTr
       return (
         <foreignObject {...common} x={-width / 2} y={-height / 2} width={width} height={height}>
           <div className={`pc-canvas-text pc-${object.type}`} style={{ color: objectTypeSupportsStyleProperty(object.type, 'fill') ? object.style.fill ?? object.style.color ?? style.colors.ink : object.style.color ?? style.colors.ink, fontSize: object.style.fontSize ?? 22, fontWeight: object.style.fontWeight, textAlign: object.style.textAlign ?? 'left', fontFamily: object.type === 'math' ? style.typography.math : style.typography.statement }}>
-            {object.type === 'math' ? <MathHtml content={String(object.properties.content ?? '')} /> : String(object.properties.content ?? '')}
+            {object.type === 'math' ? <MathHtml content={object.properties.content} renderer={object.properties.renderer} mode={object.properties.mode} /> : String(object.properties.content ?? '')}
           </div>
         </foreignObject>
       )

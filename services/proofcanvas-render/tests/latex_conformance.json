@@ -1,0 +1,605 @@
+{
+  "version": 1,
+  "vectors": [
+    {
+      "id": "mathtex-balanced-nested",
+      "renderer": "mathtex",
+      "content": "\\frac{1}{\\sqrt{x^{2}+1}}",
+      "accepted": true
+    },
+    {
+      "id": "mathtex-left-right-nested",
+      "renderer": "mathtex",
+      "content": "\\left(\\frac{x_1}{y^2}\\right)",
+      "accepted": true
+    },
+    {
+      "id": "tex-plain-ascii",
+      "renderer": "tex",
+      "content": "Euler wrote a useful identity.",
+      "accepted": true
+    },
+    {
+      "id": "tex-inline-math",
+      "renderer": "tex",
+      "content": "Euler wrote $e^{i\\pi}+1=0$.",
+      "accepted": true
+    },
+    {
+      "id": "tex-inline-frac",
+      "renderer": "tex",
+      "content": "The ratio is $\\frac{1}{2}$.",
+      "accepted": true
+    },
+    {
+      "id": "tex-escaped-specials",
+      "renderer": "tex",
+      "content": "Price \\$5, tax 20\\%, A\\_1, and \\{ok\\}.",
+      "accepted": true
+    },
+    {
+      "id": "tex-even-backslashes-are-linebreak",
+      "renderer": "tex",
+      "content": "First line\\\\input and $x^2$",
+      "accepted": true
+    },
+    {
+      "id": "mathtex-even-backslashes-are-linebreak",
+      "renderer": "mathtex",
+      "content": "x\\\\y",
+      "accepted": true
+    },
+    {
+      "id": "mathtex-script-orders",
+      "renderer": "mathtex",
+      "content": "x_1^2+x^2_1",
+      "accepted": true
+    },
+    {
+      "id": "mathtex-indexed-sqrt",
+      "renderer": "mathtex",
+      "content": "\\sqrt[3]{x}",
+      "accepted": true
+    },
+    {
+      "id": "mathtex-escaped-brace-delimiters",
+      "renderer": "mathtex",
+      "content": "\\left\\{x\\right\\}",
+      "accepted": true
+    },
+    {
+      "id": "mathtex-escaped-specials",
+      "renderer": "mathtex",
+      "content": "\\#1+\\&+\\%",
+      "accepted": true
+    },
+    {
+      "id": "mathtex-left-right-contained-in-group",
+      "renderer": "mathtex",
+      "content": "{\\left(x\\right)}",
+      "accepted": true
+    },
+    {
+      "id": "mathtex-left-right-around-group",
+      "renderer": "mathtex",
+      "content": "\\left({x}\\right)",
+      "accepted": true
+    },
+    {
+      "id": "mathtex-sqrt-index-with-script",
+      "renderer": "mathtex",
+      "content": "\\sqrt[x_1]{y}",
+      "accepted": true
+    },
+    {
+      "id": "mathtex-sqrt-index-with-symbol-command",
+      "renderer": "mathtex",
+      "content": "\\sqrt[\\alpha]{x}",
+      "accepted": true
+    },
+    {
+      "id": "mathtex-unbraced-symbol-script",
+      "renderer": "mathtex",
+      "content": "x^\\alpha",
+      "accepted": true
+    },
+    {
+      "id": "mathtex-braced-complex-script",
+      "renderer": "mathtex",
+      "content": "x^{\\sqrt{2}}",
+      "accepted": true
+    },
+    {
+      "id": "mathtex-safe-text-command",
+      "renderer": "mathtex",
+      "content": "\\text{Area = 2x}",
+      "accepted": true
+    },
+    {
+      "id": "mathtex-safe-text-command-escapes",
+      "renderer": "mathtex",
+      "content": "\\textit{A\\_1 and 20\\%}",
+      "accepted": true
+    },
+    {
+      "id": "mathtex-safe-textbf-command",
+      "renderer": "mathtex",
+      "content": "\\textbf{Euler}",
+      "accepted": true
+    },
+    {
+      "id": "mathtex-safe-emph-command",
+      "renderer": "mathtex",
+      "content": "\\emph{plain words}",
+      "accepted": true
+    },
+    {
+      "id": "mathtex-linebreak-optional-spacing-unsupported",
+      "renderer": "mathtex",
+      "content": "\\\\[1em]",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-linebreak-empty-optional-spacing",
+      "renderer": "mathtex",
+      "content": "\\\\[]",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-linebreak-unclosed-optional-spacing",
+      "renderer": "mathtex",
+      "content": "\\\\[",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-linebreak-unitless-optional-spacing",
+      "renderer": "mathtex",
+      "content": "\\\\[1]",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-linebreak-alphabetic-optional-spacing",
+      "renderer": "mathtex",
+      "content": "\\\\[x]",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-linebreak-is-not-unbraced-subscript",
+      "renderer": "mathtex",
+      "content": "x_\\\\",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-linebreak-is-not-unbraced-superscript",
+      "renderer": "mathtex",
+      "content": "x^\\\\",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-starred-linebreak-unsupported",
+      "renderer": "mathtex",
+      "content": "x\\\\*y",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-linebreak-spacing-in-braced-subscript",
+      "renderer": "mathtex",
+      "content": "x_{\\\\[1em]}",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-linebreak-spacing-in-braced-superscript",
+      "renderer": "mathtex",
+      "content": "x^{\\\\[x]}",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-malformed-frac-brace",
+      "renderer": "mathtex",
+      "content": "\\frac{1",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-frac-missing-second-argument",
+      "renderer": "mathtex",
+      "content": "\\frac{1}",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-frac-second-argument-not-braced",
+      "renderer": "mathtex",
+      "content": "\\frac{1}2",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-frac-command-token-arguments",
+      "renderer": "mathtex",
+      "content": "\\frac\\sqrt2",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-sqrt-empty-index",
+      "renderer": "mathtex",
+      "content": "\\sqrt[]",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-sqrt-missing-radicand",
+      "renderer": "mathtex",
+      "content": "\\sqrt[2]",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-sqrt-index-missing-script-argument",
+      "renderer": "mathtex",
+      "content": "\\sqrt[2^]{x}",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-command-argument-not-braced",
+      "renderer": "mathtex",
+      "content": "\\text x",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-text-command-raw-math-marker",
+      "renderer": "mathtex",
+      "content": "\\text{a_b}",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-textbf-command-raw-math-marker",
+      "renderer": "mathtex",
+      "content": "\\textbf{a^b}",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-text-command-math-command",
+      "renderer": "mathtex",
+      "content": "\\text{\\alpha}",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-unsupported-abs-command",
+      "renderer": "mathtex",
+      "content": "\\abs{x}",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-adjacent-double-subscript",
+      "renderer": "mathtex",
+      "content": "x__1",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-adjacent-mixed-scripts",
+      "renderer": "mathtex",
+      "content": "x^_1",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-unbraced-complex-script-command",
+      "renderer": "mathtex",
+      "content": "x^\\sqrt{2}",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-unbraced-operator-script-command",
+      "renderer": "mathtex",
+      "content": "x_\\sin",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-unbraced-punctuation-script",
+      "renderer": "mathtex",
+      "content": "x^+",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-duplicate-subscript",
+      "renderer": "mathtex",
+      "content": "x_1_2",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-duplicate-superscript",
+      "renderer": "mathtex",
+      "content": "x^2^3",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-raw-percent",
+      "renderer": "mathtex",
+      "content": "x%comment",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-raw-hash",
+      "renderer": "mathtex",
+      "content": "x#1",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-raw-ampersand",
+      "renderer": "mathtex",
+      "content": "x&y",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-left-invalid-delimiter",
+      "renderer": "mathtex",
+      "content": "\\left x \\right)",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-left-right-mismatch",
+      "renderer": "mathtex",
+      "content": "\\left(x\\right]",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-left-right-cross-sibling-groups",
+      "renderer": "mathtex",
+      "content": "{\\left(}x{\\right)}",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-left-crosses-group-close",
+      "renderer": "mathtex",
+      "content": "{\\left(x}\\right)",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-right-crosses-group-open",
+      "renderer": "mathtex",
+      "content": "\\left({x\\right)}",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-left-group-closes-before-right",
+      "renderer": "mathtex",
+      "content": "{\\left(}x\\right)",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-unexpected-closing-brace",
+      "renderer": "mathtex",
+      "content": "x}",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-left-without-right",
+      "renderer": "mathtex",
+      "content": "\\left(x+1",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-right-without-left",
+      "renderer": "mathtex",
+      "content": "x+1\\right)",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-dangling-backslash",
+      "renderer": "mathtex",
+      "content": "x\\",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-superscript-missing-argument",
+      "renderer": "mathtex",
+      "content": "x^",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-subscript-missing-argument",
+      "renderer": "mathtex",
+      "content": "x_}",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-dollar-delimiters",
+      "renderer": "mathtex",
+      "content": "$x$",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-forbidden-command",
+      "renderer": "mathtex",
+      "content": "\\input{/etc/hostname}",
+      "accepted": false
+    },
+    {
+      "id": "mathtex-unknown-command",
+      "renderer": "mathtex",
+      "content": "\\unknown{x}",
+      "accepted": false
+    },
+    {
+      "id": "tex-bounded-math-positive-controls",
+      "renderer": "tex",
+      "content": "Scope $\\left({x}\\right)$, root $\\sqrt[x_1]{y}$, text $\\text{Area = 2x}$, script $x^\\alpha$.",
+      "accepted": true
+    },
+    {
+      "id": "tex-independent-left-right-segments",
+      "renderer": "tex",
+      "content": "$\\left(x\\right)$ and $\\left[y\\right]$",
+      "accepted": true
+    },
+    {
+      "id": "tex-starred-linebreak-unsupported",
+      "renderer": "tex",
+      "content": "First\\\\*Second",
+      "accepted": false
+    },
+    {
+      "id": "tex-left-right-cross-sibling-groups",
+      "renderer": "tex",
+      "content": "${\\left(}x{\\right)}$",
+      "accepted": false
+    },
+    {
+      "id": "tex-left-crosses-group-close",
+      "renderer": "tex",
+      "content": "${\\left(x}\\right)$",
+      "accepted": false
+    },
+    {
+      "id": "tex-right-crosses-group-open",
+      "renderer": "tex",
+      "content": "$\\left({x\\right)}$",
+      "accepted": false
+    },
+    {
+      "id": "tex-left-group-closes-before-right",
+      "renderer": "tex",
+      "content": "${\\left(}x\\right)$",
+      "accepted": false
+    },
+    {
+      "id": "tex-sqrt-index-missing-script-argument",
+      "renderer": "tex",
+      "content": "$\\sqrt[2^]{x}$",
+      "accepted": false
+    },
+    {
+      "id": "tex-text-command-raw-math-marker",
+      "renderer": "tex",
+      "content": "$\\text{a_b}$",
+      "accepted": false
+    },
+    {
+      "id": "tex-unbraced-complex-script-command",
+      "renderer": "tex",
+      "content": "$x^\\sqrt{2}$",
+      "accepted": false
+    },
+    {
+      "id": "tex-linebreak-optional-spacing-unsupported",
+      "renderer": "tex",
+      "content": "First\\\\[1em]line",
+      "accepted": false
+    },
+    {
+      "id": "tex-linebreak-empty-optional-spacing",
+      "renderer": "tex",
+      "content": "First\\\\[]line",
+      "accepted": false
+    },
+    {
+      "id": "tex-linebreak-unclosed-optional-spacing",
+      "renderer": "tex",
+      "content": "First\\\\[",
+      "accepted": false
+    },
+    {
+      "id": "tex-linebreak-unitless-optional-spacing",
+      "renderer": "tex",
+      "content": "First\\\\[1]line",
+      "accepted": false
+    },
+    {
+      "id": "tex-linebreak-alphabetic-optional-spacing",
+      "renderer": "tex",
+      "content": "First\\\\[x]line",
+      "accepted": false
+    },
+    {
+      "id": "tex-linebreak-is-not-unbraced-subscript",
+      "renderer": "tex",
+      "content": "Value $x_\\\\$.",
+      "accepted": false
+    },
+    {
+      "id": "tex-linebreak-is-not-unbraced-superscript",
+      "renderer": "tex",
+      "content": "Value $x^\\\\$.",
+      "accepted": false
+    },
+    {
+      "id": "tex-linebreak-spacing-in-braced-subscript",
+      "renderer": "tex",
+      "content": "Value $x_{\\\\[1em]}$.",
+      "accepted": false
+    },
+    {
+      "id": "tex-linebreak-spacing-in-braced-superscript",
+      "renderer": "tex",
+      "content": "Value $x^{\\\\[x]}$.",
+      "accepted": false
+    },
+    {
+      "id": "tex-odd-backslashes-expose-forbidden-command",
+      "renderer": "tex",
+      "content": "First line\\\\\\input{/etc/hostname}",
+      "accepted": false
+    },
+    {
+      "id": "tex-unclosed-dollar",
+      "renderer": "tex",
+      "content": "Value $x^2",
+      "accepted": false
+    },
+    {
+      "id": "tex-double-dollar",
+      "renderer": "tex",
+      "content": "Value $$x^2$$",
+      "accepted": false
+    },
+    {
+      "id": "tex-math-command-outside-dollar",
+      "renderer": "tex",
+      "content": "Ratio \\frac{1}{2}",
+      "accepted": false
+    },
+    {
+      "id": "tex-textbf-outside-dollar",
+      "renderer": "tex",
+      "content": "Hello \\textbf{world}",
+      "accepted": false
+    },
+    {
+      "id": "tex-textit-outside-dollar",
+      "renderer": "tex",
+      "content": "Hello \\textit{world}",
+      "accepted": false
+    },
+    {
+      "id": "tex-emph-outside-dollar",
+      "renderer": "tex",
+      "content": "Hello \\emph{world}",
+      "accepted": false
+    },
+    {
+      "id": "tex-raw-percent",
+      "renderer": "tex",
+      "content": "Tax is 20%.",
+      "accepted": false
+    },
+    {
+      "id": "tex-raw-underscore",
+      "renderer": "tex",
+      "content": "Value x_1",
+      "accepted": false
+    },
+    {
+      "id": "tex-raw-braces",
+      "renderer": "tex",
+      "content": "Hello {world}",
+      "accepted": false
+    },
+    {
+      "id": "tex-cjk-unsupported",
+      "renderer": "tex",
+      "content": "你好",
+      "accepted": false
+    },
+    {
+      "id": "tex-emoji-unsupported",
+      "renderer": "tex",
+      "content": "Hello 😀",
+      "accepted": false
+    }
+  ]
+}

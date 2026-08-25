@@ -426,7 +426,7 @@ describe('ProofCanvas editor client', () => {
     expect(screen.getByRole('status', { name: 'Editor status' })).toHaveTextContent('X position must be between')
 
     const fontSize = screen.getByRole('spinbutton', { name: 'Font size' })
-    fireEvent.change(fontSize, { target: { value: '2' } })
+    fireEvent.change(fontSize, { target: { value: '0.5' } })
     fireEvent.blur(fontSize)
     expect(fontSize).toHaveValue(38)
     expect(editor()).toHaveAttribute('data-history-past-count', '0')
@@ -972,6 +972,7 @@ describe('ProofCanvas editor client', () => {
     openRenderDialog()
     fireEvent.click(screen.getByRole('button', { name: 'Export Manim Python' }))
     const dialog = screen.getByRole('dialog', { name: /Manim Python/ })
+    expect(dialog.querySelector(':scope > header')).toHaveAttribute('role', 'group')
     const diagnostics = within(dialog).getByRole('region', { name: 'Compiler diagnostics' })
     expect(diagnostics).toHaveTextContent('ASSET_RENDER_TRANSPORT_UNSUPPORTED')
     expect(diagnostics).toHaveTextContent(/object object-image/)

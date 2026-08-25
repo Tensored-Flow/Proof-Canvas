@@ -3,6 +3,7 @@ import {
   PROOFCANVAS_RENDER_SOURCE_MAX_BYTES,
   ProjectDocumentSchema,
   RestrictedExpressionSchema,
+  mathPropertiesFor,
   objectTypeSupportsStyleProperty,
   utf8ByteLength,
   type ProjectDocument,
@@ -12,6 +13,7 @@ import {
   type Shot,
   type StylePack,
 } from "./schema";
+import { analyzeMathProperties, normalizeLegacyMathProperties } from "./latex";
 import { firstVisibilityAnimationByTarget, initiallyHiddenByEntranceIds, previewShotAtAnimationEnd, previewShotAtAnimationPeak, previewShotAtTime, previewShotBeforePointEventsAtTime } from "./preview";
 import { styledTransform } from "./styles";
 import { manimRateFunctionName } from "./easing";
@@ -309,8 +311,21 @@ function primitiveExpression(
   switch (object.type) {
     case "text":
       return `Text(${pyString(content)}, font_size=${pyNumber(object.style.fontSize ?? 28)})`;
-    case "math":
-      return `MathTex(${pyString(content)}, font_size=${pyNumber(object.style.fontSize ?? 34)})`;
+    case "math": {
+      const math = mathPropertiesFor(object);
+      if (!math) {
+        diagnostics.push({ severity: "error", code: "LATEX_SYNTAX_INVALID", message: "Mathematical content failed compiler validation and was omitted.", objectId: object.id });
+        return "VMobject()";
+      }
+      if (math.mode === "inline") diagnostics.push({
+        severity: "warning",
+        code: "MATH_INLINE_LAYOUT_BOUNDED_DIFFERENCE",
+        message: `${math.renderer === "tex" ? "Tex" : "MathTex"} inline flow is preview-only; pinned Manim constructs the same standalone glyph object as display mode. Content and renderer selection are preserved, but surrounding-line layout is not represented.`,
+        objectId: object.id,
+      });
+      const constructor = math.renderer === "tex" ? "Tex" : "MathTex";
+      return `${constructor}(${pyString(math.content)}, font_size=${pyNumber(object.style.fontSize ?? 34)})`;
+    }
     case "circle":
       return `Circle(radius=1.0).stretch_to_fit_width(${pyNumber(width)}).stretch_to_fit_height(${pyNumber(height)})`;
     case "rectangle":
@@ -978,6 +993,35 @@ export function estimateManimTimelineDurationUpperBound(project: ProjectDocument
 }
 
 export function compileManim(input: ProjectDocument): CompileResult {
+  const mathDiagnostics: CompilerDiagnostic[] = [];
+  for (const shot of Array.isArray(input?.shots) ? input.shots : []) {
+    for (const object of Array.isArray(shot?.objects) ? shot.objects : []) {
+      if (object?.type !== "math") continue;
+      const analysis = analyzeMathProperties(normalizeLegacyMathProperties(object.properties));
+      if (!analysis.ok) mathDiagnostics.push({
+        severity: "error",
+        code: analysis.code === "MATH_PROPERTIES_INVALID" ? "MATH_PROPERTIES_INVALID" : analysis.code,
+        message: analysis.message,
+        objectId: object.id,
+      });
+      if (mathDiagnostics.length >= 64) break;
+    }
+    if (mathDiagnostics.length >= 64) break;
+  }
+  if (mathDiagnostics.length) {
+    return {
+      python: [
+        "from manim import *",
+        "import math",
+        "",
+        "class GeneratedScene(MovingCameraScene):",
+        "    def construct(self):",
+        "        self.wait(0.0)",
+        "",
+      ].join("\n"),
+      diagnostics: mathDiagnostics,
+    };
+  }
   const parsedProject = ProjectDocumentSchema.parse(input);
   const reservedIds = collectProjectIds(parsedProject);
   const schedules = parsedProject.shots.map((shot) => buildCompilerSchedule(shot, parsedProject.settings.frameRate, reservedIds));

@@ -3,6 +3,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent, type ComponentProps, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import CanvasStage, { resolveCanvasKeyboardTransformIntent, temporallyTransformsObject, type CanvasKeyboardTransformIntent } from './CanvasStage'
 import KeyframeInspector from './KeyframeInspector'
+import MathPropertiesEditor from './MathPropertiesEditor'
 import PropertyKeyframeField from './PropertyKeyframeField'
 import ShotStoryboard, { type StoryboardActionResult } from './ShotStoryboard'
 import ShotTimeline from './ShotTimeline'
@@ -23,7 +24,7 @@ import { beginEditorShotSequencePlayback, buildEditorShotSequence, commitEditorS
 import { allocateId, collectProjectIds } from '@/lib/proofcanvas/ids'
 import { applyOperations, duplicateObjects, effectiveLockOwner, effectiveVisibilityOwner, inspectOperations, type ManualSceneOperation } from '@/lib/proofcanvas/operations'
 import { previewShotAtTime } from '@/lib/proofcanvas/preview'
-import { PROOFCANVAS_BRACE_LABEL_MAX_CHARS, PROOFCANVAS_LATEX_MAX_CHARS, PROOFCANVAS_PROJECT_MAX_BYTES, PROOFCANVAS_SCHEMA_LIMITS, PROOFCANVAS_TEXT_MAX_CHARS, ProjectDocumentSchema, SceneOperationSchema, animationAuthoringCompatibilityIssue, canonicalProjectJson, cloneSerializable, objectTypeSupportsStyleProperty, parseProjectDocument, type AnimationType, type Easing, type ProjectDocument, type PropertyKeyframe, type PropertyTrack, type SceneAnimation, type SceneObject, type SceneOperation, type Shot } from '@/lib/proofcanvas/schema'
+import { PROOFCANVAS_BRACE_LABEL_MAX_CHARS, PROOFCANVAS_PROJECT_MAX_BYTES, PROOFCANVAS_SCHEMA_LIMITS, PROOFCANVAS_TEXT_MAX_CHARS, ProjectDocumentSchema, SceneOperationSchema, animationAuthoringCompatibilityIssue, canonicalProjectJson, cloneSerializable, mathPropertiesFor, objectTypeSupportsStyleProperty, parseProjectDocument, type AnimationType, type Easing, type MathProperties, type ProjectDocument, type PropertyKeyframe, type PropertyTrack, type SceneAnimation, type SceneObject, type SceneOperation, type Shot } from '@/lib/proofcanvas/schema'
 import { EDITORIAL_INK_STYLE_ID, RAW_MANIM_STYLE_ID, styleById } from '@/lib/proofcanvas/styles'
 import { propertyTrackKey } from '@/lib/proofcanvas/timeline'
 
@@ -344,7 +345,7 @@ function newObject(type: Exclude<SceneObject['type'], 'group'>, id: string, inde
   }
   switch (type) {
     case 'text': return { ...base, name: 'Plain text', semanticRole: 'body-copy', style: { fontSize: 24, textAlign: 'left' }, properties: { content: 'A precise statement' } }
-    case 'math': return { ...base, name: 'Mathematical text', semanticRole: 'equation', style: { fontSize: 30, textAlign: 'left' }, properties: { content: '\\sum_{k=0}^{n} 2^k' } }
+    case 'math': return { ...base, name: 'Mathematical text', semanticRole: 'equation', style: { fontSize: 30, textAlign: 'left' }, properties: { content: '\\sum_{k=0}^{n} 2^k', renderer: 'mathtex', mode: 'display' } }
     case 'circle': return { ...base, transform: { ...base.transform, width: 90, height: 90 }, style: { stroke: '#315866', strokeWidth: 2 }, properties: {} }
     case 'rectangle': return { ...base, transform: { ...base.transform, width: 150, height: 78 }, style: { stroke: '#252722', opacity: 0.22 }, properties: {} }
     case 'line': return { ...base, transform: { ...base.transform, width: 180, height: 2 }, style: { stroke: '#655f55', strokeWidth: 1 }, properties: {} }
@@ -650,6 +651,8 @@ export default function ProofCanvasEditor({
   const selectedAnimationLocked = selectedAnimation ? animationTargetsLocked(shot, selectedAnimation) : false
   const selectedAnimationTarget = selectedAnimation ? shot.objects.find(({ id }) => id === selectedAnimation.targetIds[0]) : undefined
   const projectRevision = useMemo(() => canonicalProjectJson(project), [project])
+  const primaryMathProperties = primary ? mathPropertiesFor(primary) : null
+  const mathDraftAuthorityKey = primary ? `${projectRevision}\u0000${shot.id}\u0000${primary.id}` : ''
   const projectRevisionRef = useRef(projectRevision)
   projectRevisionRef.current = projectRevision
   const ensureCsrfToken = useCallback(async () => {
@@ -1332,6 +1335,28 @@ export default function ProofCanvasEditor({
   const commitPatch = (patch: Extract<SceneOperation, { type: 'update-object' }>['patch'], label: string) => {
     if (!primary) return false
     return commitOps([{ type: 'update-object', objectId: primary.id, patch }], label)
+  }
+
+  const commitMathProperties = (next: MathProperties, baseAuthorityKey: string) => {
+    const current = authorityRef.current
+    const latestProject = current.history.present
+    const latestShot = latestProject.shots.find(({ id }) => id === current.workspace.activeShotId) ?? latestProject.shots[0]
+    const latestPrimaryId = selectedObjectIds(current.workspace.selection, latestShot.id).at(-1) ?? ''
+    const latestAuthorityKey = `${projectRevisionRef.current}\u0000${latestShot.id}\u0000${latestPrimaryId}`
+    if (baseAuthorityKey !== latestAuthorityKey) {
+      setStatus('The mathematical content changed before this draft could be applied. Review it against the current object and retry.')
+      return false
+    }
+    if (current.isPlaying) {
+      setStatus('Pause sequence playback before editing mathematical content.')
+      return false
+    }
+    const latestObject = latestShot.objects.find(({ id }) => id === latestPrimaryId)
+    if (!latestObject || latestObject.type !== 'math') {
+      setStatus('The selected mathematical object is no longer available.')
+      return false
+    }
+    return commitOps([{ type: 'update-object', objectId: latestPrimaryId, patch: { properties: { ...next } } }], 'Edit mathematical content')
   }
 
   const objectPropertyValue = (property: PropertyTrack['property'], tracked: boolean): PropertyKeyframe['value'] => {
@@ -2284,7 +2309,7 @@ export default function ProofCanvasEditor({
   return (
     <div className="proofcanvas-app" role="application" aria-label="ProofCanvas editor" aria-busy={leavePending} data-testid="proofcanvas-editor" data-pc-editor data-project-id={project.metadata.id} data-schema-version={project.schemaVersion} data-active-shot-id={shot.id} data-selection-kind={selection.kind} data-history-past-count={history.past.length} data-history-future-count={history.future.length} data-durable={durableProject ? 'true' : 'false'} data-server-revision={durableProject ? serverRevision : undefined} data-save-state={durableProject ? saveState : undefined} data-left-collapsed={leftPanelCollapsed ? 'true' : 'false'} data-right-collapsed={rightPanelCollapsed ? 'true' : 'false'} data-timeline-collapsed={timelineCollapsed ? 'true' : 'false'} style={{ '--pc-left-width': leftPanelCollapsed ? '0px' : `${leftPanelWidth}px`, '--pc-right-width': rightPanelCollapsed ? '0px' : `${rightPanelWidth}px`, '--pc-timeline-height': timelineCollapsed ? '150px' : `${timelineHeight}px` } as CSSProperties}>
       <div className="pc-desktop-notice" aria-label="Desktop viewport required"><strong>A wider workspace is required</strong><span>ProofCanvas is a desktop editor. Use a viewport at least 1024 px wide; your project remains safely autosaved.</span></div>
-      <header className="pc-header" aria-label="Project actions">
+      <header className="pc-header" role="group" aria-label="Project actions">
         <a href="/" className="pc-back-link" aria-label="Back to projects" aria-disabled={leavePending} onClick={(event) => { event.preventDefault(); void guardedLeave('/') }}>←</a>
         <div className="pc-wordmark"><span aria-hidden="true">∴</span><h1>ProofCanvas</h1></div>
         <label className="pc-project-title"><span className="pc-visually-hidden">Project title</span><input aria-label="Project title" key={`${project.metadata.id}-${project.metadata.title}`} defaultValue={project.metadata.title} maxLength={160} disabled={isPlaying} onFocus={selectProjectContext} onBlur={(event) => commitTextInput(event, project.metadata.title, 'Project title', renameProject, { trim: true, required: true })}/>{durableProject ? <small role="status" aria-label="Autosave status" data-save-state={saveState}>{saveState === 'saved' ? `Saved · r${serverRevision}` : saveState === 'waiting' ? 'Autosave queued' : saveState === 'saving' ? 'Saving…' : saveState === 'conflict' ? 'Save conflict' : 'Offline · retry'}</small> : <small role="status" aria-label="Autosave status">Local project</small>}</label>
@@ -2360,8 +2385,9 @@ export default function ProofCanvasEditor({
             {renderObjectPropertyField('scaleX', 'Scale X', { ...signedScaleBounds, step: 0.05, familyLock: true })}
             {renderObjectPropertyField('scaleY', 'Scale Y', { ...signedScaleBounds, step: 0.05, familyLock: true })}
             {primary.type !== 'group' && renderObjectPropertyField('opacity', 'Opacity', { min: 0, max: 1, step: 0.05 })}
-            {(primary.type === 'text' || primary.type === 'math' || primary.type === 'brace') && <label>Font size<input key={`${primary.id}-font-size-${primary.style.fontSize ?? 22}`} type="number" min="8" max="144" aria-label="Font size" defaultValue={primary.style.fontSize ?? 22} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => { const value = primary.style.fontSize ?? 22; commitNumericInput(event, { key: 'fontSize', label: 'Font size', fallback: value, min: 8, max: 144 }, value, (next) => commitPatch({ style: { fontSize: next } }, 'Set font size')) }}/></label>}
-            {(primary.type === 'text' || primary.type === 'math') && <label className="pc-wide">Content<textarea aria-label="Content" rows={3} maxLength={primary.type === 'math' ? PROOFCANVAS_LATEX_MAX_CHARS : PROOFCANVAS_TEXT_MAX_CHARS} defaultValue={String(primary.properties.content ?? '')} key={`${primary.id}-content-${String(primary.properties.content ?? '')}`} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => { const current = String(primary.properties.content ?? ''); commitTextInput(event, current, 'Content', (value) => commitPatch({ properties: { content: value } }, 'Edit content')) }}/></label>}
+            {(primary.type === 'text' || primary.type === 'math' || primary.type === 'brace') && <label>Font size<input key={`${primary.id}-font-size-${primary.style.fontSize ?? 22}`} type="number" min={PROOFCANVAS_SCHEMA_LIMITS.fontSizeMin} max={PROOFCANVAS_SCHEMA_LIMITS.fontSizeMax} aria-label="Font size" defaultValue={primary.style.fontSize ?? 22} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => { const value = primary.style.fontSize ?? 22; commitNumericInput(event, { key: 'fontSize', label: 'Font size', fallback: value, min: PROOFCANVAS_SCHEMA_LIMITS.fontSizeMin, max: PROOFCANVAS_SCHEMA_LIMITS.fontSizeMax }, value, (next) => commitPatch({ style: { fontSize: next } }, 'Set font size')) }}/></label>}
+            {primary.type === 'text' && <label className="pc-wide">Content<textarea aria-label="Content" rows={3} maxLength={PROOFCANVAS_TEXT_MAX_CHARS} defaultValue={String(primary.properties.content ?? '')} key={`${primary.id}-content-${String(primary.properties.content ?? '')}`} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => { const current = String(primary.properties.content ?? ''); commitTextInput(event, current, 'Content', (value) => commitPatch({ properties: { content: value } }, 'Edit content')) }}/></label>}
+            {primary.type === 'math' && primaryMathProperties && <MathPropertiesEditor key={primary.id} objectId={primary.id} value={primaryMathProperties} authorityKey={mathDraftAuthorityKey} disabled={isPlaying || primaryEffectivelyLocked} onCommit={commitMathProperties} onNotice={setStatus}/>}
             {primary.type === 'brace' && <label className="pc-wide">Brace label<input aria-label="Brace label" maxLength={PROOFCANVAS_BRACE_LABEL_MAX_CHARS} defaultValue={String(primary.properties.label ?? '')} key={`${primary.id}-label-${String(primary.properties.label ?? '')}`} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => { const current = String(primary.properties.label ?? ''); commitTextInput(event, current, 'Brace label', (value) => commitPatch({ properties: { label: value } }, 'Edit brace label')) }}/></label>}
             {(primary.type === 'image' || primary.type === 'svg') && <label className="pc-wide">Asset source<input aria-label="Asset source" defaultValue={String(primary.properties.source ?? '')} key={`${primary.id}-source-${String(primary.properties.source ?? '')}`} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => { const current = String(primary.properties.source ?? ''); commitTextInput(event, current, 'Asset source', (value) => commitPatch({ properties: { source: value } }, 'Edit asset source'), { trim: true, required: true }) }}/></label>}
             {(primary.type === 'axes' || primary.type === 'graph') && (['xMin', 'xMax'] as const).map((key) => { const label = key === 'xMin' ? 'X minimum' : 'X maximum'; const value = Number(primary.properties[key]); const field = { key, label, fallback: value, min: -PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude, max: PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude }; return <label key={key}>{label}<input key={`${primary.id}-${key}-${String(primary.properties[key])}`} type="number" min={field.min} max={field.max} aria-label={label} defaultValue={value} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => commitNumericInput(event, field, value, (next) => commitPatch({ properties: { [key]: next } }, `Set ${key}`))}/></label> })}
@@ -2449,7 +2475,7 @@ export default function ProofCanvasEditor({
         {renderJob.status === 'failed' && <p>{renderJob.error?.message ?? 'Manim could not render this generated scene.'}</p>}
         {renderPollingPaused && (renderJob.status === 'pending' || renderJob.status === 'running') && <button type="button" onClick={() => { setRendererMessage(''); setRenderPollFailures(0); setRenderPollingPaused(false) }}>Resume status polling</button>}
       </section>}
-      {exportPreview && <div ref={exportDialogRef} className="pc-export-dialog" role="dialog" aria-modal="true" aria-label={exportPreview.title}><header><h2>{exportPreview.title}</h2><button type="button" onClick={() => setExportPreview(null)} aria-label="Close export preview">×</button></header><div className="pc-export-body">{exportPreview.diagnostics && exportPreview.diagnostics.length > 0 && <section className="pc-export-diagnostics" aria-label="Compiler diagnostics"><h3>Compiler diagnostics</h3><ul>{exportPreview.diagnostics.map((diagnostic) => <li key={diagnostic}>{diagnostic}</li>)}</ul></section>}<pre tabIndex={0}>{exportPreview.contents}</pre></div></div>}
+      {exportPreview && <div ref={exportDialogRef} className="pc-export-dialog" role="dialog" aria-modal="true" aria-label={exportPreview.title}><header role="group"><h2>{exportPreview.title}</h2><button type="button" onClick={() => setExportPreview(null)} aria-label="Close export preview">×</button></header><div className="pc-export-body">{exportPreview.diagnostics && exportPreview.diagnostics.length > 0 && <section className="pc-export-diagnostics" aria-label="Compiler diagnostics"><h3>Compiler diagnostics</h3><ul>{exportPreview.diagnostics.map((diagnostic) => <li key={diagnostic}>{diagnostic}</li>)}</ul></section>}<pre tabIndex={0}>{exportPreview.contents}</pre></div></div>}
     </div>
   )
 }

@@ -13,6 +13,18 @@ import {
   timelineTimeForTick,
   sumTimelineTimes,
 } from "./frame";
+import {
+  MATH_MODES,
+  MATH_RENDERERS,
+  PROOFCANVAS_LATEX_MAX_CHARS,
+  analyzeLatex,
+  analyzeMathProperties,
+  normalizeLegacyMathProperties,
+  type MathProperties,
+} from "./latex";
+
+export { PROOFCANVAS_LATEX_MAX_CHARS } from "./latex";
+export type { MathMode, MathProperties, MathRenderer } from "./latex";
 
 // Zod v4 may continue object refinements after a child field has already
 // failed. Relational validation therefore uses non-throwing wrappers: invalid
@@ -46,7 +58,6 @@ export const LEGACY_V2_TIME_EPSILON = 1e-9;
 export const PROOFCANVAS_PROJECT_MAX_BYTES = 2 * 1024 * 1024;
 export const PROOFCANVAS_RENDER_SOURCE_MAX_BYTES = 512 * 1024;
 export const PROOFCANVAS_TEXT_MAX_CHARS = 4_096;
-export const PROOFCANVAS_LATEX_MAX_CHARS = 500;
 export const PROOFCANVAS_BRACE_LABEL_MAX_CHARS = 500;
 export const PROOFCANVAS_JSON_KEY_MAX_CHARS = 120;
 
@@ -554,19 +565,16 @@ const GraphRangeSchema = z.number().finite()
   .min(-PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude)
   .max(PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude);
 
-const SAFE_LATEX_BLOCKLIST = /\\(?:input|include|write|openin|openout|read|usepackage|catcode|csname|newcommand|renewcommand|def|special)\b/i;
-const SAFE_LATEX_COMMANDS = new Set([
-  "abs", "alpha", "beta", "cdot", "cos", "delta", "epsilon", "frac", "gamma",
-  "ge", "infty", "int", "lambda", "le", "left", "lim", "ln", "log", "mathbb",
-  "mathbf", "mathrm", "neq", "overline", "pi", "prod", "right", "sin", "sqrt",
-  "sum", "tan", "text", "theta", "times", "to", "underline", "varphi",
-]);
-
+/** @deprecated Prefer analyzeLatex for a stable diagnostic. */
 export function isSafeLatex(value: string): boolean {
-  if (value.length > PROOFCANVAS_LATEX_MAX_CHARS || SAFE_LATEX_BLOCKLIST.test(value) || /(?:\.\.[/\\]|\^\^|[\u0000-\u001f])/.test(value)) return false;
-  const commands = [...value.matchAll(/\\([a-zA-Z]+)/g)].map((match) => match[1]);
-  return commands.every((command) => SAFE_LATEX_COMMANDS.has(command));
+  return analyzeLatex(value, { renderer: "mathtex" }).ok;
 }
+
+export const MathPropertiesSchema = z.object({
+  content: z.string().max(PROOFCANVAS_LATEX_MAX_CHARS),
+  renderer: z.enum(MATH_RENDERERS),
+  mode: z.enum(MATH_MODES),
+}).strict();
 
 export function isSafeAssetSource(value: string): boolean {
   if (value.length > PROOFCANVAS_PROJECT_MAX_BYTES) return false;
@@ -588,7 +596,7 @@ function restrictedExpressionWithinLimits(expression: RestrictedExpression, dept
   return true;
 }
 
-export const SceneObjectSchema = z.object({
+const SceneObjectObjectSchema = z.object({
   id: IdSchema,
   type: ObjectTypeSchema,
   name: z.string().min(1).max(120),
@@ -605,8 +613,14 @@ export const SceneObjectSchema = z.object({
   if ((object.type === "text" || object.type === "math") && typeof content !== "string") {
     context.addIssue({ code: "custom", path: ["properties", "content"], message: `${object.type} requires string content` });
   }
-  if (object.type === "math" && typeof content === "string" && !isSafeLatex(content)) {
-    context.addIssue({ code: "custom", path: ["properties", "content"], message: "Math content contains a forbidden LaTeX command" });
+  if (object.type === "math") {
+    const analysis = analyzeMathProperties(object.properties);
+    if (!analysis.ok) {
+      const property = analysis.message.startsWith("Math renderer") ? "renderer"
+        : analysis.message.startsWith("Math mode") ? "mode"
+          : "content";
+      context.addIssue({ code: "custom", path: ["properties", property], message: analysis.message });
+    }
   }
   if (object.type === "text" && typeof content === "string" && content.length > PROOFCANVAS_TEXT_MAX_CHARS) {
     context.addIssue({ code: "custom", path: ["properties", "content"], message: `Text content may contain at most ${PROOFCANVAS_TEXT_MAX_CHARS} characters` });
@@ -658,6 +672,24 @@ export const SceneObjectSchema = z.object({
     }
   }
 });
+
+/**
+ * Schema-v3 math objects predate renderer/mode fields. Parsing upgrades only
+ * those missing fields to deterministic defaults; no timeline/schema version
+ * churn is needed because the generic property envelope was already present.
+ */
+export const SceneObjectSchema = z.preprocess((candidate) => {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return candidate;
+  const object = candidate as Record<string, unknown>;
+  if (object.type !== "math") return candidate;
+  return { ...object, properties: normalizeLegacyMathProperties(object.properties) };
+}, SceneObjectObjectSchema);
+
+export function mathPropertiesFor(object: Pick<z.infer<typeof SceneObjectObjectSchema>, "type" | "properties">): MathProperties | null {
+  if (object.type !== "math") return null;
+  const analysis = analyzeMathProperties(object.properties);
+  return analysis.ok ? analysis.properties : null;
+}
 
 const SceneAnimationObjectSchema = z.object({
   id: IdSchema,

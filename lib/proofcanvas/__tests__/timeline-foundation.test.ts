@@ -72,6 +72,9 @@ describe("schema V2 timeline foundation", () => {
       for (const animation of shot.animations) {
         if (animation.type === "emphasise") animation.easing = "there-and-back";
       }
+      for (const object of shot.objects as Array<{ type: string; properties: Record<string, unknown> }>) {
+        if (object.type === "math") object.properties = { ...object.properties, renderer: "mathtex", mode: "display" };
+      }
     }
     expect(semanticProjection).toEqual(expectedMigratedProjection);
     expect(migratedRetained.shots.flatMap(({ animations }) => animations).find(({ type }) => type === "emphasise")?.easing)

@@ -138,6 +138,12 @@
 .pc-status { align-self: center; overflow: hidden; padding: 0 9px; color: var(--pc-muted); font-family: var(--font-mono), monospace; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .pc-stage:focus-visible { outline: 3px solid var(--pc-cool); outline-offset: -3px; }
 .pc-canvas-text { display: flex; width: 100%; height: 100%; align-items: center; overflow: hidden; line-height: 1.08; pointer-events: auto; }
+.pc-math-render { display: flex; width: 100%; min-width: 0; align-items: center; }
+.pc-math-display { justify-content: center; text-align: center; }
+.pc-math-inline { justify-content: flex-start; text-align: left; }
+.pc-math-render .katex-display { width: 100%; margin: 0; }
+.pc-tex-content { display: inline; white-space: pre-line; }
+.pc-math-diagnostic { display: inline-block; max-width: 100%; overflow: hidden; border: 1px dashed var(--pc-warm); padding: 3px 5px; color: var(--pc-warm); font-family: var(--font-mono), monospace; font-size: 9px; line-height: 1.25; text-overflow: ellipsis; }
 .pc-math .katex { font-size: 1em; }
 .pc-snap-guide { stroke: var(--pc-warm); stroke-width: 1; stroke-dasharray: 5 4; pointer-events: none; }
 .pc-selection-handles > rect:first-child { fill: none; stroke: var(--pc-cool); stroke-width: 1.5; stroke-dasharray: 4 3; pointer-events: none; }
@@ -153,6 +159,14 @@
 .pc-inspector-context button { min-height: 24px; padding: 2px 6px; }
 .pc-field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
 .pc-field-grid label, .pc-ai > label, .pc-animation-inspector label, .pc-context-summary label { display: flex; min-width: 0; flex-direction: column; gap: 2px; color: var(--pc-muted); font-family: var(--font-mono), monospace; font-size: 9px; text-transform: uppercase; }
+.pc-math-properties { display: grid; grid-template-columns: 1fr; gap: 6px; margin: 0; border: 1px solid var(--pc-rule-soft); border-radius: 4px; padding: 7px; }
+.pc-math-properties legend { padding: 0 4px; font-family: var(--font-display), Georgia, serif; font-size: 13px; text-transform: none; }
+.pc-math-properties > label, .pc-math-contract-fields label { display: grid; gap: 2px; color: var(--pc-muted); font-family: var(--font-mono), monospace; font-size: 9px; text-transform: uppercase; }
+.pc-math-contract-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.pc-math-draft-state { margin: 0; color: var(--pc-muted); font-family: var(--font-mono), monospace; font-size: 9px; line-height: 1.35; }
+.pc-math-draft-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.pc-math-draft-actions button { min-width: 0; }
+.pc-field-error { border-left: 2px solid var(--pc-warm); padding-left: 6px; color: var(--pc-warm); font-family: var(--font-mono), monospace; font-size: 9px; }
 .pc-field-grid .pc-wide { grid-column: 1 / -1; }
 .pc-field-grid .pc-inspector-note { color: var(--pc-muted); font-family: var(--font-mono), monospace; font-size: 9px; line-height: 1.35; }
 .pc-field-grid .pc-field-action { align-self: end; }

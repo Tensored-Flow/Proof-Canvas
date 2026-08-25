@@ -1,9 +1,16 @@
 import { fireEvent, render } from '@testing-library/react'
+import katex from 'katex'
 import CanvasStage, { resolveCanvasKeyboardTransformIntent, temporallyTransformsObject } from '../CanvasStage'
 import { compileManim } from '@/lib/proofcanvas/compiler'
 import { createCantorDemoProject } from '@/lib/proofcanvas/demo'
 import { logicalFrameFor, resolutionFor, type ProofCanvasAspectRatio } from '@/lib/proofcanvas/frame'
+import * as latexAuthority from '@/lib/proofcanvas/latex'
 import { ProjectDocumentSchema, cloneSerializable, type SceneObject } from '@/lib/proofcanvas/schema'
+
+jest.mock('@/lib/proofcanvas/latex', () => {
+  const actual = jest.requireActual('@/lib/proofcanvas/latex') as typeof import('@/lib/proofcanvas/latex')
+  return { ...actual, analyzeMathProperties: jest.fn(actual.analyzeMathProperties) }
+})
 
 test('text and math glyph color follows nested/keyframed fill with fill over color precedence', () => {
   const project = cloneSerializable(createCantorDemoProject())
@@ -86,6 +93,115 @@ test('graph stroke width uses the object override', () => {
     onNotice={jest.fn()}
   />)
   expect(view.container.querySelector('polyline')).toHaveAttribute('stroke-width', '11')
+})
+
+test('previews MathTex/Tex mode truth and uses a diagnostic placeholder for invalid defense input', () => {
+  const project = cloneSerializable(createCantorDemoProject())
+  const shot = project.shots[0]
+  const math = shot.objects.find(({ type }) => type === 'math')!
+  math.locked = false
+  delete math.parentId
+  math.properties = { content: '\\frac{1}{2}', renderer: 'mathtex', mode: 'display' }
+  shot.objects = [math]
+  shot.animations = []
+  shot.propertyTracks = []
+  project.shots = [shot]
+  const parsed = ProjectDocumentSchema.parse(project)
+  const props = {
+    project: parsed,
+    shot: parsed.shots[0],
+    playhead: 0,
+    previewStyle: parsed.styles.find(({ id }) => id === parsed.activeStyleId)!,
+    projectRevision: 'math-preview-a',
+    previewQuality: parsed.settings.previewQuality,
+    selectedIds: [],
+    onSelect: jest.fn(),
+    onCommitTransforms: jest.fn(),
+    onCommitKeyboardTransform: jest.fn(),
+    onNotice: jest.fn(),
+  }
+  const view = render(<CanvasStage {...props}/>)
+  expect(view.container.querySelector('[data-math-renderer="mathtex"][data-math-mode="display"] .katex-display')).toBeInTheDocument()
+
+  const tex = cloneSerializable(parsed)
+  tex.shots[0].objects[0].properties = { content: 'Euler wrote $e^{i\\pi}+1=0$.', renderer: 'tex', mode: 'inline' }
+  const parsedTex = ProjectDocumentSchema.parse(tex)
+  view.rerender(<CanvasStage {...props} project={parsedTex} shot={parsedTex.shots[0]} projectRevision="math-preview-b"/>)
+  expect(view.container.querySelector('[data-math-renderer="tex"][data-math-mode="inline"]')).toHaveTextContent(/Euler wrote/)
+  expect(view.container.querySelector('[data-math-renderer="tex"] .katex')).toBeInTheDocument()
+
+  const whitespace = cloneSerializable(parsed)
+  whitespace.shots[0].objects[0].properties = {
+    content: 'Alpha   beta\tgamma \n \\\\   Delta', renderer: 'tex', mode: 'inline',
+  }
+  const parsedWhitespace = ProjectDocumentSchema.parse(whitespace)
+  view.rerender(<CanvasStage {...props} project={parsedWhitespace} shot={parsedWhitespace.shots[0]} projectRevision="math-preview-whitespace"/>)
+  expect(view.container.querySelector('.pc-tex-content')).toHaveTextContent('Alpha beta gamma\nDelta', { normalizeWhitespace: false })
+
+  const boundaries = cloneSerializable(parsed)
+  boundaries.shots[0].objects[0].properties = { content: 'Before   $x$ \t After', renderer: 'tex', mode: 'inline' }
+  const parsedBoundaries = ProjectDocumentSchema.parse(boundaries)
+  view.rerender(<CanvasStage {...props} project={parsedBoundaries} shot={parsedBoundaries.shots[0]} projectRevision="math-preview-boundaries"/>)
+  const boundaryChildren = Array.from(view.container.querySelector('.pc-tex-content')!.children)
+  expect(boundaryChildren[0]).toHaveTextContent('Before ', { normalizeWhitespace: false })
+  expect(boundaryChildren.at(-1)).toHaveTextContent(' After', { normalizeWhitespace: false })
+
+  const starredLinebreak = cloneSerializable(parsedTex)
+  starredLinebreak.shots[0].objects[0].properties.content = 'First\\\\*Second'
+  view.rerender(<CanvasStage {...props} project={starredLinebreak} shot={starredLinebreak.shots[0]} projectRevision="math-preview-starred-linebreak"/>)
+  expect(view.getByRole('img', { name: /linebreak modifiers are outside the supported dialect/i })).toBeInTheDocument()
+  expect(view.container.querySelector('.pc-tex-content')).not.toBeInTheDocument()
+
+  const invalid = cloneSerializable(parsedTex)
+  invalid.shots[0].objects[0].properties.content = '\\frac{1'
+  invalid.shots[0].objects[0].properties.renderer = 'mathtex'
+  view.rerender(<CanvasStage {...props} project={invalid} shot={invalid.shots[0]} projectRevision="math-preview-invalid"/>)
+  expect(view.container.querySelector('.pc-math-diagnostic')).toHaveTextContent('Unclosed "{" at character 6.')
+  expect(view.container.querySelector('.katex-error')).not.toBeInTheDocument()
+})
+
+test('memoizes LaTeX analysis and KaTeX rendering across playback-only rerenders', () => {
+  const analyze = jest.mocked(latexAuthority.analyzeMathProperties)
+  analyze.mockClear()
+  const renderLatex = jest.spyOn(katex, 'renderToString')
+  try {
+    const project = cloneSerializable(createCantorDemoProject())
+    const shot = project.shots[0]
+    const math = shot.objects.find(({ type }) => type === 'math')!
+    delete math.parentId
+    math.properties = { content: '\\frac{1}{2}', renderer: 'mathtex', mode: 'display' }
+    shot.objects = [math]
+    shot.animations = []
+    shot.propertyTracks = []
+    project.shots = [shot]
+    const parsed = ProjectDocumentSchema.parse(project)
+    const props = {
+      project: parsed,
+      shot: parsed.shots[0],
+      previewStyle: parsed.styles.find(({ id }) => id === parsed.activeStyleId)!,
+      projectRevision: 'math-preview-memoized',
+      previewQuality: parsed.settings.previewQuality,
+      selectedIds: [],
+      onSelect: jest.fn(),
+      onCommitTransforms: jest.fn(),
+      onCommitKeyboardTransform: jest.fn(),
+      onNotice: jest.fn(),
+    }
+    const view = render(<CanvasStage {...props} playhead={0}/>)
+    const initialAnalyzeCalls = analyze.mock.calls.length
+    const initialRenderCalls = renderLatex.mock.calls.length
+    expect(initialAnalyzeCalls).toBeGreaterThan(0)
+    expect(initialRenderCalls).toBeGreaterThan(0)
+
+    for (let tick = 1; tick <= 40; tick += 1) {
+      view.rerender(<CanvasStage {...props} playhead={tick / 100}/>)
+    }
+    expect(analyze).toHaveBeenCalledTimes(initialAnalyzeCalls)
+    expect(renderLatex).toHaveBeenCalledTimes(initialRenderCalls)
+  } finally {
+    analyze.mockClear()
+    renderLatex.mockRestore()
+  }
 })
 
 test.each([
