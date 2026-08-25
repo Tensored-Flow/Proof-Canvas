@@ -2,7 +2,10 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent, type ComponentProps, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import CanvasStage, { resolveCanvasKeyboardTransformIntent, temporallyTransformsObject, type CanvasKeyboardTransformIntent } from './CanvasStage'
+import KeyframeInspector from './KeyframeInspector'
+import PropertyKeyframeField from './PropertyKeyframeField'
 import ShotStoryboard, { type StoryboardActionResult } from './ShotStoryboard'
+import ShotTimeline from './ShotTimeline'
 import { REQUIRED_AI_COMMANDS, interpretDemoCommand, type AiProposal } from '@/lib/proofcanvas/ai'
 import { compileManim } from '@/lib/proofcanvas/compiler'
 import { SEMANTIC_COMPONENTS, insertSemanticComponent, type SemanticComponentId } from '@/lib/proofcanvas/components'
@@ -14,12 +17,15 @@ import { addTimelineTimes, compareTimelineTimes, logicalFrameFor, resolutionFor,
 import { canRedo, canUndo, commitOperations, commitProject, createHistory, redo, undo, type ProjectHistory } from '@/lib/proofcanvas/history'
 import { commandTargetWithin, createEditorCommandController, EDITOR_COMMANDS, type EditorCommandId, type EditorCommandInvocation } from '@/lib/proofcanvas/editorCommands'
 import { EditorSequencePlaybackClock, type EditorSequencePlaybackSnapshot } from '@/lib/proofcanvas/editorPlayback'
-import { animationSelection, normalizeEditorSelection, objectSelection, projectSelection, selectedAnimationIds, selectedObjectIds, shotSelection, type EditorSelection } from '@/lib/proofcanvas/editorSelection'
+import { animationSelection, keyframeSelection, normalizeEditorSelection, objectSelection, projectSelection, selectedAnimationIds, selectedObjectIds, shotSelection, type EditorKeyframeRef, type EditorSelection } from '@/lib/proofcanvas/editorSelection'
+import { inheritedObjectLifetime, resolveSetObjectLifetime, timelineIntentAuthorityIsCurrent, type TimelineIntentAuthorityBase, type TimelineOperationIntent } from '@/lib/proofcanvas/editorTimeline'
 import { beginEditorShotSequencePlayback, buildEditorShotSequence, commitEditorShotAction, deriveEditorShotSequencePosition, minimumAuthoredShotDuration, resolveEditorShotActivation, seekEditorShotSequence, advanceEditorShotSequencePlayback, validateEditorShotWorkspace, type EditorShotAction, type EditorShotWorkspace } from '@/lib/proofcanvas/editorShotSequence'
 import { allocateId, collectProjectIds } from '@/lib/proofcanvas/ids'
-import { applyOperations, duplicateObjects, effectiveLockOwner, effectiveVisibilityOwner, inspectOperations } from '@/lib/proofcanvas/operations'
-import { PROOFCANVAS_BRACE_LABEL_MAX_CHARS, PROOFCANVAS_LATEX_MAX_CHARS, PROOFCANVAS_PROJECT_MAX_BYTES, PROOFCANVAS_SCHEMA_LIMITS, PROOFCANVAS_TEXT_MAX_CHARS, ProjectDocumentSchema, SceneOperationSchema, animationAuthoringCompatibilityIssue, canonicalProjectJson, cloneSerializable, parseProjectDocument, type AnimationType, type Easing, type ProjectDocument, type SceneAnimation, type SceneObject, type SceneOperation, type Shot } from '@/lib/proofcanvas/schema'
+import { applyOperations, duplicateObjects, effectiveLockOwner, effectiveVisibilityOwner, inspectOperations, type ManualSceneOperation } from '@/lib/proofcanvas/operations'
+import { previewShotAtTime } from '@/lib/proofcanvas/preview'
+import { PROOFCANVAS_BRACE_LABEL_MAX_CHARS, PROOFCANVAS_LATEX_MAX_CHARS, PROOFCANVAS_PROJECT_MAX_BYTES, PROOFCANVAS_SCHEMA_LIMITS, PROOFCANVAS_TEXT_MAX_CHARS, ProjectDocumentSchema, SceneOperationSchema, animationAuthoringCompatibilityIssue, canonicalProjectJson, cloneSerializable, objectTypeSupportsStyleProperty, parseProjectDocument, type AnimationType, type Easing, type ProjectDocument, type PropertyKeyframe, type PropertyTrack, type SceneAnimation, type SceneObject, type SceneOperation, type Shot } from '@/lib/proofcanvas/schema'
 import { EDITORIAL_INK_STYLE_ID, RAW_MANIM_STYLE_ID, styleById } from '@/lib/proofcanvas/styles'
+import { propertyTrackKey } from '@/lib/proofcanvas/timeline'
 
 const STORAGE_KEY = 'proofcanvas_project_v1'
 const recoveryStorageKey = (projectId: string) => `proofcanvas_recovery_${projectId}`
@@ -477,8 +483,9 @@ export default function ProofCanvasEditor({
   const [libraryTab, setLibraryTab] = useState<LibraryTab>('text')
   const [librarySearch, setLibrarySearch] = useState('')
   const [animationType, setAnimationType] = useState<AnimationType>('fade-in')
+  const [lifetimeInputRevision, setLifetimeInputRevision] = useState(0)
   const [timelineDraft, setTimelineDraft] = useState<{ id: string; start: number; duration: number } | null>(null)
-  const [timelineGesture, setTimelineGesture] = useState<{ id: string; kind: 'move' | 'resize'; clientX: number; start: number; duration: number; baseRevision: string } | null>(null)
+  const [timelineGesture, setTimelineGesture] = useState<{ id: string; kind: 'move' | 'resize'; clientX: number; start: number; duration: number; baseRevision: string; baseShotId: string } | null>(null)
   const [instruction, setInstruction] = useState<string>(REQUIRED_AI_COMMANDS[0])
   const [proposal, setProposal] = useState<AiProposal | null>(null)
   const [proposalBase, setProposalBase] = useState<{ revision: string; shotId: string } | null>(null)
@@ -514,7 +521,7 @@ export default function ProofCanvasEditor({
   const [renderQuality, setRenderQuality] = useState<ClientRenderJob['quality']>('preview')
   const [leftPanelWidth, setLeftPanelWidth] = useState(224)
   const [rightPanelWidth, setRightPanelWidth] = useState(292)
-  const [timelineHeight, setTimelineHeight] = useState(224)
+  const [timelineHeight, setTimelineHeight] = useState(340)
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false)
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false)
   const [timelineCollapsed, setTimelineCollapsed] = useState(false)
@@ -592,6 +599,16 @@ export default function ProofCanvasEditor({
     const next = id ? animationSelection(latestShot, [id]) : { kind: 'none', shotId: latestShot.id } as const
     publishWorkspaceOnly({ ...current.workspace, selection: next })
   }, [publishWorkspaceOnly])
+  const setEditorSelection = useCallback((nextSelection: EditorSelection) => {
+    const current = authorityRef.current
+    publishWorkspaceOnly({ ...current.workspace, selection: nextSelection })
+  }, [publishWorkspaceOnly])
+  const selectSingleKeyframe = useCallback((ref: EditorKeyframeRef) => {
+    const current = authorityRef.current
+    const latestProject = current.history.present
+    const latestShot = latestProject.shots.find(({ id }) => id === current.workspace.activeShotId) ?? latestProject.shots[0]
+    publishWorkspaceOnly({ ...current.workspace, selection: keyframeSelection(latestShot, [ref], ref) })
+  }, [publishWorkspaceOnly])
   const selectProjectContext = useCallback(() => {
     const current = authorityRef.current
     publishWorkspaceOnly({ ...current.workspace, selection: projectSelection() })
@@ -607,6 +624,16 @@ export default function ProofCanvasEditor({
   const primaryInheritedLocked = Boolean(primaryEffectivelyLocked && primary && !primary.locked)
   const primaryVisibilityOwner = primary ? effectiveVisibilityOwner(shot, primary) : undefined
   const primaryInheritedHidden = Boolean(primary && primaryVisibilityOwner && primaryVisibilityOwner.id !== primary.id)
+  const shotPreview = useMemo(() => previewShotAtTime(shot, playhead), [playhead, shot])
+  const primaryPreview = primary ? shotPreview.objects.find(({ id }) => id === primary.id) : undefined
+  const primaryInheritedLifetime = primary ? inheritedObjectLifetime(shot, primary.id) : undefined
+  const primaryEffectiveLifetime = primary ? primary.lifetime ?? primaryInheritedLifetime : undefined
+  const objectPropertyTrack = useCallback((objectId: string, property: PropertyTrack['property']) => shot.propertyTracks.find((track) => (
+    propertyTrackKey(track) === propertyTrackKey({ target: { kind: 'object', objectId }, property })
+  )), [shot.propertyTracks])
+  const cameraPropertyTrack = useCallback((property: 'x' | 'y' | 'zoom' | 'rotation') => shot.propertyTracks.find((track) => (
+    propertyTrackKey(track) === propertyTrackKey({ target: { kind: 'camera' }, property })
+  )), [shot.propertyTracks])
   const selectedAnimationId = selectedAnimationIds(selection, shot.id).at(-1) ?? null
   const selectedAnimation = shot.animations.find(({ id }) => id === selectedAnimationId) ?? null
   const selectedEntranceThereBackUnsupported = Boolean(
@@ -826,11 +853,11 @@ export default function ProofCanvasEditor({
   }, [ownerMenuOpen])
 
   useEffect(() => {
-    if (timelineGesture && timelineGesture.baseRevision !== projectRevision) {
+    if (timelineGesture && (timelineGesture.baseRevision !== projectRevision || timelineGesture.baseShotId !== shot.id || isPlaying)) {
       setTimelineGesture(null)
       setTimelineDraft(null)
     }
-  }, [projectRevision, timelineGesture])
+  }, [isPlaying, projectRevision, shot.id, timelineGesture])
 
   useEffect(() => {
     if (!isPlaying) return
@@ -1111,9 +1138,13 @@ export default function ProofCanvasEditor({
     if (options.status) setStatus(options.status)
   }, [cancelPlaybackLoop, invalidateAiContext, materializeLiveWorkspace])
 
-  const commitOps = useCallback((operations: readonly SceneOperation[], label: string) => {
+  const commitOps = useCallback((operations: readonly ManualSceneOperation[], label: string) => {
     try {
       const currentAuthority = authorityRef.current
+      if (currentAuthority.isPlaying) {
+        setStatus('Pause sequence playback before editing the project.')
+        return false
+      }
       const current = currentAuthority.history
       const liveWorkspace = materializeLiveWorkspace(currentAuthority)
       const next = commitOperations(current, liveWorkspace.activeShotId, operations, label)
@@ -1126,9 +1157,45 @@ export default function ProofCanvasEditor({
     }
   }, [materializeLiveWorkspace, publishEditorAuthority])
 
+  /** Timeline edits keep history, selection, shot, and playback in one authority update. */
+  const commitTimelineIntent = useCallback((intent: TimelineOperationIntent, base: TimelineIntentAuthorityBase) => {
+    const currentAuthority = authorityRef.current
+    if (currentAuthority.isPlaying) {
+      setStatus('Pause sequence playback before editing lifetimes or keyframes.')
+      return false
+    }
+    if (!timelineIntentAuthorityIsCurrent(base, {
+      projectRevision: projectRevisionRef.current,
+      shotId: currentAuthority.workspace.activeShotId,
+    })) {
+      setStatus('The timeline changed before this edit could be applied. Retry the edit on the current shot.')
+      return false
+    }
+    if (!intent.ok) {
+      setStatus(intent.diagnostic.message)
+      return false
+    }
+    try {
+      const current = currentAuthority.history
+      const liveWorkspace = materializeLiveWorkspace(currentAuthority)
+      const next = commitOperations(current, liveWorkspace.activeShotId, intent.operations, intent.label)
+      const nextWorkspace = reconcileEditorWorkspace(next.present, { ...liveWorkspace, selection: intent.selection })
+      publishEditorAuthority(next, nextWorkspace, 'pause', { status: next === current ? 'No project values changed' : intent.label })
+      setAiError('')
+      return true
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'The timeline edit could not be applied')
+      return false
+    }
+  }, [materializeLiveWorkspace, publishEditorAuthority])
+
   const commitDocument = useCallback((document: ProjectDocument, label: string) => {
     try {
       const currentAuthority = authorityRef.current
+      if (currentAuthority.isPlaying) {
+        setStatus('Pause sequence playback before editing the project.')
+        return false
+      }
       const current = currentAuthority.history
       const liveWorkspace = materializeLiveWorkspace(currentAuthority)
       const next = commitProject(current, ProjectDocumentSchema.parse(document), label)
@@ -1139,6 +1206,11 @@ export default function ProofCanvasEditor({
       return false
     }
   }, [materializeLiveWorkspace, publishEditorAuthority])
+
+  const commitRenderedTimelineIntent = useCallback((intent: TimelineOperationIntent) => commitTimelineIntent(intent, {
+    projectRevision,
+    shotId: shot.id,
+  }), [commitTimelineIntent, projectRevision, shot.id])
 
   const commitCanvasKeyboardTransform = useCallback((intent: CanvasKeyboardTransformIntent) => {
     const latestProject = historyRef.current.present
@@ -1262,6 +1334,85 @@ export default function ProofCanvasEditor({
     return commitOps([{ type: 'update-object', objectId: primary.id, patch }], label)
   }
 
+  const objectPropertyValue = (property: PropertyTrack['property'], tracked: boolean): PropertyKeyframe['value'] => {
+    if (!primary || !primaryPreview) return 0
+    const source = tracked ? primaryPreview : primary
+    if (property === 'x' || property === 'y' || property === 'width' || property === 'height' || property === 'rotation' || property === 'scaleX' || property === 'scaleY') {
+      return source.transform[property] ?? (property === 'width' ? 60 : property === 'height' ? 30 : property.startsWith('scale') ? 1 : 0)
+    }
+    if (property === 'scale') return (source.transform.scaleX + source.transform.scaleY) / 2
+    if (property === 'opacity') return source.style.opacity ?? 1
+    if (property === 'fill') return source.style.fill ?? source.style.color ?? (primary.type === 'circle' ? previewStyle.colors.background : previewStyle.colors.ink)
+    if (property === 'stroke') return source.style.stroke ?? previewStyle.colors.ink
+    if (property === 'strokeWidth') return source.style.strokeWidth ?? previewStyle.strokes.regular
+    return 0
+  }
+
+  const commitObjectBaseProperty = (property: PropertyTrack['property'], next: PropertyKeyframe['value']) => {
+    if (!primary) return false
+    if (['x', 'y', 'width', 'height', 'rotation', 'scaleX', 'scaleY'].includes(property) && typeof next === 'number') {
+      return commitPatch({ transform: { [property]: next } }, `Set ${property}`)
+    }
+    if (property === 'scale' && typeof next === 'number') return commitPatch({ transform: { scaleX: next, scaleY: next } }, 'Set scale')
+    if (['opacity', 'strokeWidth'].includes(property) && typeof next === 'number') return commitPatch({ style: { [property]: next } }, `Set ${property}`)
+    if (['fill', 'stroke'].includes(property) && typeof next === 'string') return commitPatch({ style: { [property]: next } }, `Set ${property}`)
+    return false
+  }
+
+  const renderObjectPropertyField = (
+    property: PropertyTrack['property'],
+    label: string,
+    options: Readonly<{ min?: number; max?: number; minMagnitude?: number; step?: number | string; inputType?: 'number' | 'color'; familyLock?: boolean }> = {},
+  ) => {
+    if (!primary) return null
+    const track = objectPropertyTrack(primary.id, property)
+    return <PropertyKeyframeField
+    key={`${primary.id}-${property}`}
+    project={project}
+    shotId={shot.id}
+    target={{ kind: 'object', objectId: primary.id }}
+    property={property}
+    label={label}
+    value={objectPropertyValue(property, Boolean(track))}
+    playhead={playhead}
+    track={track}
+    selection={selection}
+    disabled={isPlaying || (options.familyLock ? primaryFamilyLocked : primaryEffectivelyLocked)}
+    inputType={options.inputType}
+    min={options.min}
+    max={options.max}
+    minMagnitude={options.minMagnitude}
+    step={options.step}
+    onCommit={commitRenderedTimelineIntent}
+    onBaseChange={(next) => commitObjectBaseProperty(property, next)}
+    onSelectKeyframe={selectSingleKeyframe}
+    onNotice={setStatus}
+  />
+  }
+
+  const renderCameraPropertyField = (property: 'x' | 'y' | 'zoom' | 'rotation', label: string, min: number, max: number) => {
+    const track = cameraPropertyTrack(property)
+    return <PropertyKeyframeField
+    key={`camera-${property}`}
+    project={project}
+    shotId={shot.id}
+    target={{ kind: 'camera' }}
+    property={property}
+    label={label}
+    value={track ? shotPreview.camera[property] : shot.camera[property]}
+    playhead={playhead}
+    track={track}
+    selection={selection}
+    disabled={isPlaying}
+    min={min}
+    max={max}
+    onCommit={commitRenderedTimelineIntent}
+    onBaseChange={(next) => typeof next === 'number' && commitOps([{ type: 'set-camera', camera: { ...shot.camera, [property]: next } }], `Set camera ${property}`)}
+    onSelectKeyframe={selectSingleKeyframe}
+    onNotice={setStatus}
+  />
+  }
+
   const nudge = useCallback((dx: number, dy: number) => {
     const latestAuthority = authorityRef.current
     if (latestAuthority.isPlaying) return
@@ -1283,26 +1434,42 @@ export default function ProofCanvasEditor({
 
   const undoHistory = useCallback(() => {
     const currentAuthority = authorityRef.current
+    if (currentAuthority.isPlaying) {
+      setStatus('Pause sequence playback before undoing project changes.')
+      return false
+    }
     const current = currentAuthority.history
     const label = current.past.at(-1)?.label
-    if (!label) return setStatus('Nothing to undo')
+    if (!label) {
+      setStatus('Nothing to undo')
+      return false
+    }
     workspaceSnapshotsRef.current.set(current.present, materializeLiveWorkspace(currentAuthority))
     const next = undo(current)
     const restored = workspaceSnapshotsRef.current.get(next.present)
       ?? reconcileEditorWorkspace(next.present, currentAuthority.workspace)
     publishEditorAuthority(next, restored, 'pause', { status: `Undid: ${label}` })
+    return true
   }, [materializeLiveWorkspace, publishEditorAuthority])
 
   const redoHistory = useCallback(() => {
     const currentAuthority = authorityRef.current
+    if (currentAuthority.isPlaying) {
+      setStatus('Pause sequence playback before redoing project changes.')
+      return false
+    }
     const current = currentAuthority.history
     const label = current.future[0]?.label
-    if (!label) return setStatus('Nothing to redo')
+    if (!label) {
+      setStatus('Nothing to redo')
+      return false
+    }
     workspaceSnapshotsRef.current.set(current.present, materializeLiveWorkspace(currentAuthority))
     const next = redo(current)
     const restored = workspaceSnapshotsRef.current.get(next.present)
       ?? reconcileEditorWorkspace(next.present, currentAuthority.workspace)
     publishEditorAuthority(next, restored, 'pause', { status: `Redid: ${label}` })
+    return true
   }, [materializeLiveWorkspace, publishEditorAuthority])
 
   const togglePlayback = useCallback(() => {
@@ -1403,6 +1570,10 @@ export default function ProofCanvasEditor({
 
   const runEditorShotAction = useCallback((action: EditorShotAction): StoryboardActionResult => {
     const current = authorityRef.current
+    if (current.isPlaying) {
+      setStatus('Pause sequence playback before changing the storyboard.')
+      return { ok: false, activeShotId: current.workspace.activeShotId }
+    }
     const liveWorkspace = materializeLiveWorkspace(current)
     const expectedRevision = canonicalProjectJson(current.history.present)
     const resolution = commitEditorShotAction(current.history, liveWorkspace, { ...action, expectedRevision })
@@ -1546,6 +1717,10 @@ export default function ProofCanvasEditor({
 
   const beginTimelineGesture = (event: ReactPointerEvent, animation: SceneAnimation, kind: 'move' | 'resize') => {
     event.stopPropagation()
+    if (authorityRef.current.isPlaying) {
+      setStatus('Pause preview before editing timeline blocks.')
+      return
+    }
     if (animationAuthoringCompatibilityIssue(animation)) {
       setSelectedAnimationId(animation.id)
       setStatus('This saved animation is read-only except for its easing repair.')
@@ -1553,13 +1728,13 @@ export default function ProofCanvasEditor({
     }
     event.currentTarget.setPointerCapture?.(event.pointerId)
     setSelectedAnimationId(animation.id)
-    setTimelineGesture({ id: animation.id, kind, clientX: event.clientX, start: animation.start, duration: animation.duration, baseRevision: projectRevisionRef.current })
+    setTimelineGesture({ id: animation.id, kind, clientX: event.clientX, start: animation.start, duration: animation.duration, baseRevision: projectRevisionRef.current, baseShotId: activeShotIdRef.current })
     setTimelineDraft({ id: animation.id, start: animation.start, duration: animation.duration })
   }
 
   const moveTimelineGesture = (event: ReactPointerEvent) => {
     if (!timelineGesture || !trackRef.current) return
-    if (timelineGesture.baseRevision !== projectRevisionRef.current) {
+    if (timelineGesture.baseRevision !== projectRevisionRef.current || timelineGesture.baseShotId !== activeShotIdRef.current || authorityRef.current.isPlaying) {
       setTimelineGesture(null)
       setTimelineDraft(null)
       return
@@ -1571,7 +1746,7 @@ export default function ProofCanvasEditor({
   }
 
   const endTimelineGesture = () => {
-    if (timelineGesture && timelineDraft && timelineGesture.baseRevision === projectRevisionRef.current) {
+    if (timelineGesture && timelineDraft && timelineGesture.baseRevision === projectRevisionRef.current && timelineGesture.baseShotId === activeShotIdRef.current && !authorityRef.current.isPlaying) {
       commitOps([{ type: 'update-animation', animationId: timelineGesture.id, patch: { start: timelineDraft.start, duration: timelineDraft.duration } }], timelineGesture.kind === 'move' ? 'Move timeline block' : 'Resize timeline block')
     }
     setTimelineGesture(null)
@@ -2009,19 +2184,19 @@ export default function ProofCanvasEditor({
     if (insideDialog && !['dismiss', 'save-project', 'open-command-palette', 'open-render-export'].includes(id)) return false
     const latest = authorityRef.current
     const latestSelection = latest.workspace.selection
-    if (id === 'undo') return canUndo(latest.history)
-    if (id === 'redo') return canRedo(latest.history)
+    if (id === 'undo') return !latest.isPlaying && canUndo(latest.history)
+    if (id === 'redo') return !latest.isPlaying && canRedo(latest.history)
     const keyboardShotId = invocation.source === 'keyboard'
       ? storyboardShotIdFromCommandTarget(target, latest.history.present)
       : null
-    if (id === 'delete-selection') return keyboardShotId !== null || latestSelection.kind === 'shot'
+    if (id === 'delete-selection') return !latest.isPlaying && (keyboardShotId !== null || latestSelection.kind === 'shot'
       ? latest.history.present.shots.length > 1
-      : Boolean(selectedObjectIds(latestSelection, latest.workspace.activeShotId).length || latestSelection.kind === 'animation')
-    if (id === 'duplicate-selection') return keyboardShotId !== null || latestSelection.kind === 'shot'
+      : Boolean(selectedObjectIds(latestSelection, latest.workspace.activeShotId).length || latestSelection.kind === 'animation'))
+    if (id === 'duplicate-selection') return !latest.isPlaying && (keyboardShotId !== null || latestSelection.kind === 'shot'
       ? latest.history.present.shots.length < PROOFCANVAS_SCHEMA_LIMITS.shots
-      : selectedObjectIds(latestSelection, latest.workspace.activeShotId).length > 0
-    if (id === 'group-selection') return selectedRootIds.length > 1
-    if (id === 'ungroup-selection') return selectedObjects.some(({ type }) => type === 'group')
+      : selectedObjectIds(latestSelection, latest.workspace.activeShotId).length > 0)
+    if (id === 'group-selection') return !latest.isPlaying && selectedRootIds.length > 1
+    if (id === 'ungroup-selection') return !latest.isPlaying && selectedObjects.some(({ type }) => type === 'group')
     if (id.startsWith('nudge-')) {
       if (latest.isPlaying) return false
       if (!selectedRootIds.length) return false
@@ -2112,12 +2287,12 @@ export default function ProofCanvasEditor({
       <header className="pc-header" aria-label="Project actions">
         <a href="/" className="pc-back-link" aria-label="Back to projects" aria-disabled={leavePending} onClick={(event) => { event.preventDefault(); void guardedLeave('/') }}>←</a>
         <div className="pc-wordmark"><span aria-hidden="true">∴</span><h1>ProofCanvas</h1></div>
-        <label className="pc-project-title"><span className="pc-visually-hidden">Project title</span><input aria-label="Project title" key={`${project.metadata.id}-${project.metadata.title}`} defaultValue={project.metadata.title} maxLength={160} onFocus={selectProjectContext} onBlur={(event) => commitTextInput(event, project.metadata.title, 'Project title', renameProject, { trim: true, required: true })}/>{durableProject ? <small role="status" aria-label="Autosave status" data-save-state={saveState}>{saveState === 'saved' ? `Saved · r${serverRevision}` : saveState === 'waiting' ? 'Autosave queued' : saveState === 'saving' ? 'Saving…' : saveState === 'conflict' ? 'Save conflict' : 'Offline · retry'}</small> : <small role="status" aria-label="Autosave status">Local project</small>}</label>
+        <label className="pc-project-title"><span className="pc-visually-hidden">Project title</span><input aria-label="Project title" key={`${project.metadata.id}-${project.metadata.title}`} defaultValue={project.metadata.title} maxLength={160} disabled={isPlaying} onFocus={selectProjectContext} onBlur={(event) => commitTextInput(event, project.metadata.title, 'Project title', renameProject, { trim: true, required: true })}/>{durableProject ? <small role="status" aria-label="Autosave status" data-save-state={saveState}>{saveState === 'saved' ? `Saved · r${serverRevision}` : saveState === 'waiting' ? 'Autosave queued' : saveState === 'saving' ? 'Saving…' : saveState === 'conflict' ? 'Save conflict' : 'Offline · retry'}</small> : <small role="status" aria-label="Autosave status">Local project</small>}</label>
         <div className="pc-history-actions">
-          <button type="button" onClick={() => commandController.execute('undo')} disabled={!canUndo(history)} aria-label="Undo" title="Undo · Ctrl/Cmd Z">↶</button>
-          <button type="button" onClick={() => commandController.execute('redo')} disabled={!canRedo(history)} aria-label="Redo" title="Redo · Ctrl/Cmd Shift Z">↷</button>
+          <button type="button" onClick={() => commandController.execute('undo')} disabled={isPlaying || !canUndo(history)} aria-label="Undo" title="Undo · Ctrl/Cmd Z">↶</button>
+          <button type="button" onClick={() => commandController.execute('redo')} disabled={isPlaying || !canRedo(history)} aria-label="Redo" title="Redo · Ctrl/Cmd Shift Z">↷</button>
         </div>
-        <label className="pc-quality">Preview<span className="pc-visually-hidden"> quality</span><select aria-label="Preview quality" value={project.settings.previewQuality} onChange={(event) => updateProjectSettings({ previewQuality: event.target.value as ProjectDocument['settings']['previewQuality'] })}><option value="draft">Draft</option><option value="standard">Standard</option><option value="high">High</option></select></label>
+        <label className="pc-quality">Preview<span className="pc-visually-hidden"> quality</span><select aria-label="Preview quality" value={project.settings.previewQuality} disabled={isPlaying} onChange={(event) => updateProjectSettings({ previewQuality: event.target.value as ProjectDocument['settings']['previewQuality'] })}><option value="draft">Draft</option><option value="standard">Standard</option><option value="high">High</option></select></label>
         <div className="pc-top-actions">
           <button type="button" onClick={() => { selectProjectContext(); openUtilityDialog('settings') }} aria-label="Project settings">Settings</button>
           <button type="button" onClick={() => openUtilityDialog('shortcuts')} aria-label="Keyboard shortcuts">Shortcuts</button>
@@ -2134,14 +2309,14 @@ export default function ProofCanvasEditor({
       <aside className="pc-left" aria-label="Object and layer library">
         <section className="pc-library-section"><div className="pc-section-heading"><div><span>Insert</span><h2>Library</h2></div><button type="button" onClick={() => setLeftPanelCollapsed(true)} aria-label="Collapse library panel">‹</button></div><div role="tablist" aria-label="Insert library" className="pc-library-tabs">{LIBRARY_TABS.map((tab) => <button type="button" role="tab" key={tab} aria-selected={libraryTab === tab} tabIndex={libraryTab === tab ? 0 : -1} data-library-tab={tab} onKeyDown={(event) => selectLibraryTab(event, tab)} onClick={() => { setLibraryTab(tab); setLibrarySearch('') }}>{tab[0].toUpperCase() + tab.slice(1)}</button>)}</div>
           {libraryTab !== 'styles' && <label className="pc-library-search"><span className="pc-visually-hidden">Search library</span><input type="search" aria-label="Search library" placeholder={`Search ${libraryTab}`} value={librarySearch} onChange={(event) => setLibrarySearch(event.target.value)}/><span aria-hidden="true">⌕</span></label>}
-          {(['text', 'math', 'shapes', 'graphs'] as LibraryTab[]).includes(libraryTab) && <div className="pc-insert-grid">{visibleObjectTypes.map(({ type, label }) => <button key={type} type="button" onClick={() => insertObject(type)} aria-label={`Add ${label}`} data-object-type={type}><span aria-hidden="true">{type === 'text' ? 'T' : type === 'math' ? '∑' : type === 'brace' ? '⏟' : type === 'circle' ? '○' : type === 'rectangle' ? '□' : type === 'line' ? '—' : type === 'arrow' ? '→' : type === 'axes' ? '⌗' : 'ƒ'}</span><b>{label}</b></button>)}{visibleObjectTypes.length === 0 && <p className="pc-library-empty" role="status">No {libraryTab} items match “{librarySearch}”.</p>}</div>}
-          {libraryTab === 'components' && <div className="pc-component-list">{visibleComponents.map((component) => { const labels: Record<SemanticComponentId, string> = { 'mathematical-title': 'Insert mathematical title', 'proposition-statement': 'Insert proposition or definition', 'equation-chain': 'Insert equation chain', 'annotated-diagram': 'Insert annotated diagram', 'focus-callout': 'Insert focus callout', 'recursive-intervals': 'Insert recursive interval construction' }; return <button key={component.id} type="button" onClick={() => insertComponent(component.id)} title={component.description} aria-label={labels[component.id]} data-component-id={component.id}><b>{component.name}</b><small>{component.description}</small></button> })}{visibleComponents.length === 0 && <p className="pc-library-empty" role="status">No components match “{librarySearch}”.</p>}</div>}
-          {libraryTab === 'styles' && <div className="pc-style-library" role="radiogroup" aria-label="Library output styles"><button type="button" role="radio" aria-checked={project.activeStyleId === EDITORIAL_INK_STYLE_ID} tabIndex={project.activeStyleId === EDITORIAL_INK_STYLE_ID ? 0 : -1} data-style-surface="library" data-style-id={EDITORIAL_INK_STYLE_ID} onKeyDown={(event) => navigateStyleRadios(event, EDITORIAL_INK_STYLE_ID, 'library')} onClick={() => selectOutputStyle(EDITORIAL_INK_STYLE_ID, 'Editorial Ink')}><i data-style-swatch="editorial"/><span><b>Editorial Ink</b><small>Warm restrained proof-film system</small></span></button><button type="button" role="radio" aria-checked={project.activeStyleId === RAW_MANIM_STYLE_ID} tabIndex={project.activeStyleId === RAW_MANIM_STYLE_ID ? 0 : -1} data-style-surface="library" data-style-id={RAW_MANIM_STYLE_ID} onKeyDown={(event) => navigateStyleRadios(event, RAW_MANIM_STYLE_ID, 'library')} onClick={() => selectOutputStyle(RAW_MANIM_STYLE_ID, 'Raw Manim')}><i data-style-swatch="raw"/><span><b>Raw Manim</b><small>Direct geometric defaults</small></span></button></div>}
+          {(['text', 'math', 'shapes', 'graphs'] as LibraryTab[]).includes(libraryTab) && <div className="pc-insert-grid">{visibleObjectTypes.map(({ type, label }) => <button key={type} type="button" onClick={() => insertObject(type)} disabled={isPlaying} aria-label={`Add ${label}`} data-object-type={type}><span aria-hidden="true">{type === 'text' ? 'T' : type === 'math' ? '∑' : type === 'brace' ? '⏟' : type === 'circle' ? '○' : type === 'rectangle' ? '□' : type === 'line' ? '—' : type === 'arrow' ? '→' : type === 'axes' ? '⌗' : 'ƒ'}</span><b>{label}</b></button>)}{visibleObjectTypes.length === 0 && <p className="pc-library-empty" role="status">No {libraryTab} items match “{librarySearch}”.</p>}</div>}
+          {libraryTab === 'components' && <div className="pc-component-list">{visibleComponents.map((component) => { const labels: Record<SemanticComponentId, string> = { 'mathematical-title': 'Insert mathematical title', 'proposition-statement': 'Insert proposition or definition', 'equation-chain': 'Insert equation chain', 'annotated-diagram': 'Insert annotated diagram', 'focus-callout': 'Insert focus callout', 'recursive-intervals': 'Insert recursive interval construction' }; return <button key={component.id} type="button" onClick={() => insertComponent(component.id)} disabled={isPlaying} title={component.description} aria-label={labels[component.id]} data-component-id={component.id}><b>{component.name}</b><small>{component.description}</small></button> })}{visibleComponents.length === 0 && <p className="pc-library-empty" role="status">No components match “{librarySearch}”.</p>}</div>}
+          {libraryTab === 'styles' && <div className="pc-style-library" role="radiogroup" aria-label="Library output styles"><button type="button" role="radio" aria-checked={project.activeStyleId === EDITORIAL_INK_STYLE_ID} tabIndex={project.activeStyleId === EDITORIAL_INK_STYLE_ID ? 0 : -1} disabled={isPlaying} data-style-surface="library" data-style-id={EDITORIAL_INK_STYLE_ID} onKeyDown={(event) => navigateStyleRadios(event, EDITORIAL_INK_STYLE_ID, 'library')} onClick={() => selectOutputStyle(EDITORIAL_INK_STYLE_ID, 'Editorial Ink')}><i data-style-swatch="editorial"/><span><b>Editorial Ink</b><small>Warm restrained proof-film system</small></span></button><button type="button" role="radio" aria-checked={project.activeStyleId === RAW_MANIM_STYLE_ID} tabIndex={project.activeStyleId === RAW_MANIM_STYLE_ID ? 0 : -1} disabled={isPlaying} data-style-surface="library" data-style-id={RAW_MANIM_STYLE_ID} onKeyDown={(event) => navigateStyleRadios(event, RAW_MANIM_STYLE_ID, 'library')} onClick={() => selectOutputStyle(RAW_MANIM_STYLE_ID, 'Raw Manim')}><i data-style-swatch="raw"/><span><b>Raw Manim</b><small>Direct geometric defaults</small></span></button></div>}
         </section>
         <section className="pc-layer-section"><div className="pc-section-heading"><h2>Layers</h2><span>{shot.objects.length}</span></div>
           <div className="pc-layer-actions" aria-label="Layer actions">
-            <button type="button" onClick={() => commandController.execute('duplicate-selection')} disabled={!selectedRootIds.length} aria-label="Duplicate selection">Duplicate</button><button type="button" onClick={() => commandController.execute('delete-selection')} disabled={!selectedRootIds.length} aria-label="Delete selection">Delete</button><button type="button" onClick={() => commandController.execute('group-selection')} disabled={selectedRootIds.length < 2} aria-label="Group selection">Group</button><button type="button" onClick={() => commandController.execute('ungroup-selection')} disabled={!selectedObjects.some(({ type }) => type === 'group')} aria-label="Ungroup selection">Ungroup</button>
-            <button type="button" onClick={() => reorderLayer('front')} disabled={!primary || primarySiblingIndex >= primarySiblings.length - 1} aria-label="Bring to front">To front</button><button type="button" onClick={() => reorderLayer('forward')} disabled={!primary || primarySiblingIndex >= primarySiblings.length - 1} aria-label="Bring forward">Forward</button><button type="button" onClick={() => reorderLayer('backward')} disabled={!primary || primarySiblingIndex <= 0} aria-label="Send backward">Backward</button><button type="button" onClick={() => reorderLayer('back')} disabled={!primary || primarySiblingIndex <= 0} aria-label="Send to back">To back</button>
+            <button type="button" onClick={() => commandController.execute('duplicate-selection')} disabled={isPlaying || !selectedRootIds.length} aria-label="Duplicate selection">Duplicate</button><button type="button" onClick={() => commandController.execute('delete-selection')} disabled={isPlaying || !selectedRootIds.length} aria-label="Delete selection">Delete</button><button type="button" onClick={() => commandController.execute('group-selection')} disabled={isPlaying || selectedRootIds.length < 2} aria-label="Group selection">Group</button><button type="button" onClick={() => commandController.execute('ungroup-selection')} disabled={isPlaying || !selectedObjects.some(({ type }) => type === 'group')} aria-label="Ungroup selection">Ungroup</button>
+            <button type="button" onClick={() => reorderLayer('front')} disabled={isPlaying || !primary || primarySiblingIndex >= primarySiblings.length - 1} aria-label="Bring to front">To front</button><button type="button" onClick={() => reorderLayer('forward')} disabled={isPlaying || !primary || primarySiblingIndex >= primarySiblings.length - 1} aria-label="Bring forward">Forward</button><button type="button" onClick={() => reorderLayer('backward')} disabled={isPlaying || !primary || primarySiblingIndex <= 0} aria-label="Send backward">Backward</button><button type="button" onClick={() => reorderLayer('back')} disabled={isPlaying || !primary || primarySiblingIndex <= 0} aria-label="Send to back">To back</button>
           </div>
           <div role="tree" aria-label="Objects" aria-multiselectable="true" className="pc-layer-tree">{shot.objects.map((object, index) => { const effectivelyLocked = Boolean(effectiveLockOwner(shot, object)); const visibilityOwner = effectiveVisibilityOwner(shot, object); const visibilityLabel = !visibilityOwner ? 'Visible' : visibilityOwner.id === object.id ? 'Hidden' : `Hidden by ${visibilityOwner.name}`; const lockLabel = effectivelyLocked ? object.locked ? '; Locked' : '; Locked by parent' : ''; return <button key={object.id} type="button" role="treeitem" aria-label={`${object.name}; ${visibilityLabel}${lockLabel}`} aria-selected={selectedRootIds.includes(object.id)} aria-level={descendants(shot, object.id) + 1} tabIndex={selectedRootIds.at(-1) === object.id || (!selectedRootIds.length && index === 0) ? 0 : -1} onKeyDown={(event) => navigateLayerTree(event, index)} onClick={(event) => setSelectedIds(selectionRootIds(shot, event.shiftKey ? selectedRootIds.includes(object.id) ? selectedRootIds.filter((id) => id !== object.id) : [...selectedRootIds, object.id] : [object.id]))} style={{ paddingLeft: 10 + descendants(shot, object.id) * 14 }} data-layer-object-id={object.id} data-locked={effectivelyLocked} data-visibility={visibilityOwner ? visibilityOwner.id === object.id ? 'hidden' : 'inherited-hidden' : 'visible'}><span aria-hidden="true">{visibilityOwner ? visibilityOwner.id === object.id ? '○' : '⊘' : '◉'}</span><span>{object.name}</span>{effectivelyLocked && <span aria-hidden="true">⌑</span>}</button> })}</div>
         </section>
@@ -2151,12 +2326,12 @@ export default function ProofCanvasEditor({
         <div className="pc-canvas-toolbar">
           <div className="pc-panel-toggles"><button type="button" onClick={() => setLeftPanelCollapsed((value) => !value)} aria-pressed={!leftPanelCollapsed} aria-label={leftPanelCollapsed ? 'Show library panel' : 'Hide library panel'}>Library</button><span>{project.settings.aspectRatio} · {project.settings.resolution.width}×{project.settings.resolution.height}</span></div>
           <div role="radiogroup" aria-label="Active output style" className="pc-canvas-style">
-            <label><input type="radio" name="preview-style" value={EDITORIAL_INK_STYLE_ID} checked={project.activeStyleId === EDITORIAL_INK_STYLE_ID} tabIndex={project.activeStyleId === EDITORIAL_INK_STYLE_ID ? 0 : -1} data-style-surface="canvas" data-style-id={EDITORIAL_INK_STYLE_ID} onKeyDown={(event) => navigateStyleRadios(event, EDITORIAL_INK_STYLE_ID, 'canvas')} onChange={() => selectOutputStyle(EDITORIAL_INK_STYLE_ID, 'Editorial Ink')}/>Editorial Ink</label>
-            <label><input type="radio" name="preview-style" value={RAW_MANIM_STYLE_ID} checked={project.activeStyleId === RAW_MANIM_STYLE_ID} tabIndex={project.activeStyleId === RAW_MANIM_STYLE_ID ? 0 : -1} data-style-surface="canvas" data-style-id={RAW_MANIM_STYLE_ID} onKeyDown={(event) => navigateStyleRadios(event, RAW_MANIM_STYLE_ID, 'canvas')} onChange={() => selectOutputStyle(RAW_MANIM_STYLE_ID, 'Raw Manim')}/>Raw Manim</label>
+            <label><input type="radio" name="preview-style" value={EDITORIAL_INK_STYLE_ID} checked={project.activeStyleId === EDITORIAL_INK_STYLE_ID} tabIndex={project.activeStyleId === EDITORIAL_INK_STYLE_ID ? 0 : -1} disabled={isPlaying} data-style-surface="canvas" data-style-id={EDITORIAL_INK_STYLE_ID} onKeyDown={(event) => navigateStyleRadios(event, EDITORIAL_INK_STYLE_ID, 'canvas')} onChange={() => selectOutputStyle(EDITORIAL_INK_STYLE_ID, 'Editorial Ink')}/>Editorial Ink</label>
+            <label><input type="radio" name="preview-style" value={RAW_MANIM_STYLE_ID} checked={project.activeStyleId === RAW_MANIM_STYLE_ID} tabIndex={project.activeStyleId === RAW_MANIM_STYLE_ID ? 0 : -1} disabled={isPlaying} data-style-surface="canvas" data-style-id={RAW_MANIM_STYLE_ID} onKeyDown={(event) => navigateStyleRadios(event, RAW_MANIM_STYLE_ID, 'canvas')} onChange={() => selectOutputStyle(RAW_MANIM_STYLE_ID, 'Raw Manim')}/>Raw Manim</label>
           </div>
           <div className="pc-align-actions" aria-label="Alignment actions">
-            {(['left','center-x','right','top','center-y','bottom'] as const).map((value) => { const labels = { left: 'Align left', 'center-x': 'Align horizontal centres', right: 'Align right', top: 'Align top', 'center-y': 'Align vertical centres', bottom: 'Align bottom' }; return <button type="button" key={value} onClick={() => align(value)} disabled={selectedRootIds.length < 2} aria-label={labels[value]}>{value.replace('center-', 'mid ')}</button> })}
-            <button type="button" onClick={() => distribute('horizontal')} disabled={selectedRootIds.length < 3} aria-label="Distribute horizontally">Distribute H</button><button type="button" onClick={() => distribute('vertical')} disabled={selectedRootIds.length < 3} aria-label="Distribute vertically">Distribute V</button>
+            {(['left','center-x','right','top','center-y','bottom'] as const).map((value) => { const labels = { left: 'Align left', 'center-x': 'Align horizontal centres', right: 'Align right', top: 'Align top', 'center-y': 'Align vertical centres', bottom: 'Align bottom' }; return <button type="button" key={value} onClick={() => align(value)} disabled={isPlaying || selectedRootIds.length < 2} aria-label={labels[value]}>{value.replace('center-', 'mid ')}</button> })}
+            <button type="button" onClick={() => distribute('horizontal')} disabled={isPlaying || selectedRootIds.length < 3} aria-label="Distribute horizontally">Distribute H</button><button type="button" onClick={() => distribute('vertical')} disabled={isPlaying || selectedRootIds.length < 3} aria-label="Distribute vertically">Distribute V</button>
           </div>
           <button type="button" onClick={() => setRightPanelCollapsed((value) => !value)} aria-pressed={!rightPanelCollapsed} aria-label={rightPanelCollapsed ? 'Show inspector panel' : 'Hide inspector panel'}>Inspector</button>
         </div>
@@ -2166,48 +2341,74 @@ export default function ProofCanvasEditor({
 
       <aside className="pc-right" aria-label="Inspector and intelligence tools">
         <header className="pc-inspector-context"><div><span>{selection.kind === 'objects' ? primary?.type === 'group' ? 'Group' : selectedObjects.length > 1 ? `${selectedObjects.length} objects` : 'Object' : selection.kind === 'animation' ? 'Animation' : selection.kind === 'keyframes' ? 'Keyframe' : selection.kind === 'project' ? 'Project' : 'Shot'}</span><h2>{primary?.name ?? selectedAnimation?.type ?? (selection.kind === 'project' ? project.metadata.title : shot.name)}</h2></div><button type="button" onClick={() => setRightPanelCollapsed(true)} aria-label="Collapse inspector panel">›</button></header>
-        {primary && <form className="pc-inspector" aria-label={primary.type === 'group' ? 'Group inspector' : 'Object inspector'} data-inspector-object-id={primary.id} onSubmit={(event) => event.preventDefault()}><div className="pc-section-heading"><h2>{primary.type === 'group' ? 'Group properties' : 'Object properties'}</h2><button type="button" onClick={toggleLock} disabled={primaryInheritedLocked}>{primaryInheritedLocked ? 'Locked by parent' : primary.locked ? 'Unlock' : 'Lock'}</button></div>
-          <div className="pc-field-grid"><p className="pc-wide pc-inspector-note">Base-pose properties. Timeline blocks may animate this geometry at the current playhead.</p>
+        {primary && <form className="pc-inspector" aria-label={primary.type === 'group' ? 'Group inspector' : 'Object inspector'} data-inspector-object-id={primary.id} onSubmit={(event) => event.preventDefault()}><div className="pc-section-heading"><h2>{primary.type === 'group' ? 'Group properties' : 'Object properties'}</h2><button type="button" onClick={toggleLock} disabled={isPlaying || primaryInheritedLocked}>{primaryInheritedLocked ? 'Locked by parent' : primary.locked ? 'Unlock' : 'Lock'}</button></div>
+          <fieldset className="pc-lifetime-inspector" disabled={isPlaying || primaryFamilyLocked}>
+            <legend>Object lifetime</legend>
+            <label><input type="radio" name={`lifetime-mode-${primary.id}`} checked={!primary.lifetime} onChange={() => commitRenderedTimelineIntent(resolveSetObjectLifetime(project, shot.id, { objectId: primary.id, mode: 'entire' }))}/>{primary.parentId ? 'Entire inherited range' : 'Entire shot'}</label>
+            <label><input type="radio" name={`lifetime-mode-${primary.id}`} checked={Boolean(primary.lifetime)} onChange={() => primaryInheritedLifetime && commitRenderedTimelineIntent(resolveSetObjectLifetime(project, shot.id, { objectId: primary.id, mode: 'set', start: primaryInheritedLifetime.start, end: primaryInheritedLifetime.end }))}/>Custom</label>
+            <div className="pc-lifetime-inputs">
+              <label>Start<input key={`${primary.id}-lifetime-start-${primaryEffectiveLifetime?.start}-${lifetimeInputRevision}`} type="number" min={primaryInheritedLifetime?.start ?? 0} max={primaryEffectiveLifetime?.end ?? shot.duration} step="any" aria-label="Object lifetime start" defaultValue={primaryEffectiveLifetime?.start ?? 0} disabled={!primary.lifetime || isPlaying || primaryFamilyLocked} onBlur={(event) => { const input = event.currentTarget; const start = Number(input.value); if (primaryEffectiveLifetime && (!Number.isFinite(start) || !commitRenderedTimelineIntent(resolveSetObjectLifetime(project, shot.id, { objectId: primary.id, mode: 'set', start, end: primaryEffectiveLifetime.end })))) { input.value = String(primaryEffectiveLifetime.start); setLifetimeInputRevision((value) => value + 1) } }}/></label>
+              <label>End<input key={`${primary.id}-lifetime-end-${primaryEffectiveLifetime?.end}-${lifetimeInputRevision}`} type="number" min={primaryEffectiveLifetime?.start ?? 0} max={primaryInheritedLifetime?.end ?? shot.duration} step="any" aria-label="Object lifetime end" defaultValue={primaryEffectiveLifetime?.end ?? shot.duration} disabled={!primary.lifetime || isPlaying || primaryFamilyLocked} onBlur={(event) => { const input = event.currentTarget; const end = Number(input.value); if (primaryEffectiveLifetime && (!Number.isFinite(end) || !commitRenderedTimelineIntent(resolveSetObjectLifetime(project, shot.id, { objectId: primary.id, mode: 'set', start: primaryEffectiveLifetime.start, end })))) { input.value = String(primaryEffectiveLifetime.end); setLifetimeInputRevision((value) => value + 1) } }}/></label>
+            </div>
+            <p>Effective range {primaryEffectiveLifetime?.start.toFixed(4)}s–{primaryEffectiveLifetime?.end.toFixed(4)}s.{primary.parentId ? ` Inherited bounds are ${primaryInheritedLifetime?.start.toFixed(4)}s–${primaryInheritedLifetime?.end.toFixed(4)}s and remain read-only.` : ' Entire shot follows the shot duration.'}</p>
+          </fieldset>
+          <div className="pc-field-grid"><p className="pc-wide pc-inspector-note">Diamonds author schema-v3 property keys. Once a track exists, field edits upsert at the playhead instead of changing the base pose.</p>
             {primary.type === 'group' && primaryFamilyLocked && !primaryEffectivelyLocked && <p className="pc-wide pc-inspector-note" role="status">This group contains a locked descendant. Geometry and visibility controls are disabled until the family is unlocked.</p>}
-            <label className="pc-wide">Name<input aria-label="Name" defaultValue={primary.name} key={`${primary.id}-name-${primary.name}`} disabled={primaryEffectivelyLocked} onBlur={(event) => commitTextInput(event, primary.name, 'Object name', (value) => commitPatch({ name: value }, 'Rename object'), { trim: true, required: true })}/></label>
-            {TRANSFORM_NUMERIC_FIELDS.filter((definition) => (primary.type !== 'circle' || definition.key !== 'rotation') && (!['line', 'arrow'].includes(primary.type) || definition.key !== 'height')).map((definition) => { const key = definition.key as 'x' | 'y' | 'width' | 'height' | 'rotation'; const value = primary.transform[key] ?? (key === 'width' ? 60 : key === 'height' ? 30 : 0); const field = { ...definition, fallback: value }; return <label key={key}>{field.label}<input key={`${primary.id}-${key}-${value}`} type="number" min={field.min} max={field.max} step="0.1" aria-label={field.label} defaultValue={value} disabled={primaryFamilyLocked} onBlur={(event) => commitNumericInput(event, field, value, (next) => commitPatch({ transform: { [key]: next } }, `Set ${field.label.toLowerCase()}`))}/></label> })}
-            {primary.type !== 'group' && <label>Opacity<input key={`${primary.id}-opacity-${primary.style.opacity ?? 1}`} type="number" min="0" max="1" step="0.05" aria-label="Opacity" defaultValue={primary.style.opacity ?? 1} disabled={primaryEffectivelyLocked} onBlur={(event) => { const value = primary.style.opacity ?? 1; commitNumericInput(event, { key: 'opacity', label: 'Opacity', fallback: value, min: 0, max: 1 }, value, (next) => commitPatch({ style: { opacity: next } }, 'Set opacity')) }}/></label>}
-            {(primary.type === 'text' || primary.type === 'math' || primary.type === 'brace') && <label>Font size<input key={`${primary.id}-font-size-${primary.style.fontSize ?? 22}`} type="number" min="8" max="144" aria-label="Font size" defaultValue={primary.style.fontSize ?? 22} disabled={primaryEffectivelyLocked} onBlur={(event) => { const value = primary.style.fontSize ?? 22; commitNumericInput(event, { key: 'fontSize', label: 'Font size', fallback: value, min: 8, max: 144 }, value, (next) => commitPatch({ style: { fontSize: next } }, 'Set font size')) }}/></label>}
-            {(primary.type === 'text' || primary.type === 'math') && <label className="pc-wide">Content<textarea aria-label="Content" rows={3} maxLength={primary.type === 'math' ? PROOFCANVAS_LATEX_MAX_CHARS : PROOFCANVAS_TEXT_MAX_CHARS} defaultValue={String(primary.properties.content ?? '')} key={`${primary.id}-content-${String(primary.properties.content ?? '')}`} disabled={primaryEffectivelyLocked} onBlur={(event) => { const current = String(primary.properties.content ?? ''); commitTextInput(event, current, 'Content', (value) => commitPatch({ properties: { content: value } }, 'Edit content')) }}/></label>}
-            {primary.type === 'brace' && <label className="pc-wide">Brace label<input aria-label="Brace label" maxLength={PROOFCANVAS_BRACE_LABEL_MAX_CHARS} defaultValue={String(primary.properties.label ?? '')} key={`${primary.id}-label-${String(primary.properties.label ?? '')}`} disabled={primaryEffectivelyLocked} onBlur={(event) => { const current = String(primary.properties.label ?? ''); commitTextInput(event, current, 'Brace label', (value) => commitPatch({ properties: { label: value } }, 'Edit brace label')) }}/></label>}
-            {(primary.type === 'image' || primary.type === 'svg') && <label className="pc-wide">Asset source<input aria-label="Asset source" defaultValue={String(primary.properties.source ?? '')} key={`${primary.id}-source-${String(primary.properties.source ?? '')}`} disabled={primaryEffectivelyLocked} onBlur={(event) => { const current = String(primary.properties.source ?? ''); commitTextInput(event, current, 'Asset source', (value) => commitPatch({ properties: { source: value } }, 'Edit asset source'), { trim: true, required: true }) }}/></label>}
-            {(primary.type === 'axes' || primary.type === 'graph') && (['xMin', 'xMax'] as const).map((key) => { const label = key === 'xMin' ? 'X minimum' : 'X maximum'; const value = Number(primary.properties[key]); const field = { key, label, fallback: value, min: -PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude, max: PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude }; return <label key={key}>{label}<input key={`${primary.id}-${key}-${String(primary.properties[key])}`} type="number" min={field.min} max={field.max} aria-label={label} defaultValue={value} disabled={primaryEffectivelyLocked} onBlur={(event) => commitNumericInput(event, field, value, (next) => commitPatch({ properties: { [key]: next } }, `Set ${key}`))}/></label> })}
-            {primary.type === 'axes' && (['yMin', 'yMax'] as const).map((key) => { const label = key === 'yMin' ? 'Y minimum' : 'Y maximum'; const value = Number(primary.properties[key]); const field = { key, label, fallback: value, min: -PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude, max: PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude }; return <label key={key}>{label}<input key={`${primary.id}-${key}-${String(primary.properties[key])}`} type="number" min={field.min} max={field.max} aria-label={label} defaultValue={value} disabled={primaryEffectivelyLocked} onBlur={(event) => commitNumericInput(event, field, value, (next) => commitPatch({ properties: { [key]: next } }, `Set ${key}`))}/></label> })}
+            <label className="pc-wide">Name<input aria-label="Name" defaultValue={primary.name} key={`${primary.id}-name-${primary.name}`} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => commitTextInput(event, primary.name, 'Object name', (value) => commitPatch({ name: value }, 'Rename object'), { trim: true, required: true })}/></label>
+            {TRANSFORM_NUMERIC_FIELDS.filter((definition) => (primary.type !== 'circle' || definition.key !== 'rotation') && (!['line', 'arrow'].includes(primary.type) || definition.key !== 'height')).map((definition) => renderObjectPropertyField(definition.key as PropertyTrack['property'], definition.label, { min: definition.min, max: definition.max, step: 0.1, familyLock: true }))}
+            {renderObjectPropertyField('scale', 'Scale', { ...signedScaleBounds, step: 0.05, familyLock: true })}
+            {renderObjectPropertyField('scaleX', 'Scale X', { ...signedScaleBounds, step: 0.05, familyLock: true })}
+            {renderObjectPropertyField('scaleY', 'Scale Y', { ...signedScaleBounds, step: 0.05, familyLock: true })}
+            {primary.type !== 'group' && renderObjectPropertyField('opacity', 'Opacity', { min: 0, max: 1, step: 0.05 })}
+            {(primary.type === 'text' || primary.type === 'math' || primary.type === 'brace') && <label>Font size<input key={`${primary.id}-font-size-${primary.style.fontSize ?? 22}`} type="number" min="8" max="144" aria-label="Font size" defaultValue={primary.style.fontSize ?? 22} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => { const value = primary.style.fontSize ?? 22; commitNumericInput(event, { key: 'fontSize', label: 'Font size', fallback: value, min: 8, max: 144 }, value, (next) => commitPatch({ style: { fontSize: next } }, 'Set font size')) }}/></label>}
+            {(primary.type === 'text' || primary.type === 'math') && <label className="pc-wide">Content<textarea aria-label="Content" rows={3} maxLength={primary.type === 'math' ? PROOFCANVAS_LATEX_MAX_CHARS : PROOFCANVAS_TEXT_MAX_CHARS} defaultValue={String(primary.properties.content ?? '')} key={`${primary.id}-content-${String(primary.properties.content ?? '')}`} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => { const current = String(primary.properties.content ?? ''); commitTextInput(event, current, 'Content', (value) => commitPatch({ properties: { content: value } }, 'Edit content')) }}/></label>}
+            {primary.type === 'brace' && <label className="pc-wide">Brace label<input aria-label="Brace label" maxLength={PROOFCANVAS_BRACE_LABEL_MAX_CHARS} defaultValue={String(primary.properties.label ?? '')} key={`${primary.id}-label-${String(primary.properties.label ?? '')}`} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => { const current = String(primary.properties.label ?? ''); commitTextInput(event, current, 'Brace label', (value) => commitPatch({ properties: { label: value } }, 'Edit brace label')) }}/></label>}
+            {(primary.type === 'image' || primary.type === 'svg') && <label className="pc-wide">Asset source<input aria-label="Asset source" defaultValue={String(primary.properties.source ?? '')} key={`${primary.id}-source-${String(primary.properties.source ?? '')}`} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => { const current = String(primary.properties.source ?? ''); commitTextInput(event, current, 'Asset source', (value) => commitPatch({ properties: { source: value } }, 'Edit asset source'), { trim: true, required: true }) }}/></label>}
+            {(primary.type === 'axes' || primary.type === 'graph') && (['xMin', 'xMax'] as const).map((key) => { const label = key === 'xMin' ? 'X minimum' : 'X maximum'; const value = Number(primary.properties[key]); const field = { key, label, fallback: value, min: -PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude, max: PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude }; return <label key={key}>{label}<input key={`${primary.id}-${key}-${String(primary.properties[key])}`} type="number" min={field.min} max={field.max} aria-label={label} defaultValue={value} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => commitNumericInput(event, field, value, (next) => commitPatch({ properties: { [key]: next } }, `Set ${key}`))}/></label> })}
+            {primary.type === 'axes' && (['yMin', 'yMax'] as const).map((key) => { const label = key === 'yMin' ? 'Y minimum' : 'Y maximum'; const value = Number(primary.properties[key]); const field = { key, label, fallback: value, min: -PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude, max: PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude }; return <label key={key}>{label}<input key={`${primary.id}-${key}-${String(primary.properties[key])}`} type="number" min={field.min} max={field.max} aria-label={label} defaultValue={value} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => commitNumericInput(event, field, value, (next) => commitPatch({ properties: { [key]: next } }, `Set ${key}`))}/></label> })}
             {(primary.type === 'axes' || primary.type === 'graph') && <p className="pc-wide pc-inspector-note">The browser graph is schematic. Ranges and expressions are authoritative in Manim export and render.</p>}
-            {['text', 'math', 'brace'].includes(primary.type) && <label>Color<input key={`${primary.id}-color-${primary.style.color ?? previewStyle.colors.ink}`} type="color" aria-label="Color" defaultValue={primary.style.color ?? previewStyle.colors.ink} disabled={primaryEffectivelyLocked} onBlur={(event) => { const current = primary.style.color ?? previewStyle.colors.ink; if (event.target.value !== current) commitPatch({ style: { color: event.target.value } }, 'Set color') }}/></label>}
-            {primary.type === 'rectangle' && <label>Fill<input key={`${primary.id}-fill-${primary.style.fill ?? previewStyle.colors.ink}`} type="color" aria-label="Fill" defaultValue={primary.style.fill ?? previewStyle.colors.ink} disabled={primaryEffectivelyLocked} onBlur={(event) => { const current = primary.style.fill ?? previewStyle.colors.ink; if (event.target.value !== current) commitPatch({ style: { fill: event.target.value } }, 'Set fill') }}/></label>}
-            {primary.type === 'circle' && primary.style.fill === undefined && <button type="button" className="pc-field-action" disabled={primaryEffectivelyLocked} onClick={() => commitPatch({ style: { fill: previewStyle.colors.background } }, 'Add circle fill')}>Add fill</button>}
-            {primary.type === 'circle' && primary.style.fill !== undefined && <label>Fill<input key={`${primary.id}-fill-${primary.style.fill}`} type="color" aria-label="Fill" defaultValue={primary.style.fill} disabled={primaryEffectivelyLocked} onBlur={(event) => { if (event.target.value !== primary.style.fill) commitPatch({ style: { fill: event.target.value } }, 'Set fill') }}/></label>}
-            {['circle', 'rectangle', 'line', 'arrow', 'brace', 'axes', 'graph'].includes(primary.type) && <label>Stroke<input key={`${primary.id}-stroke-${primary.style.stroke ?? previewStyle.colors.ink}`} type="color" aria-label="Stroke" defaultValue={primary.style.stroke ?? previewStyle.colors.ink} disabled={primaryEffectivelyLocked} onBlur={(event) => { const current = primary.style.stroke ?? previewStyle.colors.ink; if (event.target.value !== current) commitPatch({ style: { stroke: event.target.value } }, 'Set stroke') }}/></label>}
-            <label className="pc-check"><input type="checkbox" aria-label={primaryInheritedHidden ? `Visible locally; hidden by ${primaryVisibilityOwner?.name}` : 'Visible'} checked={primary.visible} disabled={primaryFamilyLocked} onChange={(event) => commitPatch({ visible: event.target.checked }, 'Toggle visibility')}/>{primaryInheritedHidden ? `Visible locally — hidden by ${primaryVisibilityOwner?.name}` : 'Visible'}</label>
-            <label className="pc-check"><input type="checkbox" aria-label="Locked" checked={primary.locked} disabled={primaryInheritedLocked} onChange={toggleLock}/>Locked</label>
+            {objectTypeSupportsStyleProperty(primary.type, 'fill') && renderObjectPropertyField('fill', ['text', 'math'].includes(primary.type) ? 'Glyph fill' : 'Fill', { inputType: 'color' })}
+            {objectTypeSupportsStyleProperty(primary.type, 'stroke') && renderObjectPropertyField('stroke', 'Stroke', { inputType: 'color' })}
+            {objectTypeSupportsStyleProperty(primary.type, 'strokeWidth') && renderObjectPropertyField('strokeWidth', 'Stroke width', { min: 0, max: PROOFCANVAS_SCHEMA_LIMITS.strokeWidthMax, step: 0.1 })}
+            <label className="pc-check"><input type="checkbox" aria-label={primaryInheritedHidden ? `Visible locally; hidden by ${primaryVisibilityOwner?.name}` : 'Visible'} checked={primary.visible} disabled={isPlaying || primaryFamilyLocked} onChange={(event) => commitPatch({ visible: event.target.checked }, 'Toggle visibility')}/>{primaryInheritedHidden ? `Visible locally — hidden by ${primaryVisibilityOwner?.name}` : 'Visible'}</label>
+            <label className="pc-check"><input type="checkbox" aria-label="Locked" checked={primary.locked} disabled={isPlaying || primaryInheritedLocked} onChange={toggleLock}/>Locked</label>
           </div>
         </form>}
+
+        {selection.kind === 'keyframes' && selection.shotId === shot.id && <KeyframeInspector project={project} shot={shot} selection={selection} disabled={isPlaying} onCommit={commitRenderedTimelineIntent} onSelect={selectSingleKeyframe} onSeek={jumpLocalPlayhead} onNotice={setStatus}/>}
 
         {selectedAnimation && <section className="pc-animation-inspector pc-contextual-animation" aria-label="Animation inspector">
           <div className="pc-section-heading"><h2>Timing and motion</h2>{selectedAnimationLocked && <span>Locked target</span>}</div>
           {selectedAnimation.type === 'transform' && selectedAnimation.targetIds.length > 1 && <span className="pc-animation-lock-note" role="status">Split this legacy multi-target transform before editing absolute geometry.</span>}
-          <label>Start<input type="number" min="0" max={subtractTimelineTimes(shot.duration, selectedAnimation.duration)} step="0.1" aria-label="Start time" defaultValue={selectedAnimation.start} key={`${selectedAnimation.id}-start-${selectedAnimation.start}`} disabled={selectedAnimationLocked || selectedAnimationCompatibilityUnsupported} onBlur={(event) => commitNumericInput(event, { key: 'start', label: 'Start time', fallback: selectedAnimation.start, min: 0, max: subtractTimelineTimes(shot.duration, selectedAnimation.duration) }, selectedAnimation.start, (next) => updateAnimation({ start: next }, 'Set animation start'))}/></label>
-          <label>Duration<input type="number" min="0.1" max={subtractTimelineTimes(shot.duration, selectedAnimation.start)} step="0.1" aria-label="Duration" defaultValue={selectedAnimation.duration} key={`${selectedAnimation.id}-duration-${selectedAnimation.duration}`} disabled={selectedAnimationLocked || selectedAnimationCompatibilityUnsupported} onBlur={(event) => commitNumericInput(event, { key: 'duration', label: 'Duration', fallback: selectedAnimation.duration, min: 0.1, max: subtractTimelineTimes(shot.duration, selectedAnimation.start) }, selectedAnimation.duration, (next) => updateAnimation({ duration: next }, 'Set animation duration'))}/></label>
-          <label>Easing<select aria-label="Easing" value={selectedAnimation.easing} disabled={selectedAnimationLocked && !selectedEmphasisUnsupported && !selectedEntranceThereBackUnsupported} onChange={(event) => updateAnimation({ easing: event.target.value as Easing }, 'Set animation easing')}>{(selectedAnimation.type === 'emphasise' ? ['there-and-back'] : EASINGS.filter((easing) => easing !== 'there-and-back' || (selectedAnimation.type !== 'write' && selectedAnimation.type !== 'create'))).map((easing) => <option key={easing}>{easing}</option>)}{selectedEmphasisUnsupported && <option value={selectedAnimation.easing} disabled>{selectedAnimation.easing} (render unsupported)</option>}{selectedEntranceThereBackUnsupported && <option value="there-and-back" disabled>there-and-back (render unsafe)</option>}</select></label>
+          <label>Start<input type="number" min="0" max={subtractTimelineTimes(shot.duration, selectedAnimation.duration)} step="0.1" aria-label="Start time" defaultValue={selectedAnimation.start} key={`${selectedAnimation.id}-start-${selectedAnimation.start}`} disabled={isPlaying || selectedAnimationLocked || selectedAnimationCompatibilityUnsupported} onBlur={(event) => commitNumericInput(event, { key: 'start', label: 'Start time', fallback: selectedAnimation.start, min: 0, max: subtractTimelineTimes(shot.duration, selectedAnimation.duration) }, selectedAnimation.start, (next) => updateAnimation({ start: next }, 'Set animation start'))}/></label>
+          <label>Duration<input type="number" min="0.1" max={subtractTimelineTimes(shot.duration, selectedAnimation.start)} step="0.1" aria-label="Duration" defaultValue={selectedAnimation.duration} key={`${selectedAnimation.id}-duration-${selectedAnimation.duration}`} disabled={isPlaying || selectedAnimationLocked || selectedAnimationCompatibilityUnsupported} onBlur={(event) => commitNumericInput(event, { key: 'duration', label: 'Duration', fallback: selectedAnimation.duration, min: 0.1, max: subtractTimelineTimes(shot.duration, selectedAnimation.start) }, selectedAnimation.duration, (next) => updateAnimation({ duration: next }, 'Set animation duration'))}/></label>
+          <label>Easing<select aria-label="Easing" value={selectedAnimation.easing} disabled={isPlaying || (selectedAnimationLocked && !selectedEmphasisUnsupported && !selectedEntranceThereBackUnsupported)} onChange={(event) => updateAnimation({ easing: event.target.value as Easing }, 'Set animation easing')}>{(selectedAnimation.type === 'emphasise' ? ['there-and-back'] : EASINGS.filter((easing) => easing !== 'there-and-back' || (selectedAnimation.type !== 'write' && selectedAnimation.type !== 'create'))).map((easing) => <option key={easing}>{easing}</option>)}{selectedEmphasisUnsupported && <option value={selectedAnimation.easing} disabled>{selectedAnimation.easing} (render unsupported)</option>}{selectedEntranceThereBackUnsupported && <option value="there-and-back" disabled>there-and-back (render unsafe)</option>}</select></label>
           {selectedAnimation.type === 'emphasise' && !selectedEmphasisUnsupported && <span className="pc-animation-lock-note" role="status">Emphasise uses a fixed there-and-back pulse.</span>}
           {selectedEmphasisUnsupported && <span className="pc-animation-lock-note" role="status">Saved legacy easing: choose there-and-back to repair rendering.</span>}
           {selectedEntranceThereBackUnsupported && <span className="pc-animation-lock-note" role="status">Write/Create there-and-back is unsafe in pinned Manim; choose another easing.</span>}
-          {animationPropertyFields.map((field) => { const value = typeof selectedAnimation.properties[field.key] === 'number' ? Number(selectedAnimation.properties[field.key]) : field.fallback; return <label key={field.key}>{field.label}<input type="number" min={field.min} max={field.max} step="0.1" aria-label={field.label} defaultValue={value} key={`${selectedAnimation.id}-${field.key}-${String(selectedAnimation.properties[field.key])}`} disabled={selectedAnimationLocked || selectedAnimationCompatibilityUnsupported} onBlur={(event) => commitNumericInput(event, field, value, (next) => updateAnimation({ properties: { [field.key]: next } }, `Set ${field.label.toLowerCase()}`))}/></label> })}
-          <button type="button" className="pc-danger-action" disabled={selectedAnimationLocked || selectedAnimationCompatibilityUnsupported} onClick={() => deleteTimelineAnimation(selectedAnimation)}>Delete animation</button>
+          {animationPropertyFields.map((field) => { const value = typeof selectedAnimation.properties[field.key] === 'number' ? Number(selectedAnimation.properties[field.key]) : field.fallback; return <label key={field.key}>{field.label}<input type="number" min={field.min} max={field.max} step="0.1" aria-label={field.label} defaultValue={value} key={`${selectedAnimation.id}-${field.key}-${String(selectedAnimation.properties[field.key])}`} disabled={isPlaying || selectedAnimationLocked || selectedAnimationCompatibilityUnsupported} onBlur={(event) => commitNumericInput(event, field, value, (next) => updateAnimation({ properties: { [field.key]: next } }, `Set ${field.label.toLowerCase()}`))}/></label> })}
+          <button type="button" className="pc-danger-action" disabled={isPlaying || selectedAnimationLocked || selectedAnimationCompatibilityUnsupported} onClick={() => deleteTimelineAnimation(selectedAnimation)}>Delete animation</button>
         </section>}
-        {!primary && !selectedAnimation && <section className="pc-context-summary" aria-label={selection.kind === 'project' ? 'Project inspector' : 'Shot inspector'}><div className="pc-section-heading"><h2>{selection.kind === 'project' ? 'Project' : 'Shot'}</h2><span>{selection.kind === 'project' ? project.settings.aspectRatio : `${shot.duration.toFixed(1)}s`}</span></div>{selection.kind === 'project' ? <><p>{project.shots.length} shots · {project.settings.frameRate} fps · {project.settings.resolution.width}×{project.settings.resolution.height}</p><button type="button" onClick={() => openUtilityDialog('settings')}>Open project settings</button></> : <><label>Name<input aria-label="Shot name" key={`inspector-${shot.id}-${shot.name}`} defaultValue={shot.name} maxLength={120} onBlur={(event) => commitTextInput(event, shot.name, 'Shot name', (value) => editShot({ name: value }, 'Rename shot'), { trim: true, required: true })}/></label><label>Duration<input type="number" min={minimumShotDuration} max="300" step="0.5" aria-label="Shot duration" key={`inspector-${shot.id}-${shot.duration}`} defaultValue={shot.duration} onBlur={(event) => commitNumericInput(event, { key: 'shotDuration', label: 'Shot duration', fallback: shot.duration, min: minimumShotDuration, max: 300 }, shot.duration, (value) => editShot({ duration: value }, 'Set shot duration'))}/></label><div className="pc-context-actions"><button type="button" onClick={() => reorderShot(-1)} aria-label="Move shot earlier">Move earlier</button><button type="button" onClick={() => reorderShot(1)} aria-label="Move shot later">Move later</button></div><p>{shot.objects.length} layers · {shot.animations.length} animations</p></>}</section>}
+        {!primary && !selectedAnimation && selection.kind !== 'keyframes' && <section className="pc-context-summary" aria-label={selection.kind === 'project' ? 'Project inspector' : 'Shot inspector'}>
+          <div className="pc-section-heading"><h2>{selection.kind === 'project' ? 'Project' : 'Shot'}</h2><span>{selection.kind === 'project' ? project.settings.aspectRatio : `${shot.duration.toFixed(1)}s`}</span></div>
+          {selection.kind === 'project' ? <>
+            <p>{project.shots.length} shots · {project.settings.frameRate} fps · {project.settings.resolution.width}×{project.settings.resolution.height}</p>
+            <button type="button" onClick={() => openUtilityDialog('settings')}>Open project settings</button>
+          </> : <>
+            <label>Name<input aria-label="Shot name" key={`inspector-${shot.id}-${shot.name}`} defaultValue={shot.name} maxLength={120} disabled={isPlaying} onBlur={(event) => commitTextInput(event, shot.name, 'Shot name', (value) => editShot({ name: value }, 'Rename shot'), { trim: true, required: true })}/></label>
+            <label>Duration<input type="number" min={minimumShotDuration} max="300" step="0.5" aria-label="Shot duration" key={`inspector-${shot.id}-${shot.duration}`} defaultValue={shot.duration} disabled={isPlaying} onBlur={(event) => commitNumericInput(event, { key: 'shotDuration', label: 'Shot duration', fallback: shot.duration, min: minimumShotDuration, max: 300 }, shot.duration, (value) => editShot({ duration: value }, 'Set shot duration'))}/></label>
+            <div className="pc-camera-key-fields"><h3>Camera keyframes</h3>{renderCameraPropertyField('x', 'Camera X', -PROOFCANVAS_SCHEMA_LIMITS.animationCoordinateMagnitude, PROOFCANVAS_SCHEMA_LIMITS.animationCoordinateMagnitude)}{renderCameraPropertyField('y', 'Camera Y', -PROOFCANVAS_SCHEMA_LIMITS.animationCoordinateMagnitude, PROOFCANVAS_SCHEMA_LIMITS.animationCoordinateMagnitude)}{renderCameraPropertyField('zoom', 'Camera zoom', PROOFCANVAS_SCHEMA_LIMITS.cameraZoomMin, PROOFCANVAS_SCHEMA_LIMITS.cameraZoomMax)}{renderCameraPropertyField('rotation', 'Camera rotation', -PROOFCANVAS_SCHEMA_LIMITS.animationRotationMagnitude, PROOFCANVAS_SCHEMA_LIMITS.animationRotationMagnitude)}</div>
+            <div className="pc-context-actions"><button type="button" onClick={() => reorderShot(-1)} disabled={isPlaying} aria-label="Move shot earlier">Move earlier</button><button type="button" onClick={() => reorderShot(1)} disabled={isPlaying} aria-label="Move shot later">Move later</button></div>
+            <p>{shot.objects.length} layers · {shot.animations.length} animations</p>
+          </>}
+        </section>}
       </aside>
 
       <div className="pc-bottom-workspace">
-        <ShotStoryboard project={project} activeShotId={shot.id} previewStyle={previewStyle} sequence={shotSequence} onActivate={selectShot} onCommitAction={runEditorShotAction} onSplitActive={splitActiveShot} onRequestDialog={openShotDialog}/>
+        <ShotStoryboard project={project} activeShotId={shot.id} previewStyle={previewStyle} sequence={shotSequence} disabled={isPlaying} onActivate={selectShot} onCommitAction={runEditorShotAction} onSplitActive={splitActiveShot} onRequestDialog={openShotDialog}/>
 
         <section id="pc-active-shot-panel" className="pc-timeline" role="tabpanel" aria-labelledby={`pc-shot-tab-${shot.id}`} aria-label="Animation timeline" data-shot-id={shot.id}><div className="pc-timeline-head"><div className="pc-transport" aria-label="Sequence transport"><button type="button" onClick={() => jumpSequenceTime(0)} aria-label="Jump to sequence start">↤</button><button type="button" className="pc-play-button" onClick={togglePlayback} aria-label={isPlaying ? 'Pause sequence' : 'Play sequence'} aria-pressed={isPlaying}>{isPlaying ? '❚❚' : '▶'}</button><button type="button" onClick={() => jumpSequenceTime(shotSequence.totalDuration)} aria-label="Jump to sequence end">↦</button></div><h2>Timeline</h2><label>Animation<select aria-label="Animation type" value={animationType} disabled={isPlaying} onChange={(event) => setAnimationType(event.target.value as AnimationType)}>{ANIMATION_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label><button type="button" onClick={addAnimation} disabled={isPlaying}>Add animation</button><IsolatedSequenceScrubber clock={playbackClockRef.current} isPlaying={isPlaying} pausedGlobalTime={pausedGlobalTime} duration={shotSequence.totalDuration} onSeek={jumpSequenceTime}/><button type="button" onClick={() => setTimelineCollapsed((value) => !value)} aria-expanded={!timelineCollapsed} aria-label={timelineCollapsed ? 'Expand shot timeline' : 'Collapse shot timeline'}>{timelineCollapsed ? 'Expand' : 'Collapse'}</button></div>
+        {!timelineCollapsed && <ShotTimeline project={project} shot={shot} projectRevision={projectRevision} playhead={playhead} selection={selection} disabled={isPlaying} onSeek={jumpLocalPlayhead} onSelect={setEditorSelection} onCommit={commitRenderedTimelineIntent} onNotice={setStatus}/>}
         <div ref={trackRef} className="pc-timeline-track" data-testid="timeline-track" onPointerMove={moveTimelineGesture} onPointerUp={endTimelineGesture} onPointerCancel={cancelTimelineGesture} onPointerDown={(event) => { if (event.target === event.currentTarget && trackRef.current) { const rect = trackRef.current.getBoundingClientRect(); jumpLocalPlayhead(Math.max(0, Math.min(shot.duration, (event.clientX - rect.left) / rect.width * shot.duration))) } }}>
           <IsolatedTimelinePlayhead clock={playbackClockRef.current} isPlaying={isPlaying} pausedPlayhead={playhead} duration={shot.duration} shotId={shot.id}/>{shot.animations.map((animation) => { const timing = timelineDraft?.id === animation.id ? timelineDraft : animation; const lane = animationLanes.get(animation.id) ?? 0; const targets = animation.targetIds.map((id) => shot.objects.find((object) => object.id === id)?.name ?? id).join(', '); const locked = animationTargetsLocked(shot, animation); const lockedNotice = () => { setSelectedAnimationId(animation.id); setStatus('This animation targets a locked object family; unlock it before editing the block.') }; return <button type="button" key={animation.id} className={`pc-animation-block ${selectedAnimationId === animation.id ? 'selected' : ''} ${locked ? 'locked' : ''}`} style={{ left: `${timing.start / shot.duration * 100}%`, width: `${Math.max(1.5, timing.duration / shot.duration * 100)}%`, top: `${8 + lane * 31}px` }} data-animation-id={animation.id} data-animation-type={animation.type} data-target-ids={animation.targetIds.join(' ')} data-timeline-lane={lane} data-start={timing.start} data-duration={timing.duration} data-locked={locked ? 'true' : 'false'} aria-disabled={locked} aria-label={`${animation.type} animation targeting ${targets}; ${locked ? 'locked' : 'drag the right edge to resize'}`} onKeyDown={(event) => { if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); event.stopPropagation(); deleteTimelineAnimation(animation) } }} onClick={() => setSelectedAnimationId(animation.id)} onPointerDown={(event) => { if (isPlaying) { event.stopPropagation(); setStatus('Pause preview before editing timeline blocks.'); return } if (locked) { event.stopPropagation(); lockedNotice(); return } beginTimelineGesture(event, animation, 'move') }}><span>{animation.type}</span><i aria-hidden="true" onPointerDown={(event) => { if (locked) { event.stopPropagation(); lockedNotice(); return } beginTimelineGesture(event, animation, 'resize') }}/></button> })}
         </div>
@@ -2218,18 +2419,18 @@ export default function ProofCanvasEditor({
         <form noValidate onSubmit={(event) => { event.preventDefault(); commitShotDialog() }}>
           <header><div><span>Storyboard</span><h2 id="pc-shot-dialog-title">{shotDialog.kind === 'rename' ? 'Rename shot' : shotDialog.kind === 'duration' ? 'Set shot duration' : 'Delete shot'}</h2></div><button type="button" onClick={() => setShotDialog(null)} aria-label="Close shot dialog">×</button></header>
           <div className="pc-shot-dialog-body">
-            {shotDialog.kind === 'rename' && <><p id="pc-shot-dialog-description">Choose a concise storyboard name. This edit is one undoable history step.</p><label>Name<input ref={shotDialogInputRef} name="shot-name" defaultValue={shotDialogTarget.name} maxLength={120} aria-label="Shot name"/></label></>}
-            {shotDialog.kind === 'duration' && <><p id="pc-shot-dialog-description">Duration must keep every authored lifetime, animation, keyframe, clip, caption, and marker in range.</p><label>Duration in seconds<input ref={shotDialogInputRef} name="shot-duration" type="number" min={minimumAuthoredShotDuration(project, shotDialogTarget)} max="300" step="any" defaultValue={shotDialogTarget.duration} aria-label="Shot duration"/></label></>}
+            {shotDialog.kind === 'rename' && <><p id="pc-shot-dialog-description">Choose a concise storyboard name. This edit is one undoable history step.</p><label>Name<input ref={shotDialogInputRef} name="shot-name" defaultValue={shotDialogTarget.name} maxLength={120} aria-label="Shot name" disabled={isPlaying}/></label></>}
+            {shotDialog.kind === 'duration' && <><p id="pc-shot-dialog-description">Duration must keep every authored lifetime, animation, keyframe, clip, caption, and marker in range.</p><label>Duration in seconds<input ref={shotDialogInputRef} name="shot-duration" type="number" min={minimumAuthoredShotDuration(project, shotDialogTarget)} max="300" step="any" defaultValue={shotDialogTarget.duration} aria-label="Shot duration" disabled={isPlaying}/></label></>}
             {shotDialog.kind === 'delete' && <p id="pc-shot-dialog-description">{shotDeleteDescription(project, shotDialogTarget)}</p>}
           </div>
-          <footer><button type="button" data-autofocus={shotDialog.kind === 'delete' ? '' : undefined} onClick={() => setShotDialog(null)}>Cancel</button><button type="submit" className={shotDialog.kind === 'delete' ? 'pc-danger-action' : 'pc-primary'}>{shotDialog.kind === 'rename' ? 'Rename shot' : shotDialog.kind === 'duration' ? 'Set duration' : 'Delete shot'}</button></footer>
+          <footer><button type="button" data-autofocus={shotDialog.kind === 'delete' ? '' : undefined} onClick={() => setShotDialog(null)}>Cancel</button><button type="submit" className={shotDialog.kind === 'delete' ? 'pc-danger-action' : 'pc-primary'} disabled={isPlaying}>{shotDialog.kind === 'rename' ? 'Rename shot' : shotDialog.kind === 'duration' ? 'Set duration' : 'Delete shot'}</button></footer>
         </form>
       </div>}
 
       {commandPaletteOpen && <div ref={commandPaletteRef} className="pc-command-palette" role="dialog" aria-modal="true" aria-label="Command palette"><header><div><span>Command palette</span><h2>What would you like to do?</h2></div><button type="button" onClick={() => setCommandPaletteOpen(false)} aria-label="Close command palette">×</button></header><label><span className="pc-visually-hidden">Search commands</span><input ref={commandSearchRef} type="search" aria-label="Search commands" aria-controls="pc-editor-command-list" aria-activedescendant={activeCommandOptionId ?? undefined} placeholder="Search actions" value={commandSearch} onKeyDown={navigateCommandListbox} onChange={(event) => setCommandSearch(event.target.value)}/></label><div id="pc-editor-command-list" className="pc-command-list" role="listbox" aria-label="Editor commands" onKeyDown={navigateCommandListbox}>{aiCommandVisible && <button id="pc-command-option-ai" type="button" role="option" aria-selected={activeCommandOptionId === 'pc-command-option-ai'} onFocus={() => setActiveCommandOptionId('pc-command-option-ai')} onClick={() => { assistantTriggerRef.current = commandButtonRef.current; setCommandPaletteOpen(false); setAssistantOpen(true) }}><span>AI structured edit…</span><kbd>Review first</kbd></button>}{paletteCommands.map(({ command, id, disabled }) => <button id={id} type="button" role="option" aria-selected={activeCommandOptionId === id} key={command.id} disabled={disabled} onFocus={() => { if (!disabled) setActiveCommandOptionId(id) }} onClick={() => { if (commandController.execute(command.id, { source: 'palette', shiftKey: false })) setCommandPaletteOpen(false) }}><span>{command.label}</span><kbd>{command.shortcut.replace('Mod', 'Ctrl/Cmd')}</kbd></button>)}{paletteCommands.length === 0 && !aiCommandVisible && <p role="status">No commands match “{commandSearch}”.</p>}</div></div>}
 
       {utilityDialog && <div ref={utilityDialogRef} className="pc-utility-dialog" role="dialog" aria-modal="true" aria-label={utilityDialog === 'settings' ? 'Project settings' : utilityDialog === 'shortcuts' ? 'Keyboard shortcuts' : 'Render and export'}><header><div><span>{utilityDialog === 'render-export' ? 'Output' : 'Workspace'}</span><h2>{utilityDialog === 'settings' ? 'Project settings' : utilityDialog === 'shortcuts' ? 'Keyboard shortcuts' : 'Render and export'}</h2></div><button type="button" onClick={() => setUtilityDialog(null)} aria-label={`Close ${utilityDialog === 'settings' ? 'project settings' : utilityDialog === 'shortcuts' ? 'keyboard shortcuts' : 'render and export'}`}>×</button></header>
-        {utilityDialog === 'settings' && <div className="pc-settings-dialog"><p>Output settings are authored project data. Aspect changes recenter only untouched default cameras and preserve authored geometry.</p><div className="pc-settings-grid"><label>Aspect ratio<select aria-label="Aspect ratio" value={project.settings.aspectRatio} onChange={(event) => updateProjectSettings({ aspectRatio: event.target.value as ProjectDocument['settings']['aspectRatio'] })}><option value="16:9">16:9 · landscape</option><option value="9:16">9:16 · portrait</option><option value="1:1">1:1 · square</option></select></label><label>Frame rate<select aria-label="Frame rate" value={project.settings.frameRate} onChange={(event) => updateProjectSettings({ frameRate: Number(event.target.value) as ProjectDocument['settings']['frameRate'] })}>{[15, 24, 30, 60].map((rate) => <option key={rate} value={rate}>{rate} fps</option>)}</select></label><label>Render preset<select aria-label="Render preset" value={project.settings.renderPreset} onChange={(event) => updateProjectSettings({ renderPreset: event.target.value as ProjectDocument['settings']['renderPreset'] })}><option value="draft">Draft</option><option value="720p">720p</option><option value="1080p">1080p</option></select></label><label>Preview quality<select aria-label="Settings preview quality" value={project.settings.previewQuality} onChange={(event) => updateProjectSettings({ previewQuality: event.target.value as ProjectDocument['settings']['previewQuality'] })}><option value="draft">Draft</option><option value="standard">Standard</option><option value="high">High</option></select></label></div><dl><div><dt>Logical frame</dt><dd>{logicalFrame.width} × {logicalFrame.height}</dd></div><div><dt>Output</dt><dd>{resolutionFor(project.settings.aspectRatio, project.settings.renderPreset).width} × {resolutionFor(project.settings.aspectRatio, project.settings.renderPreset).height}</dd></div></dl></div>}
+        {utilityDialog === 'settings' && <div className="pc-settings-dialog"><p>Output settings are authored project data. Aspect changes recenter only untouched default cameras and preserve authored geometry.</p><fieldset className="pc-settings-grid" disabled={isPlaying}><label>Aspect ratio<select aria-label="Aspect ratio" value={project.settings.aspectRatio} onChange={(event) => updateProjectSettings({ aspectRatio: event.target.value as ProjectDocument['settings']['aspectRatio'] })}><option value="16:9">16:9 · landscape</option><option value="9:16">9:16 · portrait</option><option value="1:1">1:1 · square</option></select></label><label>Frame rate<select aria-label="Frame rate" value={project.settings.frameRate} onChange={(event) => updateProjectSettings({ frameRate: Number(event.target.value) as ProjectDocument['settings']['frameRate'] })}>{[15, 24, 30, 60].map((rate) => <option key={rate} value={rate}>{rate} fps</option>)}</select></label><label>Render preset<select aria-label="Render preset" value={project.settings.renderPreset} onChange={(event) => updateProjectSettings({ renderPreset: event.target.value as ProjectDocument['settings']['renderPreset'] })}><option value="draft">Draft</option><option value="720p">720p</option><option value="1080p">1080p</option></select></label><label>Preview quality<select aria-label="Settings preview quality" value={project.settings.previewQuality} onChange={(event) => updateProjectSettings({ previewQuality: event.target.value as ProjectDocument['settings']['previewQuality'] })}><option value="draft">Draft</option><option value="standard">Standard</option><option value="high">High</option></select></label></fieldset><dl><div><dt>Logical frame</dt><dd>{logicalFrame.width} × {logicalFrame.height}</dd></div><div><dt>Output</dt><dd>{resolutionFor(project.settings.aspectRatio, project.settings.renderPreset).width} × {resolutionFor(project.settings.aspectRatio, project.settings.renderPreset).height}</dd></div></dl></div>}
         {utilityDialog === 'shortcuts' && <div className="pc-shortcut-dialog"><p>Ctrl on Windows/Linux and Command on macOS are shown together as Ctrl/Cmd. Native text editing wins inside fields except global Save, Commands, Render/Export, and Escape.</p>{(['Playback', 'Edit', 'Project', 'View'] as const).map((group) => <section key={group}><h3>{group}</h3><dl>{EDITOR_COMMANDS.filter((command) => command.group === group).map((command) => <div key={command.id}><dt>{command.label}</dt><dd><kbd>{command.shortcut.replace('Mod', 'Ctrl/Cmd')}</kbd></dd></div>)}</dl></section>)}</div>}
         {utilityDialog === 'render-export' && <div className="pc-output-dialog"><p>MP4 output is generated by the pinned Manim renderer. Technical exports are deterministic snapshots of the current project; unsupported assets or timeline features remain explicit compiler diagnostics.</p><label>Render quality<select aria-label="Render quality" value={renderQuality} onChange={(event) => setRenderQuality(event.target.value as ClientRenderJob['quality'])}><option value="preview">Preview · faster</option><option value="production">Production · final quality</option></select></label><div className="pc-output-summary"><span>{project.settings.aspectRatio}</span><span>{project.settings.resolution.width}×{project.settings.resolution.height}</span><span>{project.settings.frameRate} fps</span><span>{project.shots.length} shots</span></div><div className="pc-output-actions"><button type="button" onClick={exportJson} aria-label="Export project JSON">Project JSON<span>Portable structured source</span></button><button type="button" onClick={exportPython} aria-label="Export Manim Python">Manim Python<span>Inspect compiler output</span></button><button type="button" className="pc-primary" onClick={() => void startRender(renderQuality)} disabled={renderPending || renderJob?.status === 'pending' || renderJob?.status === 'running'} aria-label="Render MP4">{renderPending ? 'Submitting…' : renderJob?.status === 'pending' || renderJob?.status === 'running' ? 'Rendering…' : `Render ${renderQuality} MP4`}<span>Genuine pinned Manim job</span></button></div></div>}
       </div>}

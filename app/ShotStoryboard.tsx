@@ -18,6 +18,7 @@ export interface ShotStoryboardProps {
   activeShotId: string
   previewStyle: StylePack
   sequence: EditorShotSequence
+  disabled?: boolean
   onActivate(shotId: string): boolean
   onCommitAction(action: EditorShotAction): StoryboardActionResult
   onSplitActive(): StoryboardActionResult
@@ -105,7 +106,7 @@ const StoryboardCard = memo(function StoryboardCard({
   && previous.shot.name === next.shot.name
   && previous.shot.duration === next.shot.duration)
 
-export default memo(function ShotStoryboard({ project, activeShotId, previewStyle, sequence, onActivate, onCommitAction, onSplitActive, onRequestDialog }: ShotStoryboardProps) {
+export default memo(function ShotStoryboard({ project, activeShotId, previewStyle, sequence, disabled = false, onActivate, onCommitAction, onSplitActive, onRequestDialog }: ShotStoryboardProps) {
   const cardRefs = useRef(new Map<string, HTMLButtonElement>())
   const actionBarRef = useRef<HTMLDivElement | null>(null)
   const activeIndex = project.shots.findIndex(({ id }) => id === activeShotId)
@@ -127,6 +128,7 @@ export default memo(function ShotStoryboard({ project, activeShotId, previewStyl
     if (onActivate(shotId)) focusCard(shotId)
   }
   const commitAndFocus = (action: EditorShotAction) => {
+    if (disabled) return
     const result = onCommitAction(action)
     if (result.ok) focusCard(result.activeShotId)
   }
@@ -134,7 +136,7 @@ export default memo(function ShotStoryboard({ project, activeShotId, previewStyl
     if (event.key === 'F2') {
       event.preventDefault()
       event.stopPropagation()
-      onRequestDialog('rename', project.shots[index].id, event.currentTarget)
+      if (!disabled) onRequestDialog('rename', project.shots[index].id, event.currentTarget)
       return
     }
     if (event.shiftKey && event.key === 'F10') {
@@ -157,8 +159,9 @@ export default memo(function ShotStoryboard({ project, activeShotId, previewStyl
     <div className="pc-storyboard-heading">
       <div><span>Sequence</span><h2 id="pc-storyboard-heading">Storyboard</h2></div>
       <p>{project.shots.length}/{PROOFCANVAS_SCHEMA_LIMITS.shots} shots · {compactTime(sequence.totalDuration)} total</p>
-      <button type="button" onClick={() => commitAndFocus({ type: 'add-shot' })} disabled={atShotLimit} aria-describedby={atShotLimit ? 'pc-shot-limit-reason' : undefined}>Add shot</button>
+      <button type="button" onClick={() => commitAndFocus({ type: 'add-shot' })} disabled={disabled || atShotLimit} aria-describedby={disabled ? 'pc-storyboard-playback-reason' : atShotLimit ? 'pc-shot-limit-reason' : undefined}>Add shot</button>
       {atShotLimit && <span id="pc-shot-limit-reason" className="pc-visually-hidden">A project can contain at most {PROOFCANVAS_SCHEMA_LIMITS.shots} shots.</span>}
+      {disabled && <span id="pc-storyboard-playback-reason" className="pc-visually-hidden">Pause sequence playback before changing the storyboard.</span>}
     </div>
     <div className="pc-storyboard-list" role="tablist" aria-label="Shots" aria-orientation="horizontal">
       {project.shots.map((candidate, index) => {
@@ -181,15 +184,15 @@ export default memo(function ShotStoryboard({ project, activeShotId, previewStyl
       })}
     </div>
     <div ref={actionBarRef} className="pc-storyboard-actions" role="toolbar" aria-label={`Actions for ${activeShot.name}`}>
-      <button type="button" onClick={() => commitAndFocus({ type: 'duplicate-shot', shotId: activeShot.id })} disabled={atShotLimit} aria-describedby={atShotLimit ? 'pc-shot-limit-reason' : undefined}>Duplicate</button>
-      <button type="button" onClick={(event) => onRequestDialog('rename', activeShot.id, event.currentTarget)}>Rename</button>
-      <button type="button" onClick={() => commitAndFocus({ type: 'reorder-shot', shotId: activeShot.id, index: activeIndex - 1 })} disabled={!previousShot} aria-describedby={!previousShot ? 'pc-shot-first-reason' : undefined}>Earlier</button>
-      <button type="button" onClick={() => commitAndFocus({ type: 'reorder-shot', shotId: activeShot.id, index: activeIndex + 1 })} disabled={!nextShot} aria-describedby={!nextShot ? 'pc-shot-last-reason' : undefined}>Later</button>
-      <button type="button" onClick={() => { const result = onSplitActive(); if (result.ok) focusCard(result.activeShotId) }} disabled={atShotLimit} aria-describedby={atShotLimit ? 'pc-shot-limit-reason' : undefined}>Split at playhead</button>
-      <button type="button" onClick={() => previousShot && commitAndFocus({ type: 'merge-shots', leftShotId: previousShot.id, rightShotId: activeShot.id })} disabled={!previousShot} aria-describedby={!previousShot ? 'pc-shot-no-previous-reason' : undefined}>Merge previous</button>
-      <button type="button" onClick={() => nextShot && commitAndFocus({ type: 'merge-shots', leftShotId: activeShot.id, rightShotId: nextShot.id })} disabled={!nextShot} aria-describedby={!nextShot ? 'pc-shot-no-next-reason' : undefined}>Merge next</button>
-      <button type="button" onClick={(event) => onRequestDialog('duration', activeShot.id, event.currentTarget)}>Duration</button>
-      <button type="button" className="pc-danger-action" onClick={(event) => onRequestDialog('delete', activeShot.id, event.currentTarget)} disabled={oneShot} aria-describedby={oneShot ? 'pc-shot-one-reason' : undefined}>Delete</button>
+      <button type="button" onClick={() => commitAndFocus({ type: 'duplicate-shot', shotId: activeShot.id })} disabled={disabled || atShotLimit} aria-describedby={disabled ? 'pc-storyboard-playback-reason' : atShotLimit ? 'pc-shot-limit-reason' : undefined}>Duplicate</button>
+      <button type="button" onClick={(event) => { if (!disabled) onRequestDialog('rename', activeShot.id, event.currentTarget) }} disabled={disabled} aria-describedby={disabled ? 'pc-storyboard-playback-reason' : undefined}>Rename</button>
+      <button type="button" onClick={() => commitAndFocus({ type: 'reorder-shot', shotId: activeShot.id, index: activeIndex - 1 })} disabled={disabled || !previousShot} aria-describedby={disabled ? 'pc-storyboard-playback-reason' : !previousShot ? 'pc-shot-first-reason' : undefined}>Earlier</button>
+      <button type="button" onClick={() => commitAndFocus({ type: 'reorder-shot', shotId: activeShot.id, index: activeIndex + 1 })} disabled={disabled || !nextShot} aria-describedby={disabled ? 'pc-storyboard-playback-reason' : !nextShot ? 'pc-shot-last-reason' : undefined}>Later</button>
+      <button type="button" onClick={() => { if (disabled) return; const result = onSplitActive(); if (result.ok) focusCard(result.activeShotId) }} disabled={disabled || atShotLimit} aria-describedby={disabled ? 'pc-storyboard-playback-reason' : atShotLimit ? 'pc-shot-limit-reason' : undefined}>Split at playhead</button>
+      <button type="button" onClick={() => previousShot && commitAndFocus({ type: 'merge-shots', leftShotId: previousShot.id, rightShotId: activeShot.id })} disabled={disabled || !previousShot} aria-describedby={disabled ? 'pc-storyboard-playback-reason' : !previousShot ? 'pc-shot-no-previous-reason' : undefined}>Merge previous</button>
+      <button type="button" onClick={() => nextShot && commitAndFocus({ type: 'merge-shots', leftShotId: activeShot.id, rightShotId: nextShot.id })} disabled={disabled || !nextShot} aria-describedby={disabled ? 'pc-storyboard-playback-reason' : !nextShot ? 'pc-shot-no-next-reason' : undefined}>Merge next</button>
+      <button type="button" onClick={(event) => { if (!disabled) onRequestDialog('duration', activeShot.id, event.currentTarget) }} disabled={disabled} aria-describedby={disabled ? 'pc-storyboard-playback-reason' : undefined}>Duration</button>
+      <button type="button" className="pc-danger-action" onClick={(event) => { if (!disabled) onRequestDialog('delete', activeShot.id, event.currentTarget) }} disabled={disabled || oneShot} aria-describedby={disabled ? 'pc-storyboard-playback-reason' : oneShot ? 'pc-shot-one-reason' : undefined}>Delete</button>
       {!previousShot && <><span id="pc-shot-first-reason" className="pc-visually-hidden">This shot is already first.</span><span id="pc-shot-no-previous-reason" className="pc-visually-hidden">There is no previous shot to merge.</span></>}
       {!nextShot && <><span id="pc-shot-last-reason" className="pc-visually-hidden">This shot is already last.</span><span id="pc-shot-no-next-reason" className="pc-visually-hidden">There is no next shot to merge.</span></>}
       {oneShot && <span id="pc-shot-one-reason" className="pc-visually-hidden">A project must keep at least one shot.</span>}

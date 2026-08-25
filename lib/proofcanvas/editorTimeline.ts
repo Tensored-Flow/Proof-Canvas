@@ -1,4 +1,4 @@
-import { keyframeSelection, type EditorKeyframeRef, type EditorSelection } from "./editorSelection";
+import { keyframeSelection, objectSelection, type EditorKeyframeRef, type EditorSelection } from "./editorSelection";
 import {
   PROOFCANVAS_TIMELINE_TICKS_PER_SECOND,
   compareTimelineTimes,
@@ -9,19 +9,23 @@ import {
   timelineTimeForTick,
 } from "./frame";
 import { allocateId, collectProjectIds } from "./ids";
-import { applyOperations } from "./operations";
 import {
-  SceneOperationSchema,
+  ManualSceneOperationSchema,
+  applyOperations,
+  effectiveLockOwner,
+  type ManualSceneOperation,
+} from "./operations";
+import {
   cloneSerializable,
   type KeyframeInterpolation,
+  type ObjectLifetime,
   type ProjectDocument,
   type PropertyKeyframe,
   type PropertyTrack,
   type PropertyTrackTarget,
-  type SceneOperation,
   type Shot,
 } from "./schema";
-import { effectiveObjectLifetime, propertyTrackKey } from "./timeline";
+import { effectiveObjectLifetime, orderedPropertyTracks, propertyTrackKey } from "./timeline";
 
 export interface TimelineViewport {
   start: number;
@@ -233,6 +237,9 @@ export interface TimelineDiagnosticIntent {
     | "missing-shot"
     | "missing-track"
     | "missing-keyframe"
+    | "missing-object"
+    | "locked"
+    | "dependent-out-of-range"
     | "duplicate-selection"
     | "collision"
     | "out-of-range"
@@ -241,17 +248,35 @@ export interface TimelineDiagnosticIntent {
   message: string;
   trackId?: string;
   keyframeId?: string;
+  objectId?: string;
   conflictingKeyframeId?: string;
 }
 
 export type TimelineOperationIntent =
   | Readonly<{
     ok: true;
-    operations: readonly SceneOperation[];
+    operations: readonly ManualSceneOperation[];
     selection: EditorSelection;
     label: string;
   }>
   | Readonly<{ ok: false; diagnostic: TimelineDiagnosticIntent }>;
+
+export interface TimelineIntentAuthorityBase {
+  projectRevision: string;
+  shotId: string;
+}
+
+/**
+ * Timeline resolvers preflight against an immutable render snapshot. The UI
+ * must reject their operations if either the project or active shot has moved
+ * on before the intent reaches the latest editor authority.
+ */
+export function timelineIntentAuthorityIsCurrent(
+  expected: TimelineIntentAuthorityBase,
+  latest: TimelineIntentAuthorityBase,
+): boolean {
+  return expected.projectRevision === latest.projectRevision && expected.shotId === latest.shotId;
+}
 
 function failure(diagnostic: TimelineDiagnosticIntent): TimelineOperationIntent {
   return { ok: false, diagnostic };
@@ -291,9 +316,9 @@ function futureKeyframeSelection(
   };
 }
 
-function validateOperations(operations: readonly SceneOperation[]): TimelineDiagnosticIntent | undefined {
+function validateOperations(operations: readonly ManualSceneOperation[]): TimelineDiagnosticIntent | undefined {
   for (const operation of operations) {
-    const parsed = SceneOperationSchema.safeParse(operation);
+    const parsed = ManualSceneOperationSchema.safeParse(operation);
     if (!parsed.success) return { code: "invalid-operation", message: parsed.error.issues[0]?.message ?? "Timeline operation is invalid" };
   }
   return undefined;
@@ -302,7 +327,7 @@ function validateOperations(operations: readonly SceneOperation[]): TimelineDiag
 function preflightOperations(
   project: ProjectDocument,
   shotId: string,
-  operations: readonly SceneOperation[],
+  operations: readonly ManualSceneOperation[],
 ): TimelineDiagnosticIntent | undefined {
   const invalid = validateOperations(operations);
   if (invalid) return invalid;
@@ -323,6 +348,206 @@ function targetRange(shot: Shot, track: PropertyTrack): { start: number; end: nu
     return { start: clip.start, end: timelineTimeForTick(timelineTickFor(clip.start) + timelineTickFor(clip.duration)) };
   }
   return { start: 0, end: shot.duration };
+}
+
+/** The effective range contributed by a shot and an object's ancestors, excluding the object itself. */
+export function inheritedObjectLifetime(shot: Shot, objectId: string): ObjectLifetime | undefined {
+  const object = shot.objects.find(({ id }) => id === objectId);
+  if (!object) return undefined;
+  const byId = new Map(shot.objects.map((candidate) => [candidate.id, candidate]));
+  let cursor = object.parentId ? byId.get(object.parentId) : undefined;
+  let start = 0;
+  let end = shot.duration;
+  const visited = new Set<string>();
+  while (cursor) {
+    if (visited.has(cursor.id)) return undefined;
+    visited.add(cursor.id);
+    if (cursor.lifetime) {
+      start = Math.max(start, cursor.lifetime.start);
+      end = Math.min(end, cursor.lifetime.end);
+    }
+    cursor = cursor.parentId ? byId.get(cursor.parentId) : undefined;
+  }
+  return {
+    start: timelineTimeForTick(timelineTickFor(start)),
+    end: timelineTimeForTick(timelineTickFor(end)),
+  };
+}
+
+export type ObjectLifetimeEdit =
+  | Readonly<{ objectId: string; mode: "entire" }>
+  | Readonly<{ objectId: string; mode: "set"; start: number; end: number }>
+  | Readonly<{ objectId: string; mode: "move"; deltaTicks: number }>
+  | Readonly<{ objectId: string; mode: "trim-start" | "trim-end"; time: number }>;
+
+export type EditorTimelineRow =
+  | Readonly<{ kind: "camera"; id: "timeline-camera" }>
+  | Readonly<{ kind: "camera-property"; id: string; track: PropertyTrack }>
+  | Readonly<{
+    kind: "object-lifetime";
+    id: string;
+    objectId: string;
+    depth: number;
+    authored?: ObjectLifetime;
+    inherited: ObjectLifetime;
+    effective: ObjectLifetime;
+    locked: boolean;
+  }>
+  | Readonly<{ kind: "object-property"; id: string; objectId: string; depth: number; track: PropertyTrack }>;
+
+/**
+ * Project one deterministic editor row order: camera first, then object
+ * hierarchy preorder with each lifetime immediately followed by its property
+ * tracks. This is derived display state, never a second timeline authority.
+ */
+export function projectEditorTimelineRows(shot: Shot): EditorTimelineRow[] {
+  const orderedTracks = orderedPropertyTracks(shot).filter(({ target }) => target.kind !== "audio");
+  const rows: EditorTimelineRow[] = [{ kind: "camera", id: "timeline-camera" }];
+  for (const track of orderedTracks.filter(({ target }) => target.kind === "camera")) {
+    rows.push({ kind: "camera-property", id: `timeline-track-${track.id}`, track });
+  }
+  const children = new Map<string | null, typeof shot.objects>();
+  for (const object of shot.objects) {
+    const key = object.parentId ?? null;
+    const siblings = children.get(key) ?? [];
+    siblings.push(object);
+    children.set(key, siblings);
+  }
+  const visited = new Set<string>();
+  const appendObject = (objectId: string, depth: number) => {
+    if (visited.has(objectId)) return;
+    visited.add(objectId);
+    const object = shot.objects.find(({ id }) => id === objectId);
+    if (!object) return;
+    const inherited = inheritedObjectLifetime(shot, object.id) ?? { start: 0, end: shot.duration };
+    const effective = effectiveObjectLifetime(shot, object.id) ?? inherited;
+    rows.push({
+      kind: "object-lifetime",
+      id: `timeline-lifetime-${object.id}`,
+      objectId: object.id,
+      depth,
+      ...(object.lifetime ? { authored: cloneSerializable(object.lifetime) } : {}),
+      inherited,
+      effective,
+      locked: Boolean(effectiveLockOwner(shot, object)),
+    });
+    for (const track of orderedTracks.filter((candidate) => candidate.target.kind === "object" && candidate.target.objectId === object.id)) {
+      rows.push({ kind: "object-property", id: `timeline-track-${track.id}`, objectId: object.id, depth, track });
+    }
+    for (const child of children.get(object.id) ?? []) appendObject(child.id, depth + 1);
+  };
+  for (const root of children.get(null) ?? []) appendObject(root.id, 0);
+  // Valid documents cannot contain orphaned/cyclic hierarchy, but retain a
+  // stable fail-closed projection for recovery tooling and partial fixtures.
+  for (const object of shot.objects) if (!visited.has(object.id)) appendObject(object.id, 0);
+  return rows;
+}
+
+function canonicalLifetime(
+  shot: Shot,
+  objectId: string,
+  input: Exclude<ObjectLifetimeEdit, { mode: "entire" }>,
+): ObjectLifetime | TimelineDiagnosticIntent {
+  const inherited = inheritedObjectLifetime(shot, objectId);
+  if (!inherited) return { code: "missing-object", message: `Object not found: ${objectId}`, objectId };
+  const object = shot.objects.find(({ id }) => id === objectId)!;
+  const current = object.lifetime ?? effectiveObjectLifetime(shot, objectId) ?? inherited;
+  let start: number;
+  let end: number;
+  try {
+    if (input.mode === "set") {
+      start = timelineTimeForTick(timelineTickFor(input.start));
+      end = timelineTimeForTick(timelineTickFor(input.end));
+    } else if (input.mode === "move") {
+      if (!Number.isSafeInteger(input.deltaTicks)) {
+        return { code: "out-of-range", message: "Lifetime move delta must use safe canonical ticks", objectId };
+      }
+      start = timelineTimeForTick(timelineTickFor(current.start) + input.deltaTicks);
+      end = timelineTimeForTick(timelineTickFor(current.end) + input.deltaTicks);
+    } else {
+      const time = timelineTimeForTick(timelineTickFor(input.time));
+      start = input.mode === "trim-start" ? time : current.start;
+      end = input.mode === "trim-end" ? time : current.end;
+    }
+  } catch (error) {
+    return { code: "out-of-range", message: error instanceof Error ? error.message : "Object lifetime is outside the authored timeline", objectId };
+  }
+  if (timelineTickFor(end) - timelineTickFor(start) < 1) {
+    return { code: "out-of-range", message: "Object lifetime must span at least one canonical timeline tick", objectId };
+  }
+  if (compareTimelineTimes(start, inherited.start) < 0 || compareTimelineTimes(end, inherited.end) > 0) {
+    return {
+      code: "out-of-range",
+      message: `Object lifetime must stay inside inherited bounds ${inherited.start}s–${inherited.end}s`,
+      objectId,
+    };
+  }
+  return { start, end };
+}
+
+function lifetimePreflightDiagnostic(
+  project: ProjectDocument,
+  shotId: string,
+  operation: ManualSceneOperation,
+  objectId: string,
+): TimelineDiagnosticIntent | undefined {
+  const invalid = preflightOperations(project, shotId, [operation]);
+  if (!invalid) return undefined;
+  if (/locked/i.test(invalid.message)) return { ...invalid, code: "locked", objectId };
+  if (/lifetime|animation|keyframe|track|contained|boundary/i.test(invalid.message)) {
+    return { ...invalid, code: "dependent-out-of-range", objectId };
+  }
+  return { ...invalid, objectId };
+}
+
+/**
+ * Resolve one atomic object-lifetime authoring intent. Move/trim inputs are
+ * relative to the current effective range; persisted endpoints always use the
+ * canonical tick grid. The operations boundary preflights descendants,
+ * semantic animations, and property keys as one transaction before anything
+ * is published.
+ */
+export function resolveSetObjectLifetime(
+  project: ProjectDocument,
+  shotId: string,
+  input: ObjectLifetimeEdit,
+): TimelineOperationIntent {
+  const shot = shotFor(project, shotId);
+  if (!shot) return failure({ code: "missing-shot", message: `Shot not found: ${shotId}` });
+  const object = shot.objects.find(({ id }) => id === input.objectId);
+  if (!object) return failure({ code: "missing-object", message: `Object not found: ${input.objectId}`, objectId: input.objectId });
+  const lockOwner = effectiveLockOwner(shot, object);
+  if (lockOwner) return failure({ code: "locked", message: `Object lifetime is locked by ${lockOwner.name}`, objectId: object.id });
+
+  if (input.mode === "entire") {
+    if (!object.lifetime) return failure({ code: "nothing-to-change", message: `${object.name} already uses its entire inherited lifetime`, objectId: object.id });
+    const operation: ManualSceneOperation = { type: "clear-object-lifetime", objectId: object.id };
+    const invalid = lifetimePreflightDiagnostic(project, shotId, operation, object.id);
+    return invalid ? failure(invalid) : {
+      ok: true,
+      operations: [operation],
+      selection: objectSelection(shot, [object.id]),
+      label: `Use entire lifetime for ${object.name}`,
+    };
+  }
+
+  const lifetime = canonicalLifetime(shot, object.id, input);
+  if ("code" in lifetime) return failure(lifetime);
+  if (object.lifetime
+    && compareTimelineTimes(object.lifetime.start, lifetime.start) === 0
+    && compareTimelineTimes(object.lifetime.end, lifetime.end) === 0) {
+    return failure({ code: "nothing-to-change", message: `${object.name} already has the requested lifetime`, objectId: object.id });
+  }
+  const operation: ManualSceneOperation = { type: "set-object-lifetime", objectId: object.id, lifetime };
+  const invalid = lifetimePreflightDiagnostic(project, shotId, operation, object.id);
+  if (invalid) return failure(invalid);
+  const action = input.mode === "move" ? "Move" : input.mode.startsWith("trim") ? "Trim" : "Set";
+  return {
+    ok: true,
+    operations: [operation],
+    selection: objectSelection(shot, [object.id]),
+    label: `${action} ${object.name} lifetime`,
+  };
 }
 
 function sortedUniqueRefs(refs: readonly EditorKeyframeRef[]): EditorKeyframeRef[] {
@@ -369,7 +594,7 @@ export function resolveUpsertKeyframe(
       if (existing.value === input.value && JSON.stringify(existing.interpolation) === JSON.stringify(interpolation)) {
         return failure({ code: "nothing-to-change", message: `Keyframe ${existing.id} already has the requested value`, trackId: track.id, keyframeId: existing.id });
       }
-      const operations: SceneOperation[] = [{ type: "update-keyframe", trackId: track.id, keyframeId: existing.id, patch: { value: input.value, interpolation } }];
+      const operations: ManualSceneOperation[] = [{ type: "update-keyframe", trackId: track.id, keyframeId: existing.id, patch: { value: input.value, interpolation } }];
       const invalid = preflightOperations(project, shotId, operations);
       return invalid ? failure(invalid) : {
         ok: true,
@@ -381,7 +606,7 @@ export function resolveUpsertKeyframe(
     const ids = collectProjectIds(project);
     const keyframeId = allocateId("keyframe", ids, `${track.id}-${timelineTickFor(time)}`);
     const interpolation = cloneSerializable(input.interpolation ?? { kind: "linear" as const });
-    const operations: SceneOperation[] = [{
+    const operations: ManualSceneOperation[] = [{
       type: "add-keyframe",
       trackId: track.id,
       keyframe: { id: keyframeId, time, value: input.value, interpolation },
@@ -401,7 +626,7 @@ export function resolveUpsertKeyframe(
   ids.add(trackId);
   const keyframeId = allocateId("keyframe", ids, `${trackId}-${timelineTickFor(time)}`);
   const interpolation = cloneSerializable(input.interpolation ?? { kind: "linear" as const });
-  const operations: SceneOperation[] = [{
+  const operations: ManualSceneOperation[] = [{
     type: "add-property-track",
     track: {
       id: trackId,
@@ -439,7 +664,7 @@ export function resolveDeleteKeyframes(
     ids.add(ref.keyframeId);
     selectedByTrack.set(ref.trackId, ids);
   }
-  const operations: SceneOperation[] = [];
+  const operations: ManualSceneOperation[] = [];
   for (const [trackId, keyframeIds] of [...selectedByTrack].sort(([left], [right]) => left.localeCompare(right))) {
     const track = shot.propertyTracks.find(({ id }) => id === trackId)!;
     if (keyframeIds.size === track.keyframes.length) operations.push({ type: "delete-property-track", trackId });
@@ -489,6 +714,82 @@ function selectedKeyframes(
     )),
     selectionRefs: uniqueRefs,
     primary,
+  };
+}
+
+export interface LocatedEditorKeyframe {
+  track: PropertyTrack;
+  keyframe: PropertyKeyframe;
+  ref: EditorKeyframeRef;
+}
+
+/** Resolve a keyframe reference without allowing a stale selection to drift to another track. */
+export function findEditorKeyframe(shot: Shot, ref: EditorKeyframeRef): LocatedEditorKeyframe | undefined {
+  const track = shot.propertyTracks.find(({ id }) => id === ref.trackId);
+  const keyframe = track?.keyframes.find(({ id }) => id === ref.keyframeId);
+  return track && keyframe ? { track, keyframe, ref: { ...ref } } : undefined;
+}
+
+/** Find the exact key on a canonical tick, if one exists. */
+export function keyframeAtTimelineTime(
+  shot: Shot,
+  trackId: string,
+  time: number,
+): EditorKeyframeRef | undefined {
+  const track = shot.propertyTracks.find(({ id }) => id === trackId);
+  if (!track) return undefined;
+  let tick: number;
+  try {
+    tick = timelineTickFor(time);
+  } catch {
+    return undefined;
+  }
+  const keyframe = track.keyframes.find((candidate) => timelineTickFor(candidate.time) === tick);
+  return keyframe ? { trackId, keyframeId: keyframe.id } : undefined;
+}
+
+/** Navigate within the referenced property's stable authored time order. */
+export function adjacentKeyframeRef(
+  shot: Shot,
+  ref: EditorKeyframeRef,
+  direction: "previous" | "next",
+): EditorKeyframeRef | undefined {
+  const located = findEditorKeyframe(shot, ref);
+  if (!located) return undefined;
+  const index = located.track.keyframes.findIndex(({ id }) => id === ref.keyframeId);
+  const adjacent = located.track.keyframes[index + (direction === "previous" ? -1 : 1)];
+  return adjacent ? { trackId: located.track.id, keyframeId: adjacent.id } : undefined;
+}
+
+/** Apply one outgoing-segment interpolation to every selected key atomically. */
+export function resolveSetKeyframeInterpolation(
+  project: ProjectDocument,
+  shotId: string,
+  selection: TimelineKeyframeSelectionInput,
+  interpolation: KeyframeInterpolation,
+  primary?: EditorKeyframeRef,
+): TimelineOperationIntent {
+  const shot = shotFor(project, shotId);
+  if (!shot) return failure({ code: "missing-shot", message: `Shot not found: ${shotId}` });
+  const resolved = selectedKeyframes(shot, selection, primary);
+  if (resolved.diagnostic) return failure(resolved.diagnostic);
+  const requested = cloneSerializable(interpolation);
+  const operations: ManualSceneOperation[] = resolved.selected!
+    .filter(({ track, keyframe }) => track.keyframes.at(-1)?.id !== keyframe.id)
+    .filter(({ keyframe }) => JSON.stringify(keyframe.interpolation) !== JSON.stringify(requested))
+    .map(({ track, keyframe }) => ({
+      type: "update-keyframe",
+      trackId: track.id,
+      keyframeId: keyframe.id,
+      patch: { interpolation: cloneSerializable(requested) },
+    }));
+  if (!operations.length) return failure({ code: "nothing-to-change", message: "Selected keyframes have no outgoing segment to change, or already use this interpolation" });
+  const invalid = preflightOperations(project, shotId, operations);
+  return invalid ? failure(invalid) : {
+    ok: true,
+    operations,
+    selection: keyframeSelection(shot, resolved.selectionRefs!, resolved.primary),
+    label: operations.length === 1 ? "Set keyframe interpolation" : `Set interpolation for ${operations.length} keyframes`,
   };
 }
 
@@ -550,7 +851,7 @@ export function resolveMoveKeyframes(
   if (resolved.diagnostic) return failure(resolved.diagnostic);
   const destinations = resolveDestinationTicks(shot, resolved.selected!, deltaTicks);
   if (destinations.diagnostic) return failure(destinations.diagnostic);
-  const operations: SceneOperation[] = resolved.selected!.map(({ track, keyframe }) => ({
+  const operations: ManualSceneOperation[] = resolved.selected!.map(({ track, keyframe }) => ({
     type: "move-keyframe",
     trackId: track.id,
     keyframeId: keyframe.id,
@@ -611,7 +912,7 @@ function pasteDestinations(
   primarySource = clipboard.primarySourceKeyframe,
 ): TimelineOperationIntent {
   const ids = collectProjectIds(project);
-  const operations: SceneOperation[] = [];
+  const operations: ManualSceneOperation[] = [];
   const refs: EditorKeyframeRef[] = [];
   const refsBySource = new Map<string, EditorKeyframeRef>();
   const occupied = new Map(shot.propertyTracks.map((track) => [track.id, new Set(track.keyframes.map(({ time }) => timelineTickFor(time)))]));
@@ -679,7 +980,7 @@ export function resolveDuplicateKeyframes(
   const ids = collectProjectIds(project);
   const refsAfter: EditorKeyframeRef[] = [];
   const refsBySource = new Map<string, EditorKeyframeRef>();
-  const operations: SceneOperation[] = resolved.selected!.map(({ track, keyframe }) => {
+  const operations: ManualSceneOperation[] = resolved.selected!.map(({ track, keyframe }) => {
     const time = timelineTimeForTick(timelineTickFor(keyframe.time) + deltaTicks);
     const duplicateId = allocateId("keyframe", ids, `${track.id}-${timelineTickFor(time)}`);
     ids.add(duplicateId);

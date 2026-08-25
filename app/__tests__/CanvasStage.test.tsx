@@ -1,5 +1,5 @@
 import { fireEvent, render } from '@testing-library/react'
-import CanvasStage from '../CanvasStage'
+import CanvasStage, { resolveCanvasKeyboardTransformIntent, temporallyTransformsObject } from '../CanvasStage'
 import { compileManim } from '@/lib/proofcanvas/compiler'
 import { createCantorDemoProject } from '@/lib/proofcanvas/demo'
 import { logicalFrameFor, resolutionFor, type ProofCanvasAspectRatio } from '@/lib/proofcanvas/frame'
@@ -247,4 +247,52 @@ test('cancels canvas authoring and any live gesture while sequence playback is a
   expect(view.container.querySelector('.pc-selection-handles')).not.toBeInTheDocument()
   expect(onSelect).toHaveBeenCalledTimes(1)
   expect(onCommitTransforms).not.toHaveBeenCalled()
+})
+
+test('protects a property-tracked object family from direct base-pose editing once its first key is active', () => {
+  const project = cloneSerializable(createCantorDemoProject())
+  const shot = project.shots[1]
+  project.shots = [shot]
+  shot.animations = []
+  shot.objects = [shot.objects[0]]
+  const object = shot.objects[0]
+  object.locked = false
+  shot.propertyTracks = [{
+    id: 'track-object-x',
+    target: { kind: 'object', objectId: object.id },
+    property: 'x',
+    keyframes: [
+      { id: 'keyframe-object-x-a', time: 1, value: object.transform.x, interpolation: { kind: 'linear' } },
+      { id: 'keyframe-object-x-b', time: 2, value: object.transform.x + 100, interpolation: { kind: 'linear' } },
+    ],
+  }]
+  const parsed = ProjectDocumentSchema.parse(project)
+  const style = parsed.styles.find(({ id }) => id === parsed.activeStyleId)!
+  expect(temporallyTransformsObject(parsed.shots[0], object.id, 0.5)).toBe(false)
+  expect(temporallyTransformsObject(parsed.shots[0], object.id, 1)).toBe(true)
+  expect(resolveCanvasKeyboardTransformIntent(parsed, shot.id, style, 1.5, {
+    objectId: object.id,
+    kind: 'resize',
+    key: 'ArrowRight',
+    shiftKey: false,
+  })).toEqual({ notice: expect.stringMatching(/animated geometry/) })
+
+  const onNotice = jest.fn()
+  const view = render(<CanvasStage
+    project={parsed}
+    shot={parsed.shots[0]}
+    playhead={1.5}
+    previewStyle={style}
+    projectRevision="revision-a"
+    previewQuality={parsed.settings.previewQuality}
+    selectedIds={[object.id]}
+    onSelect={jest.fn()}
+    onCommitTransforms={jest.fn()}
+    onCommitKeyboardTransform={jest.fn()}
+    onNotice={onNotice}
+  />)
+  expect(view.container.querySelector(`[data-object-id="${object.id}"]`)).toHaveAttribute('data-temporal-pose', 'animated')
+  expect(view.container.querySelector('.pc-selection-handles')).not.toBeInTheDocument()
+  fireEvent.pointerDown(view.container.querySelector(`[data-object-id="${object.id}"]`)!, { button: 0, pointerId: 1 })
+  expect(onNotice).toHaveBeenCalledWith(expect.stringMatching(/animated geometry/))
 })

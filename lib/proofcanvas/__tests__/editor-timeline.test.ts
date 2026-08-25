@@ -1,18 +1,26 @@
 import { createCantorDemoProject } from "../demo";
 import {
   TIMELINE_SNAP_PRIORITY,
+  adjacentKeyframeRef,
   chooseTimelineRulerInterval,
   copyKeyframes,
+  findEditorKeyframe,
+  inheritedObjectLifetime,
   iterateTimelineRulerMarks,
+  keyframeAtTimelineTime,
+  projectEditorTimelineRows,
   resolveDeleteKeyframes,
   resolveDuplicateKeyframes,
   resolveMoveKeyframes,
   resolvePasteKeyframes,
+  resolveSetKeyframeInterpolation,
+  resolveSetObjectLifetime,
   resolveTimelineDrag,
   resolveUpsertKeyframe,
   snapTimelineTime,
   stepTimelineFrame,
   timelineTicksForFrameDelta,
+  timelineIntentAuthorityIsCurrent,
   timelineTimeToX,
   timelineXToTime,
   type TimelineOperationIntent,
@@ -61,6 +69,13 @@ function requireIntent(intent: TimelineOperationIntent): Extract<TimelineOperati
 }
 
 describe("pure editor timeline authority", () => {
+  test("binds precomputed UI intents to both their exact project revision and active shot", () => {
+    const base = { projectRevision: "revision-a", shotId: "shot-a" };
+    expect(timelineIntentAuthorityIsCurrent(base, { projectRevision: "revision-a", shotId: "shot-a" })).toBe(true);
+    expect(timelineIntentAuthorityIsCurrent(base, { projectRevision: "revision-b", shotId: "shot-a" })).toBe(false);
+    expect(timelineIntentAuthorityIsCurrent(base, { projectRevision: "revision-a", shotId: "shot-b" })).toBe(false);
+  });
+
   test("maps viewport positions through canonical ticks and rejects malformed viewports", () => {
     const viewport = { start: 2, end: 6, widthPx: 800 };
     expect(timelineTimeToX(4, viewport)).toBe(400);
@@ -431,5 +446,241 @@ describe("pure editor timeline authority", () => {
     expect(pasted.selection).toMatchObject({
       primaryKeyframe: { trackId: x.trackId, keyframeId: pastedX && "keyframe" in pastedX ? pastedX.keyframe.id : "missing" },
     });
+  });
+
+  test("sets, moves, trims, and clears canonical object lifetimes as one selected intent", () => {
+    const project = projectWithTimeline();
+    const shot = project.shots[0];
+    delete shot.objects[0].lifetime;
+    const valid = ProjectDocumentSchema.parse(project);
+    const custom = requireIntent(resolveSetObjectLifetime(valid, shot.id, {
+      objectId: "object-title",
+      mode: "set",
+      start: 1 / 30,
+      end: 6,
+    }));
+    expect(custom.operations).toEqual([{ type: "set-object-lifetime", objectId: "object-title", lifetime: { start: 0.03333333, end: 6 } }]);
+    expect(custom.selection).toMatchObject({ kind: "objects", shotId: shot.id, objectIds: ["object-title"], primaryObjectId: "object-title" });
+    let authored = applyOperations(valid, shot.id, custom.operations).project;
+
+    const moved = requireIntent(resolveSetObjectLifetime(authored, shot.id, {
+      objectId: "object-title",
+      mode: "move",
+      deltaTicks: timelineTickFor(0.5),
+    }));
+    authored = applyOperations(authored, shot.id, moved.operations).project;
+    expect(authored.shots[0].objects[0].lifetime).toEqual({ start: 0.53333333, end: 6.5 });
+
+    const trimmed = requireIntent(resolveSetObjectLifetime(authored, shot.id, {
+      objectId: "object-title",
+      mode: "trim-end",
+      time: 6.25,
+    }));
+    authored = applyOperations(authored, shot.id, trimmed.operations).project;
+    expect(authored.shots[0].objects[0].lifetime).toEqual({ start: 0.53333333, end: 6.25 });
+
+    const entire = requireIntent(resolveSetObjectLifetime(authored, shot.id, { objectId: "object-title", mode: "entire" }));
+    expect(entire.operations).toEqual([{ type: "clear-object-lifetime", objectId: "object-title" }]);
+    expect(applyOperations(authored, shot.id, entire.operations).project.shots[0].objects[0].lifetime).toBeUndefined();
+    expect(resolveSetObjectLifetime(valid, shot.id, { objectId: "object-title", mode: "entire" })).toMatchObject({ ok: false, diagnostic: { code: "nothing-to-change" } });
+  });
+
+  test("uses exact inherited bounds and rejects locked, collapsed, and out-of-bound lifetime edits", () => {
+    const project = projectWithTimeline();
+    const shot = project.shots[0];
+    const child = cloneSerializable(shot.objects[0]);
+    child.id = "object-child";
+    child.name = "Child";
+    child.parentId = "object-title";
+    delete child.lifetime;
+    shot.objects[0].type = "group";
+    shot.objects[0].properties = {};
+    shot.objects[0].lifetime = { start: 1, end: 7 };
+    shot.objects.push(child);
+    const valid = ProjectDocumentSchema.parse(project);
+    expect(inheritedObjectLifetime(valid.shots[0], child.id)).toEqual({ start: 1, end: 7 });
+    expect(resolveSetObjectLifetime(valid, shot.id, { objectId: child.id, mode: "set", start: 0, end: 6 })).toMatchObject({ ok: false, diagnostic: { code: "out-of-range", message: expect.stringMatching(/inherited bounds/) } });
+    expect(resolveSetObjectLifetime(valid, shot.id, { objectId: child.id, mode: "set", start: 2, end: 2 })).toMatchObject({ ok: false, diagnostic: { code: "out-of-range", message: expect.stringMatching(/one canonical timeline tick/) } });
+    expect(requireIntent(resolveSetObjectLifetime(valid, shot.id, { objectId: child.id, mode: "set", start: 2, end: timelineTimeForTick(timelineTickFor(2) + 1) })).operations).toHaveLength(1);
+
+    const locked = cloneSerializable(valid);
+    locked.shots[0].objects[0].locked = true;
+    const lockedValid = ProjectDocumentSchema.parse(locked);
+    expect(resolveSetObjectLifetime(lockedValid, shot.id, { objectId: child.id, mode: "set", start: 2, end: 3 })).toMatchObject({ ok: false, diagnostic: { code: "locked" } });
+  });
+
+  test("projects camera-first rows in hierarchy preorder with authored and effective lifetime metadata", () => {
+    const project = projectWithTimeline();
+    const shot = project.shots[0];
+    const child = cloneSerializable(shot.objects[0]);
+    child.id = "object-child";
+    child.name = "Child";
+    child.parentId = "object-title";
+    child.lifetime = { start: 2, end: 6 };
+    shot.objects[0].type = "group";
+    shot.objects[0].properties = {};
+    shot.objects[0].lifetime = { start: 1, end: 7 };
+    shot.objects.push(child);
+    shot.propertyTracks = [
+      { id: "track-camera-x", target: { kind: "camera" }, property: "x", keyframes: [{ id: "keyframe-camera-x", time: 1, value: 480, interpolation: { kind: "linear" } }] },
+      track("track-title-x", "x", [1]),
+      { ...track("track-child-y", "y", [3]), target: { kind: "object", objectId: child.id } },
+    ];
+    const valid = ProjectDocumentSchema.parse(project);
+    const rows = projectEditorTimelineRows(valid.shots[0]);
+    expect(rows.map(({ kind, id }) => [kind, id])).toEqual([
+      ["camera", "timeline-camera"],
+      ["camera-property", "timeline-track-track-camera-x"],
+      ["object-lifetime", "timeline-lifetime-object-title"],
+      ["object-property", "timeline-track-track-title-x"],
+      ["object-lifetime", "timeline-lifetime-object-child"],
+      ["object-property", "timeline-track-track-child-y"],
+    ]);
+    expect(rows.find((row) => row.kind === "object-lifetime" && row.objectId === child.id)).toMatchObject({
+      depth: 1,
+      authored: { start: 2, end: 6 },
+      inherited: { start: 1, end: 7 },
+      effective: { start: 2, end: 6 },
+      locked: false,
+    });
+  });
+
+  test("rejects parent lifetime changes against locked descendants and descendant dependencies atomically", () => {
+    const base = projectWithTimeline();
+    const shot = base.shots[0];
+    const child = cloneSerializable(shot.objects[0]);
+    child.id = "object-child";
+    child.name = "Child";
+    child.parentId = "object-title";
+    child.lifetime = { start: 1, end: 7 };
+    shot.objects[0].type = "group";
+    shot.objects[0].properties = {};
+    shot.objects.push(child);
+    const childTrack = { ...track("track-child-x", "x", [1, 6]), target: { kind: "object" as const, objectId: child.id } };
+    shot.propertyTracks = [childTrack];
+    const dependent = ProjectDocumentSchema.parse(base);
+    expect(resolveSetObjectLifetime(dependent, shot.id, { objectId: "object-title", mode: "set", start: 2, end: 7 })).toMatchObject({ ok: false, diagnostic: { code: "dependent-out-of-range" } });
+
+    const locked = cloneSerializable(dependent);
+    locked.shots[0].objects.find(({ id }) => id === child.id)!.locked = true;
+    const lockedValid = ProjectDocumentSchema.parse(locked);
+    expect(resolveSetObjectLifetime(lockedValid, shot.id, { objectId: "object-title", mode: "set", start: 0, end: 7 })).toMatchObject({ ok: false, diagnostic: { code: "locked" } });
+  });
+
+  test("handles both trim edges, move bounds, zero delta, one-tick collapse, and inherited child clear", () => {
+    const project = projectWithTimeline();
+    const shot = project.shots[0];
+    const child = cloneSerializable(shot.objects[0]);
+    child.id = "object-child";
+    child.name = "Child";
+    child.parentId = "object-title";
+    child.lifetime = { start: 2, end: 6 };
+    shot.objects[0].type = "group";
+    shot.objects[0].properties = {};
+    shot.objects[0].lifetime = { start: 1, end: 7 };
+    shot.objects.push(child);
+    const valid = ProjectDocumentSchema.parse(project);
+    expect(requireIntent(resolveSetObjectLifetime(valid, shot.id, { objectId: child.id, mode: "trim-start", time: 3 })).operations[0]).toMatchObject({ lifetime: { start: 3, end: 6 } });
+    expect(requireIntent(resolveSetObjectLifetime(valid, shot.id, { objectId: child.id, mode: "trim-end", time: 5 })).operations[0]).toMatchObject({ lifetime: { start: 2, end: 5 } });
+    expect(resolveSetObjectLifetime(valid, shot.id, { objectId: child.id, mode: "move", deltaTicks: 0 })).toMatchObject({ ok: false, diagnostic: { code: "nothing-to-change" } });
+    expect(resolveSetObjectLifetime(valid, shot.id, { objectId: child.id, mode: "move", deltaTicks: timelineTickFor(2) })).toMatchObject({ ok: false, diagnostic: { code: "out-of-range" } });
+    expect(resolveSetObjectLifetime(valid, shot.id, { objectId: child.id, mode: "trim-start", time: timelineTimeForTick(timelineTickFor(6) - 1) })).toMatchObject({ ok: true });
+    expect(resolveSetObjectLifetime(valid, shot.id, { objectId: child.id, mode: "trim-start", time: 6 })).toMatchObject({ ok: false, diagnostic: { code: "out-of-range" } });
+    const cleared = requireIntent(resolveSetObjectLifetime(valid, shot.id, { objectId: child.id, mode: "entire" }));
+    const clearedProject = applyOperations(valid, shot.id, cleared.operations).project;
+    expect(clearedProject.shots[0].objects.find(({ id }) => id === child.id)!.lifetime).toBeUndefined();
+    expect(inheritedObjectLifetime(clearedProject.shots[0], child.id)).toEqual({ start: 1, end: 7 });
+  });
+
+  test("preflights every dependent animation and property key before narrowing a lifetime", () => {
+    const project = projectWithTimeline();
+    const shot = project.shots[0];
+    shot.propertyTracks = [track("track-title-x", "x", [1, 4])];
+    const withKeys = ProjectDocumentSchema.parse(project);
+    const rejectedKey = resolveSetObjectLifetime(withKeys, shot.id, { objectId: "object-title", mode: "set", start: 2, end: 6 });
+    expect(rejectedKey).toMatchObject({ ok: false, diagnostic: { code: "dependent-out-of-range", message: expect.stringMatching(/Keyframe|lifetime/i) } });
+    expect(withKeys.shots[0].objects[0].lifetime).toEqual({ start: 0, end: 8 });
+
+    const withAnimation = projectWithTimeline();
+    withAnimation.shots[0].animations = [{
+      id: "animation-title",
+      type: "move",
+      targetIds: ["object-title"],
+      start: 1,
+      duration: 2,
+      easing: "linear",
+      properties: { x: 200, y: 100 },
+    }];
+    const animationValid = ProjectDocumentSchema.parse(withAnimation);
+    expect(resolveSetObjectLifetime(animationValid, shot.id, { objectId: "object-title", mode: "trim-start", time: 2 })).toMatchObject({ ok: false, diagnostic: { code: "dependent-out-of-range" } });
+  });
+
+  test("looks up exact-tick keys and navigates previous and next within one property track", () => {
+    const project = projectWithTimeline();
+    const shot = project.shots[0];
+    shot.propertyTracks = [track("track-title-x", "x", [1, 2, 3])];
+    const valid = ProjectDocumentSchema.parse(project);
+    const current = { trackId: "track-title-x", keyframeId: "keyframe-track-title-x-2" };
+    expect(findEditorKeyframe(valid.shots[0], current)?.keyframe.time).toBe(2);
+    expect(keyframeAtTimelineTime(valid.shots[0], current.trackId, 2)).toEqual(current);
+    expect(keyframeAtTimelineTime(valid.shots[0], current.trackId, timelineTimeForTick(timelineTickFor(2) + 1))).toBeUndefined();
+    expect(adjacentKeyframeRef(valid.shots[0], current, "previous")).toEqual({ trackId: current.trackId, keyframeId: "keyframe-track-title-x-1" });
+    expect(adjacentKeyframeRef(valid.shots[0], current, "next")).toEqual({ trackId: current.trackId, keyframeId: "keyframe-track-title-x-3" });
+    expect(adjacentKeyframeRef(valid.shots[0], { trackId: current.trackId, keyframeId: "keyframe-track-title-x-1" }, "previous")).toBeUndefined();
+  });
+
+  test.each([
+    ["hold", { kind: "hold" }],
+    ["linear", { kind: "linear" }],
+    ["named", { kind: "eased", easing: "spring-soft" }],
+    ["custom", { kind: "custom-bezier", curve: { x1: 0.2, y1: -0.5, x2: 0.8, y2: 1.5 } }],
+  ] as const)("applies %s outgoing interpolation atomically across selected keys", (_label, interpolation) => {
+    const project = projectWithTimeline();
+    const shot = project.shots[0];
+    shot.propertyTracks = [track("track-title-x", "x"), track("track-title-y", "y")];
+    const valid = ProjectDocumentSchema.parse(project);
+    const refs = shot.propertyTracks.map((candidate) => ({ trackId: candidate.id, keyframeId: candidate.keyframes[0].id }));
+    const intent = requireIntent(resolveSetKeyframeInterpolation(valid, shot.id, refs, interpolation));
+    expect(intent.operations).toHaveLength(2);
+    expect(intent.selection).toMatchObject({ kind: "keyframes", keyframes: refs });
+    const applied = applyOperations(valid, shot.id, intent.operations).project.shots[0];
+    for (const candidate of applied.propertyTracks) expect(candidate.keyframes[0].interpolation).toEqual(interpolation);
+  });
+
+  test("rejects stale interpolation selections and locked atomic batches without changing any key", () => {
+    const project = projectWithTimeline();
+    const shot = project.shots[0];
+    shot.propertyTracks = [track("track-title-x", "x"), track("track-title-y", "y")];
+    const valid = ProjectDocumentSchema.parse(project);
+    const stale = resolveSetKeyframeInterpolation(valid, shot.id, [
+      { trackId: "track-title-x", keyframeId: "keyframe-track-title-x-1" },
+      { trackId: "track-title-y", keyframeId: "missing" },
+    ], { kind: "hold" });
+    expect(stale).toMatchObject({ ok: false, diagnostic: { code: "missing-keyframe", trackId: "track-title-y" } });
+
+    const locked = cloneSerializable(valid);
+    locked.shots[0].objects[0].locked = true;
+    const lockedValid = ProjectDocumentSchema.parse(locked);
+    const refs = shot.propertyTracks.map((candidate) => ({ trackId: candidate.id, keyframeId: candidate.keyframes[0].id }));
+    expect(resolveSetKeyframeInterpolation(lockedValid, shot.id, refs, { kind: "hold" })).toMatchObject({ ok: false, diagnostic: { code: "invalid-operation", message: expect.stringMatching(/locked/) } });
+    expect(lockedValid.shots[0].propertyTracks.map((candidate) => candidate.keyframes[0].interpolation)).toEqual([
+      { kind: "eased", easing: "ease-in-out" },
+      { kind: "eased", easing: "ease-in-out" },
+    ]);
+  });
+
+  test("does not author outgoing interpolation on terminal keys", () => {
+    const project = projectWithTimeline();
+    const shot = project.shots[0];
+    shot.propertyTracks = [track("track-title-x", "x", [1, 2])];
+    const valid = ProjectDocumentSchema.parse(project);
+    const terminal = { trackId: "track-title-x", keyframeId: "keyframe-track-title-x-2" };
+    expect(resolveSetKeyframeInterpolation(valid, shot.id, [terminal], { kind: "hold" })).toMatchObject({ ok: false, diagnostic: { code: "nothing-to-change", message: expect.stringMatching(/no outgoing segment/) } });
+    const mixed = requireIntent(resolveSetKeyframeInterpolation(valid, shot.id, [
+      { trackId: "track-title-x", keyframeId: "keyframe-track-title-x-1" },
+      terminal,
+    ], { kind: "hold" }));
+    expect(mixed.operations).toEqual([{ type: "update-keyframe", trackId: "track-title-x", keyframeId: "keyframe-track-title-x-1", patch: { interpolation: { kind: "hold" } } }]);
+    expect(mixed.selection).toMatchObject({ kind: "keyframes", keyframes: expect.arrayContaining([terminal]) });
   });
 });

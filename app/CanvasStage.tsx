@@ -79,7 +79,7 @@ export function temporallyTransformsObject(shot: Shot, objectId: string, time: n
     targetFamily.add(cursor.id)
     cursor = cursor.parentId ? shot.objects.find(({ id }) => id === cursor?.parentId) : undefined
   }
-  return shot.animations.some((animation) => {
+  const semanticAnimationTransforms = shot.animations.some((animation) => {
     if (!animation.targetIds.some((id) => targetFamily.has(id))) return false
     if (animation.type === 'move' || animation.type === 'scale' || animation.type === 'transform') {
       return compareTimelineTimes(time, animation.start) > 0
@@ -88,6 +88,14 @@ export function temporallyTransformsObject(shot: Shot, objectId: string, time: n
       && compareTimelineTimes(time, animation.start) > 0
       && compareTimelineTimes(time, addTimelineTimes(animation.start, animation.duration)) < 0
   })
+  if (semanticAnimationTransforms) return true
+  const spatialProperties = new Set(['x', 'y', 'width', 'height', 'scale', 'scaleX', 'scaleY', 'rotation'])
+  return shot.propertyTracks.some((track) => (
+    track.target.kind === 'object'
+    && targetFamily.has(track.target.objectId)
+    && spatialProperties.has(track.property)
+    && compareTimelineTimes(time, track.keyframes[0].time) >= 0
+  ))
 }
 
 function rawDeltaForStyledDelta(object: SceneObject, style: StylePack, axis: 'x' | 'y', delta: number): number {
