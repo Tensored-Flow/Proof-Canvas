@@ -16,6 +16,7 @@ type Gesture = {
   displayOriginal: SceneObject['transform']
   originals: Map<string, SceneObject['transform']>
   commitIds: Set<string>
+  baseRevision: string
 }
 
 export interface CanvasStageProps {
@@ -23,11 +24,26 @@ export interface CanvasStageProps {
   shot: Shot
   playhead: number
   previewStyle: StylePack
+  projectRevision: string
+  previewQuality: ProjectDocument['settings']['previewQuality']
   selectedIds: readonly string[]
   onSelect(ids: string[]): void
   onCommitTransforms(updates: Array<{ objectId: string; transform: Partial<SceneObject['transform']> }>, label: string): void
+  onCommitKeyboardTransform(intent: CanvasKeyboardTransformIntent): void
   onNotice(message: string): void
 }
+
+export type CanvasKeyboardTransformIntent = Readonly<{
+  objectId: string
+  kind: 'resize' | 'rotate'
+  key: 'ArrowLeft' | 'ArrowRight' | 'ArrowUp' | 'ArrowDown'
+  shiftKey: boolean
+}>
+
+export type CanvasKeyboardTransformResolution = Readonly<{
+  updates: Array<{ objectId: string; transform: Partial<SceneObject['transform']> }>
+  label: string
+}> | Readonly<{ notice: string }> | null
 
 function svgPoint(svg: SVGSVGElement, event: Pick<PointerEvent, 'clientX' | 'clientY'>) {
   const point = svg.createSVGPoint()
@@ -78,6 +94,97 @@ function rawDeltaForStyledDelta(object: SceneObject, style: StylePack, axis: 'x'
   const shifted = { ...object, transform: { ...object.transform, [axis]: object.transform[axis] + 1 } }
   const slope = styledTransform(shifted, style)[axis] - before
   return Math.abs(slope) < 0.000_001 ? 0 : delta / slope
+}
+
+function mutationFamilyIds(shot: Shot, objectId: string): Set<string> {
+  const ids = new Set([objectId])
+  const queue = [objectId]
+  while (queue.length) {
+    const parentId = queue.shift()!
+    const parent = shot.objects.find(({ id }) => id === parentId)
+    if (parent?.type !== 'group') continue
+    for (const child of shot.objects.filter(({ parentId: candidate }) => candidate === parentId)) {
+      if (ids.has(child.id)) continue
+      ids.add(child.id)
+      queue.push(child.id)
+    }
+  }
+  return ids
+}
+
+/** Resolves a relative keyboard intent against the latest canonical document. */
+export function resolveCanvasKeyboardTransformIntent(
+  project: ProjectDocument,
+  shotId: string,
+  previewStyle: StylePack,
+  playhead: number,
+  intent: CanvasKeyboardTransformIntent,
+): CanvasKeyboardTransformResolution {
+  const shot = project.shots.find(({ id }) => id === shotId)
+  const source = shot?.objects.find(({ id }) => id === intent.objectId)
+  if (!shot || !source) return null
+  const familyIds = mutationFamilyIds(shot, source.id)
+  if ([...familyIds].some((id) => effectiveLockOwner(shot, id))) {
+    return { notice: 'This object family contains a lock; unlock every family member before transforming it.' }
+  }
+  if ([...familyIds].some((id) => temporallyTransformsObject(shot, id, playhead))) {
+    return { notice: 'This playhead shows animated geometry. Edit the timeline block, or scrub before the spatial animation begins, to change the base pose.' }
+  }
+  if (intent.kind === 'rotate' && (source.type === 'circle' || (intent.key !== 'ArrowLeft' && intent.key !== 'ArrowRight'))) return null
+  if (intent.kind === 'resize' && (intent.key === 'ArrowUp' || intent.key === 'ArrowDown') && (source.type === 'line' || source.type === 'arrow')) {
+    return { notice: 'Lines and arrows resize horizontally; use Left or Right Arrow on the handle.' }
+  }
+
+  const preview = previewShotAtTime(shot, playhead)
+  const visibleObjects = preview.objects.filter((object) => object.preview.opacity > 0.001)
+  const displayedSource = visibleObjects.find(({ id }) => id === source.id)
+  if (!displayedSource) return null
+  const displayOriginal = styledDisplayTransform(displayedSource, shot, previewStyle, visibleObjects)
+  const step = intent.shiftKey ? 10 : 1
+  const transform = { ...source.transform }
+  if (intent.kind === 'rotate') {
+    transform.rotation += intent.key === 'ArrowLeft' ? -step : step
+  } else if (intent.key === 'ArrowLeft' || intent.key === 'ArrowRight') {
+    transform.width = Math.max(10, (transform.width ?? 60) + (intent.key === 'ArrowLeft' ? -step : step))
+  } else {
+    transform.height = Math.max(10, (transform.height ?? 30) + (intent.key === 'ArrowDown' ? step : -step))
+  }
+
+  let committedTransform = transform
+  if (source.type === 'group') {
+    let adjusted = { ...transform }
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const simulatedShot = applyOperations(project, shot.id, [{ type: 'update-object', objectId: source.id, patch: { transform: adjusted } }]).project.shots.find(({ id }) => id === shot.id)!
+      const simulatedSource = simulatedShot.objects.find(({ id }) => id === source.id)!
+      const simulatedVisible = visibleObjects.map((object) => {
+        const candidate = simulatedShot.objects.find(({ id }) => id === object.id)
+        return candidate ? { ...object, transform: candidate.transform } : object
+      })
+      const simulatedFrame = styledDisplayTransform(simulatedSource, simulatedShot, previewStyle, simulatedVisible)
+      const errorX = displayOriginal.x - simulatedFrame.x
+      const errorY = displayOriginal.y - simulatedFrame.y
+      if (Math.abs(errorX) < 0.000_001 && Math.abs(errorY) < 0.000_001) break
+      adjusted = {
+        ...adjusted,
+        x: adjusted.x + rawDeltaForStyledDelta({ ...source, transform: adjusted }, previewStyle, 'x', errorX),
+        y: adjusted.y + rawDeltaForStyledDelta({ ...source, transform: adjusted }, previewStyle, 'y', errorY),
+      }
+    }
+    committedTransform = adjusted
+  } else if (intent.kind === 'resize') {
+    const candidate = { ...source, transform }
+    const displayed = styledTransform(candidate, previewStyle)
+    committedTransform = {
+      ...transform,
+      x: transform.x + rawDeltaForStyledDelta(candidate, previewStyle, 'x', displayOriginal.x - displayed.x),
+      y: transform.y + rawDeltaForStyledDelta(candidate, previewStyle, 'y', displayOriginal.y - displayed.y),
+    }
+  }
+  if (JSON.stringify(committedTransform) === JSON.stringify(source.transform)) return null
+  return {
+    updates: [{ objectId: source.id, transform: committedTransform }],
+    label: intent.kind === 'rotate' ? 'Rotate object with keyboard' : 'Resize object with keyboard',
+  }
 }
 
 function RenderObject({ object, style, selected, effectivelyLocked, temporallyTransformed, onPointerDown }: { object: ReturnType<typeof previewShotAtTime>['objects'][number]; style: StylePack; selected: boolean; effectivelyLocked: boolean; temporallyTransformed: boolean; onPointerDown(event: ReactPointerEvent<SVGElement>, object: SceneObject): void }) {
@@ -132,7 +239,7 @@ function RenderObject({ object, style, selected, effectivelyLocked, temporallyTr
   }
 }
 
-export default function CanvasStage({ project, shot, playhead, previewStyle, selectedIds, onSelect, onCommitTransforms, onNotice }: CanvasStageProps) {
+export default function CanvasStage({ project, shot, playhead, previewStyle, projectRevision, previewQuality, selectedIds, onSelect, onCommitTransforms, onCommitKeyboardTransform, onNotice }: CanvasStageProps) {
   const svgRef = useRef<SVGSVGElement | null>(null)
   const [gesture, setGesture] = useState<Gesture | null>(null)
   const [previewTransforms, setPreviewTransforms] = useState<Map<string, SceneObject['transform']>>(new Map())
@@ -171,6 +278,11 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, sel
     window.addEventListener('keydown', cancel)
     return () => window.removeEventListener('keydown', cancel)
   }, [cancelGesture])
+
+  // Pointer drafts are absolute transforms derived from one canonical
+  // document. Undo, redo, shot changes, or any other committed edit invalidates
+  // that base so releasing a stale pointer cannot resurrect older geometry.
+  useEffect(() => cancelGesture(), [cancelGesture, projectRevision, shot.id])
 
   const simulateGroupTransformAroundDisplayCenter = useCallback((source: SceneObject, requested: SceneObject['transform'], center: { x: number; y: number }) => {
     let adjusted = { ...requested }
@@ -239,7 +351,7 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, sel
       const candidate = shot.objects.find((item) => item.id === id)
       if (candidate && !effectiveLockOwner(shot, candidate)) originals.set(id, { ...candidate.transform })
     }
-    setGesture({ kind, pointerId: event.pointerId, start: cameraPoint(svgPoint(svgRef.current, event.nativeEvent), preview.camera, frame), objectId: object.id, displayOriginal: styledDisplayTransform(object, shot, previewStyle, visibleObjects), originals, commitIds })
+    setGesture({ kind, pointerId: event.pointerId, start: cameraPoint(svgPoint(svgRef.current, event.nativeEvent), preview.camera, frame), objectId: object.id, displayOriginal: styledDisplayTransform(object, shot, previewStyle, visibleObjects), originals, commitIds, baseRevision: projectRevision })
     setPreviewTransforms(new Map(originals))
   }
 
@@ -326,6 +438,10 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, sel
 
   const endGesture = (event: ReactPointerEvent<SVGSVGElement>) => {
     if (!gesture || event.pointerId !== gesture.pointerId) return
+    if (gesture.baseRevision !== projectRevision) {
+      cancelGesture()
+      return
+    }
     const updates = [...previewTransforms].filter(([objectId]) => gesture.commitIds.has(objectId)).map(([objectId, transform]) => ({ objectId, transform }))
     if (updates.some(({ objectId, transform }) => JSON.stringify(transform) !== JSON.stringify(gesture.originals.get(objectId)))) onCommitTransforms(updates, gesture.kind === 'move' ? 'Move objects' : gesture.kind === 'resize' ? 'Resize object' : 'Rotate object')
     setGesture(null)
@@ -348,36 +464,19 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, sel
     }
     event.preventDefault()
     event.stopPropagation()
-    const step = event.shiftKey ? 10 : 1
-    const transform = { ...source.transform }
     if (kind === 'rotate') {
       if (source.type === 'circle') return
       if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
-      transform.rotation += event.key === 'ArrowLeft' ? -step : step
-    } else {
-      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
-        transform.width = Math.max(10, (transform.width ?? 60) + (event.key === 'ArrowLeft' ? -step : step))
-      } else {
-        if (source.type === 'line' || source.type === 'arrow') {
-          onNotice('Lines and arrows resize horizontally; use Left or Right Arrow on the handle.')
-          return
-        }
-        transform.height = Math.max(10, (transform.height ?? 30) + (event.key === 'ArrowDown' ? step : -step))
-      }
+    } else if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && (source.type === 'line' || source.type === 'arrow')) {
+      onNotice('Lines and arrows resize horizontally; use Left or Right Arrow on the handle.')
+      return
     }
-    let committedTransform = transform
-    if (source.type === 'group' && primaryTransform) {
-      committedTransform = simulateGroupTransformAroundDisplayCenter(source, transform, primaryTransform).transform
-    } else if (kind === 'resize' && primaryTransform) {
-      const candidate = { ...source, transform }
-      const displayed = styledTransform(candidate, previewStyle)
-      committedTransform = {
-        ...transform,
-        x: transform.x + rawDeltaForStyledDelta(candidate, previewStyle, 'x', primaryTransform.x - displayed.x),
-        y: transform.y + rawDeltaForStyledDelta(candidate, previewStyle, 'y', primaryTransform.y - displayed.y),
-      }
-    }
-    onCommitTransforms([{ objectId: source.id, transform: committedTransform }], kind === 'rotate' ? 'Rotate object with keyboard' : 'Resize object with keyboard')
+    onCommitKeyboardTransform({
+      objectId: source.id,
+      kind,
+      key: event.key as CanvasKeyboardTransformIntent['key'],
+      shiftKey: event.shiftKey,
+    })
   }
 
   const primaryTransform = primary ? styledDisplayTransform(primary, shot, previewStyle, visibleObjects) : null
@@ -388,8 +487,8 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, sel
   const primaryHeight = primaryTransform ? (primaryTransform.height ?? 30) * Math.abs(primaryTransform.scaleY) : 0
   const motionExceptionCount = shot.animations.filter(({ easing }) => easing !== previewStyle.motion.easing).length
   return (
-    <div className="pc-stage-wrap" data-testid="proofcanvas-stage" style={{ background: previewStyle.colors.background }}>
-      <svg ref={svgRef} className="pc-stage" viewBox={`0 0 ${frame.width} ${frame.height}`} style={{ '--pc-stage-aspect': `${frame.width} / ${frame.height}` } as CSSProperties} role="group" tabIndex={0} aria-label={`${shot.name} canvas at ${playhead.toFixed(1)} seconds`} onPointerDown={(event) => { if (event.target === event.currentTarget) { event.currentTarget.focus({ preventScroll: true }); onSelect([]) } }} onPointerMove={onPointerMove} onPointerUp={endGesture} onPointerCancel={cancelGesture}>
+    <div className="pc-stage-wrap" data-testid="proofcanvas-stage" style={{ background: previewStyle.colors.background, aspectRatio: `${frame.width} / ${frame.height}`, '--pc-stage-ratio': frame.width / frame.height } as CSSProperties}>
+      <svg ref={svgRef} className="pc-stage" viewBox={`0 0 ${frame.width} ${frame.height}`} style={{ '--pc-stage-aspect': `${frame.width} / ${frame.height}` } as CSSProperties} data-preview-quality={previewQuality} role="group" tabIndex={0} aria-label={`${shot.name} canvas at ${playhead.toFixed(1)} seconds`} onPointerDown={(event) => { if (event.target === event.currentTarget) { event.currentTarget.focus({ preventScroll: true }); onSelect([]) } }} onPointerMove={onPointerMove} onPointerUp={endGesture} onPointerCancel={cancelGesture}>
         <defs><marker id="pc-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill={previewStyle.colors.ink}/></marker></defs>
         <g data-pc-camera-transform transform={`translate(${frame.centerX} ${frame.centerY}) scale(${preview.camera.zoom}) rotate(${-preview.camera.rotation}) translate(${-preview.camera.x} ${-preview.camera.y})`}>
           {guides.x !== undefined && <line className="pc-snap-guide" data-guide-axis="x" x1={guides.x} x2={guides.x} y1={0} y2={frame.height}/>}

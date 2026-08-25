@@ -21,7 +21,11 @@ export function commitProject(history: ProjectHistory, nextProject: ProjectDocum
   if (!label.trim()) throw new Error("History transaction requires a label");
   if (canonicalProjectJson(history.present) === canonicalProjectJson(nextProject)) return history;
   return {
-    past: [...history.past.map((entry) => ({ ...entry, project: cloneProject(entry.project) })), { label, project: cloneProject(history.present) }],
+    // History snapshots are immutable by contract: all authoring seams clone
+    // before mutation. Preserve those references instead of re-cloning every
+    // prior document on every edit (which made N edits quadratic in project
+    // size and history depth).
+    past: [...history.past, { label, project: history.present }],
     present: cloneProject(nextProject),
     future: [],
   };
@@ -58,9 +62,9 @@ export function undo(history: ProjectHistory): ProjectHistory {
   const previous = history.past.at(-1);
   if (!previous) return history;
   return {
-    past: history.past.slice(0, -1).map((entry) => ({ ...entry, project: cloneProject(entry.project) })),
-    present: cloneProject(previous.project),
-    future: [{ label: previous.label, project: cloneProject(history.present) }, ...history.future.map((entry) => ({ ...entry, project: cloneProject(entry.project) }))],
+    past: history.past.slice(0, -1),
+    present: previous.project,
+    future: [{ label: previous.label, project: history.present }, ...history.future],
   };
 }
 
@@ -68,8 +72,8 @@ export function redo(history: ProjectHistory): ProjectHistory {
   const next = history.future[0];
   if (!next) return history;
   return {
-    past: [...history.past.map((entry) => ({ ...entry, project: cloneProject(entry.project) })), { label: next.label, project: cloneProject(history.present) }],
-    present: cloneProject(next.project),
-    future: history.future.slice(1).map((entry) => ({ ...entry, project: cloneProject(entry.project) })),
+    past: [...history.past, { label: next.label, project: history.present }],
+    present: next.project,
+    future: history.future.slice(1),
   };
 }

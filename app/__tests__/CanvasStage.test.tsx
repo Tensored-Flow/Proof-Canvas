@@ -35,9 +35,12 @@ test('text and math glyph color follows nested/keyframed fill with fill over col
     project: parsed,
     shot: parsed.shots[0],
     previewStyle: parsed.styles.find(({ id }) => id === parsed.activeStyleId)!,
+    projectRevision: 'revision-a',
+    previewQuality: parsed.settings.previewQuality,
     selectedIds: [],
     onSelect: jest.fn(),
     onCommitTransforms: jest.fn(),
+    onCommitKeyboardTransform: jest.fn(),
     onNotice: jest.fn(),
   }
   const view = render(<CanvasStage {...props} playhead={0} />)
@@ -74,9 +77,12 @@ test('graph stroke width uses the object override', () => {
     shot={parsed.shots[0]}
     playhead={0}
     previewStyle={parsed.styles.find(({ id }) => id === parsed.activeStyleId)!}
+    projectRevision="revision-a"
+    previewQuality={parsed.settings.previewQuality}
     selectedIds={[]}
     onSelect={jest.fn()}
     onCommitTransforms={jest.fn()}
+    onCommitKeyboardTransform={jest.fn()}
     onNotice={jest.fn()}
   />)
   expect(view.container.querySelector('polyline')).toHaveAttribute('stroke-width', '11')
@@ -101,9 +107,12 @@ test.each([
     shot={parsed.shots[0]}
     playhead={0}
     previewStyle={parsed.styles.find(({ id }) => id === parsed.activeStyleId)!}
+    projectRevision="revision-a"
+    previewQuality={parsed.settings.previewQuality}
     selectedIds={[]}
     onSelect={jest.fn()}
     onCommitTransforms={jest.fn()}
+    onCommitKeyboardTransform={jest.fn()}
     onNotice={jest.fn()}
   />)
   expect(view.container.querySelector('svg.pc-stage')).toHaveAttribute('viewBox', viewBox)
@@ -131,9 +140,12 @@ test('snaps portrait movement to the portrait frame centre and spans portrait gu
     shot={parsed.shots[0]}
     playhead={0}
     previewStyle={parsed.styles.find(({ id }) => id === parsed.activeStyleId)!}
+    projectRevision="revision-a"
+    previewQuality={parsed.settings.previewQuality}
     selectedIds={[]}
     onSelect={jest.fn()}
     onCommitTransforms={jest.fn()}
+    onCommitKeyboardTransform={jest.fn()}
     onNotice={jest.fn()}
   />)
   const svg = view.container.querySelector('svg.pc-stage') as SVGSVGElement
@@ -149,4 +161,41 @@ test('snaps portrait movement to the portrait frame centre and spans portrait gu
   expect(view.container.querySelector('[data-guide-axis="x"]')).toHaveAttribute('y2', String(frame.height))
   expect(view.container.querySelector('[data-guide-axis="y"]')).toHaveAttribute('y1', String(frame.centerY))
   expect(view.container.querySelector('[data-guide-axis="y"]')).toHaveAttribute('x2', String(frame.width))
+})
+
+test('cancels an absolute transform draft when its canonical project revision changes', () => {
+  Object.defineProperty(window, 'PointerEvent', { configurable: true, value: MouseEvent })
+  const project = cloneSerializable(createCantorDemoProject())
+  const shot = project.shots[1]
+  project.shots = [shot]
+  shot.animations = []
+  shot.propertyTracks = []
+  shot.objects = [shot.objects[0]]
+  const parsed = ProjectDocumentSchema.parse(project)
+  const onCommitTransforms = jest.fn()
+  const shared = {
+    project: parsed,
+    shot: parsed.shots[0],
+    playhead: 0,
+    previewStyle: parsed.styles.find(({ id }) => id === parsed.activeStyleId)!,
+    previewQuality: parsed.settings.previewQuality,
+    selectedIds: [parsed.shots[0].objects[0].id],
+    onSelect: jest.fn(),
+    onCommitTransforms,
+    onCommitKeyboardTransform: jest.fn(),
+    onNotice: jest.fn(),
+  }
+  const view = render(<CanvasStage {...shared} projectRevision="revision-a" />)
+  const svg = view.container.querySelector('svg.pc-stage') as SVGSVGElement
+  Object.defineProperty(svg, 'createSVGPoint', { configurable: true, value: () => {
+    const point = { x: 0, y: 0, matrixTransform: () => ({ x: point.x, y: point.y }) }
+    return point
+  } })
+  Object.defineProperty(svg, 'getScreenCTM', { configurable: true, value: () => ({ inverse: () => ({}) }) })
+  const object = view.container.querySelector('[data-object-id]')!
+  fireEvent.pointerDown(object, { button: 0, pointerId: 1, clientX: 100, clientY: 100 })
+  fireEvent.pointerMove(svg, { pointerId: 1, clientX: 130, clientY: 120 })
+  view.rerender(<CanvasStage {...shared} projectRevision="revision-b" />)
+  fireEvent.pointerUp(svg, { pointerId: 1, clientX: 130, clientY: 120 })
+  expect(onCommitTransforms).not.toHaveBeenCalled()
 })

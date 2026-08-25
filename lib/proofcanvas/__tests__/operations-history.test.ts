@@ -29,6 +29,20 @@ function renderedLeft(object: SceneObject, style: ReturnType<typeof styleById> e
 }
 
 describe("atomic scene operations", () => {
+  test("preserves immutable snapshot references instead of quadratically cloning history", () => {
+    let history = createHistory(createCantorDemoProject());
+    history = commitOperations(history, SHOT, [{ type: "update-object", objectId: "object-title", patch: { name: "First" } }], "First rename");
+    const firstSnapshot = history.past[0].project;
+    history = commitOperations(history, SHOT, [{ type: "update-object", objectId: "object-title", patch: { name: "Second" } }], "Second rename");
+    expect(history.past[0].project).toBe(firstSnapshot);
+    expect(firstSnapshot.shots[0].objects.find(({ id }) => id === "object-title")?.name).toBe("Uncountable, Yet Zero Length");
+    const undone = undo(history);
+    expect(undone.past[0].project).toBe(firstSnapshot);
+    const redone = redo(undone);
+    expect(redone.past[0].project).toBe(firstSnapshot);
+    expect(redone.present.shots[0].objects.find(({ id }) => id === "object-title")?.name).toBe("Second");
+  });
+
   test("updates without mutating its source and rejects a partly valid transaction atomically", () => {
     const project = createCantorDemoProject();
     const originalX = project.shots[0].objects[0].transform.x;
@@ -371,6 +385,39 @@ describe("atomic scene operations", () => {
 });
 
 describe("snapshot history", () => {
+  test("clones only newly accepted caller documents and reuses immutable archived snapshots", () => {
+    const callerInitial = createCantorDemoProject();
+    const h0 = createHistory(callerInitial);
+    const initialSnapshot = h0.present;
+    callerInitial.metadata.title = "caller mutated initial";
+    expect(h0.present.metadata.title).not.toBe("caller mutated initial");
+
+    const callerNext = cloneProject(h0.present);
+    callerNext.metadata.title = "First title";
+    const h1 = commitProject(h0, callerNext, "First rename");
+    expect(h1.past[0].project).toBe(initialSnapshot);
+    callerNext.metadata.title = "caller mutated commit";
+    expect(h1.present.metadata.title).toBe("First title");
+
+    const firstEntry = h1.past[0];
+    const callerSecond = cloneProject(h1.present);
+    callerSecond.metadata.title = "Second title";
+    const h2 = commitProject(h1, callerSecond, "Second rename");
+    expect(h2.past[0]).toBe(firstEntry);
+    expect(h2.past[1].project).toBe(h1.present);
+
+    const undone = undo(h2);
+    expect(undone.present).toBe(h1.present);
+    expect(undone.past[0]).toBe(firstEntry);
+    expect(undone.future[0].project).toBe(h2.present);
+    expect(undone.future[0].label).toBe("Second rename");
+
+    const redone = redo(undone);
+    expect(redone.present).toBe(h2.present);
+    expect(redone.past[0]).toBe(firstEntry);
+    expect(redone.present.metadata.title).toBe("Second title");
+  });
+
   test("does not create undo entries for canonically identical documents or operations", () => {
     const project = createCantorDemoProject();
     const history = createHistory(project);

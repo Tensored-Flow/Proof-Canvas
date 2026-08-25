@@ -45,6 +45,27 @@ function editor() {
   return screen.getByRole('application', { name: 'ProofCanvas editor' })
 }
 
+function openAssistant() {
+  if (screen.queryByRole('dialog', { name: 'AI command drawer' })) return
+  fireEvent.click(screen.getByRole('button', { name: 'Open command palette' }))
+  fireEvent.click(screen.getByRole('option', { name: /AI structured edit/ }))
+}
+
+function runAiPreset(index = 1) {
+  openAssistant()
+  fireEvent.click(screen.getByRole('button', { name: new RegExp(`^Run AI preset ${index}:`) }))
+}
+
+function openRenderDialog() {
+  if (screen.queryByRole('dialog', { name: 'Render and export' })) return
+  fireEvent.click(screen.getByRole('button', { name: 'Render or export' }))
+}
+
+function openOwnerMenu() {
+  if (screen.getByLabelText('Owner menu').getAttribute('aria-expanded') === 'true') return
+  fireEvent.click(screen.getByLabelText('Owner menu'))
+}
+
 describe('ProofCanvas editor client', () => {
   it('preloads the complete Cantor project and exposes the editor contract', () => {
     const { container } = render(<ProofCanvasEditor />)
@@ -57,10 +78,66 @@ describe('ProofCanvas editor client', () => {
     expect(screen.getByRole('region', { name: 'Scene canvas' })).toHaveAttribute('data-preview-time', '6.8')
     expect(container.querySelector('[data-object-id="object-title"]')).toBeInTheDocument()
     expect(screen.getByRole('radiogroup', { name: 'Active output style' })).toBeInTheDocument()
-    expect(screen.getByText('Deterministic demo interpreter — limited commands')).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'AI command drawer' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Project settings' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: 'Media' })).not.toBeInTheDocument()
     expect(screen.getByRole('tablist', { name: 'Shots' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Animation timeline' })).toHaveAttribute('data-shot-id', 'shot-cantor-construction')
     expect(container.querySelector('[data-object-id="object-removal-first"]')).not.toBeInTheDocument()
+  })
+
+  it('keeps the visible range, canvas, output, and timeline line on one playback clock', () => {
+    const project = cloneSerializable(createCantorDemoProject())
+    const duration = project.shots[0].duration
+    const frames = new Map<number, FrameRequestCallback>()
+    let frameId = 0
+    const requestFrame = jest.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      frameId += 1
+      frames.set(frameId, callback)
+      return frameId
+    })
+    const cancelFrame = jest.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => { frames.delete(id) })
+    const now = jest.spyOn(performance, 'now').mockReturnValue(1_000)
+    const runNextFrame = (time: number) => {
+      const entry = [...frames.entries()][0]
+      expect(entry).toBeDefined()
+      frames.delete(entry[0])
+      act(() => entry[1](time))
+    }
+    const expectCoherentTime = (time: number) => {
+      expect((screen.getByRole('slider', { name: 'Playhead' }) as HTMLInputElement).valueAsNumber).toBeCloseTo(time, 5)
+      expect(Number(screen.getByRole('region', { name: 'Scene canvas' }).getAttribute('data-preview-time'))).toBeCloseTo(time, 5)
+      expect(screen.getByRole('status', { name: 'Playhead time' })).toHaveTextContent(`${time.toFixed(2)}s`)
+      expect(Number.parseFloat((document.querySelector('.pc-playhead') as HTMLElement).style.left)).toBeCloseTo(time / duration * 100, 5)
+    }
+
+    try {
+      render(<ProofCanvasEditor initialProject={project} />)
+      expectCoherentTime(0)
+      fireEvent.click(screen.getByRole('button', { name: 'Play preview' }))
+      expect(screen.getByRole('slider', { name: 'Playhead' })).toBeDisabled()
+      runNextFrame(1_500)
+      expectCoherentTime(0.5)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Pause preview' }))
+      expect(screen.getByRole('slider', { name: 'Playhead' })).toBeEnabled()
+      expectCoherentTime(0.5)
+      fireEvent.change(screen.getByRole('slider', { name: 'Playhead' }), { target: { value: '1.25' } })
+      expectCoherentTime(1.25)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Play preview' }))
+      runNextFrame(1_000 + (duration - 1.25) * 1_000)
+      expect(screen.getByRole('button', { name: 'Play preview' })).toBeInTheDocument()
+      expect(screen.getByRole('slider', { name: 'Playhead' })).toBeEnabled()
+      expectCoherentTime(duration)
+      fireEvent.click(screen.getByRole('button', { name: 'Jump to start' }))
+      expectCoherentTime(0)
+    } finally {
+      requestFrame.mockRestore()
+      cancelFrame.mockRestore()
+      now.mockRestore()
+    }
   })
 
   it.each(['9:16', '1:1'] as ProofCanvasAspectRatio[])('centres a new %s shot on the shared logical frame', (aspectRatio) => {
@@ -84,6 +161,7 @@ describe('ProofCanvas editor client', () => {
     const { container } = render(<ProofCanvasEditor initialProject={project} />)
     const existingIds = new Set([...container.querySelectorAll<SVGElement>('[data-object-id]')].map((element) => element.dataset.objectId))
 
+    fireEvent.click(screen.getByRole('tab', { name: 'Graphs' }))
     fireEvent.click(screen.getByRole('button', { name: 'Add coordinate axes' }))
     const axes = [...container.querySelectorAll<SVGElement>('svg.pc-stage [data-object-type="axes"]')]
       .find((element) => !existingIds.has(element.dataset.objectId))!
@@ -129,7 +207,7 @@ describe('ProofCanvas editor client', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
     expect(screen.queryByRole('treeitem', { name: /Uncountable, Yet Zero Length copy/ })).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: /^Run AI preset 1:/ }))
+    runAiPreset()
     const proposal = await screen.findByRole('region', { name: 'Proposed changes' })
     expect(fetchMock).not.toHaveBeenCalled()
     expect(within(proposal).getAllByRole('listitem')[0]).toHaveAttribute('data-operation-kind', 'update-object')
@@ -236,7 +314,7 @@ describe('ProofCanvas editor client', () => {
     }))
     render(<ProofCanvasEditor aiConfigured />)
 
-    fireEvent.click(screen.getByRole('button', { name: /^Run AI preset 1:/ }))
+    runAiPreset()
     const proposal = await screen.findByRole('region', { name: 'Proposed changes' })
     expect(screen.getByRole('region', { name: 'AI command' })).toHaveAttribute('data-ai-provider', 'configured-provider')
     expect(screen.getByText('OpenAI structured operations — server configured')).toBeInTheDocument()
@@ -252,7 +330,7 @@ describe('ProofCanvas editor client', () => {
     fetchMock.mockImplementationOnce(() => new Promise((resolve) => { release = resolve }))
     render(<ProofCanvasEditor aiConfigured />)
 
-    fireEvent.click(screen.getByRole('button', { name: /^Run AI preset 1:/ }))
+    runAiPreset()
     expect(screen.getByRole('button', { name: 'Propose edit' })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Add text' }))
     await act(async () => {
@@ -309,6 +387,39 @@ describe('ProofCanvas editor client', () => {
     expect(editor()).toHaveAttribute('data-history-past-count', '2')
   })
 
+  it('resolves rapid keyboard resize and rotate intents from the latest canonical transform', () => {
+    render(<ProofCanvasEditor />)
+    fireEvent.change(screen.getByRole('slider', { name: 'Playhead' }), { target: { value: '1.2' } })
+    fireEvent.click(screen.getByRole('treeitem', { name: /Uncountable, Yet Zero Length/ }))
+    const initialWidth = Number((screen.getByRole('spinbutton', { name: 'Width' }) as HTMLInputElement).value)
+    const initialRotation = Number((screen.getByRole('spinbutton', { name: 'Rotation' }) as HTMLInputElement).value)
+    const resize = screen.getByRole('button', { name: /Resize selected object/ })
+
+    act(() => {
+      fireEvent.keyDown(resize, { key: 'ArrowRight' })
+      fireEvent.keyDown(resize, { key: 'ArrowRight' })
+    })
+    expect(screen.getByRole('spinbutton', { name: 'Width' })).toHaveValue(initialWidth + 2)
+    expect(editor()).toHaveAttribute('data-history-past-count', '2')
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+    expect(screen.getByRole('spinbutton', { name: 'Width' })).toHaveValue(initialWidth + 1)
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+    expect(screen.getByRole('spinbutton', { name: 'Width' })).toHaveValue(initialWidth)
+
+    const rotate = screen.getByRole('button', { name: /Rotate selected object/ })
+    act(() => {
+      fireEvent.keyDown(rotate, { key: 'ArrowRight' })
+      fireEvent.keyDown(rotate, { key: 'ArrowRight' })
+    })
+    expect(screen.getByRole('spinbutton', { name: 'Rotation' })).toHaveValue(initialRotation + 2)
+    expect(editor()).toHaveAttribute('data-history-past-count', '2')
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+    expect(screen.getByRole('spinbutton', { name: 'Rotation' })).toHaveValue(initialRotation + 1)
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+    expect(screen.getByRole('spinbutton', { name: 'Rotation' })).toHaveValue(initialRotation)
+    expect(editor()).toHaveAttribute('data-history-past-count', '0')
+  })
+
   it('reserves arrow navigation for focused controls and nudges only from the canvas', () => {
     render(<ProofCanvasEditor />)
     fireEvent.change(screen.getByRole('slider', { name: 'Playhead' }), { target: { value: '1.2' } })
@@ -326,6 +437,132 @@ describe('ProofCanvas editor client', () => {
     fireEvent.keyDown(screen.getByRole('group', { name: /canvas at 1.2 seconds/ }), { key: 'ArrowRight' })
     expect(screen.getByRole('spinbutton', { name: 'X position' })).toHaveValue(301)
     expect(editor()).toHaveAttribute('data-history-past-count', '1')
+  })
+
+  it('resolves two batched ArrowRight commands from the latest canonical geometry', () => {
+    const project = cloneSerializable(createCantorDemoProject())
+    project.shots[0].animations = []
+    const { container } = render(<ProofCanvasEditor initialProject={project} />)
+    fireEvent.click(screen.getByRole('treeitem', { name: /Uncountable, Yet Zero Length/ }))
+    const canvas = screen.getByRole('group', { name: /canvas at/ })
+    const title = container.querySelector('[data-object-id="object-title"]')!
+    const beforeX = Number(title.getAttribute('transform')?.match(/^translate\(([-\d.]+)/)?.[1])
+
+    canvas.focus()
+    act(() => {
+      fireEvent.keyDown(canvas, { key: 'ArrowRight' })
+      fireEvent.keyDown(canvas, { key: 'ArrowRight' })
+    })
+
+    expect(Number(container.querySelector('[data-object-id="object-title"]')?.getAttribute('transform')?.match(/^translate\(([-\d.]+)/)?.[1])).toBe(beforeX + 2)
+    expect(editor()).toHaveAttribute('data-history-past-count', '2')
+  })
+
+  it('executes palette nudges contextually and disables inapplicable object commands', () => {
+    const project = cloneSerializable(createCantorDemoProject())
+    project.shots[0].animations = []
+    const { container } = render(<ProofCanvasEditor initialProject={project} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open command palette' }))
+    expect(screen.getByRole('option', { name: /Duplicate selection/ })).toBeDisabled()
+    expect(screen.getByRole('option', { name: /Group selection/ })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Close command palette' }))
+
+    fireEvent.click(screen.getByRole('treeitem', { name: /Uncountable, Yet Zero Length/ }))
+    const beforeX = Number(container.querySelector('[data-object-id="object-title"]')?.getAttribute('transform')?.match(/^translate\(([-\d.]+)/)?.[1])
+    fireEvent.click(screen.getByRole('button', { name: 'Open command palette' }))
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search commands' }), { target: { value: 'Nudge right' } })
+    fireEvent.click(screen.getByRole('option', { name: /Nudge right/ }))
+    expect(Number(container.querySelector('[data-object-id="object-title"]')?.getAttribute('transform')?.match(/^translate\(([-\d.]+)/)?.[1])).toBe(beforeX + 1)
+    expect(screen.queryByRole('dialog', { name: 'Command palette' })).not.toBeInTheDocument()
+  })
+
+  it('navigates enabled command options from the search field and executes the active option', () => {
+    render(<ProofCanvasEditor />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open command palette' }))
+    const search = screen.getByRole('searchbox', { name: 'Search commands' })
+    expect(search).toHaveFocus()
+    expect(screen.getByRole('option', { name: /AI structured edit/ })).toHaveAttribute('aria-selected', 'true')
+
+    fireEvent.keyDown(search, { key: 'ArrowDown' })
+    expect(screen.getByRole('option', { name: /Play or pause/ })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.keyDown(search, { key: 'ArrowDown' })
+    expect(screen.getByRole('option', { name: /Save now/ })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('option', { name: /Undo/ })).toBeDisabled()
+    expect(search).toHaveFocus()
+
+    fireEvent.keyDown(search, { key: 'Home' })
+    expect(screen.getByRole('option', { name: /AI structured edit/ })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.keyDown(search, { key: 'End' })
+    expect(screen.getByRole('option', { name: /Render or export/ })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.keyDown(search, { key: 'Enter' })
+    expect(screen.queryByRole('dialog', { name: 'Command palette' })).not.toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: 'Render and export' })).toBeInTheDocument()
+  })
+
+  it('uses standard wrapped arrow selection and focus in both style radiogroups', async () => {
+    render(<ProofCanvasEditor />)
+    const canvasStyles = screen.getByRole('radiogroup', { name: 'Active output style' })
+    fireEvent.keyDown(within(canvasStyles).getByRole('radio', { name: 'Editorial Ink' }), { key: 'ArrowRight' })
+    await waitFor(() => expect(within(canvasStyles).getByRole('radio', { name: 'Raw Manim' })).toHaveFocus())
+    expect(within(canvasStyles).getByRole('radio', { name: 'Raw Manim' })).toBeChecked()
+    fireEvent.keyDown(within(canvasStyles).getByRole('radio', { name: 'Raw Manim' }), { key: 'ArrowDown' })
+    await waitFor(() => expect(within(canvasStyles).getByRole('radio', { name: 'Editorial Ink' })).toHaveFocus())
+    expect(within(canvasStyles).getByRole('radio', { name: 'Editorial Ink' })).toBeChecked()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Styles' }))
+    const libraryStyles = screen.getByRole('radiogroup', { name: 'Library output styles' })
+    fireEvent.keyDown(within(libraryStyles).getByRole('radio', { name: /Editorial Ink/ }), { key: 'ArrowLeft' })
+    await waitFor(() => expect(within(libraryStyles).getByRole('radio', { name: /Raw Manim/ })).toHaveFocus())
+    expect(within(libraryStyles).getByRole('radio', { name: /Raw Manim/ })).toHaveAttribute('aria-checked', 'true')
+    fireEvent.keyDown(within(libraryStyles).getByRole('radio', { name: /Raw Manim/ }), { key: 'ArrowUp' })
+    await waitFor(() => expect(within(libraryStyles).getByRole('radio', { name: /Editorial Ink/ })).toHaveFocus())
+    expect(within(libraryStyles).getByRole('radio', { name: /Editorial Ink/ })).toHaveAttribute('aria-checked', 'true')
+    expect(editor()).toHaveAttribute('data-history-past-count', '4')
+  })
+
+  it('moves focus into the assistant drawer and returns it to the stable Commands trigger', () => {
+    render(<ProofCanvasEditor />)
+    const commands = screen.getByRole('button', { name: 'Open command palette' })
+    fireEvent.click(commands)
+    fireEvent.click(screen.getByRole('option', { name: /AI structured edit/ }))
+
+    expect(screen.getByRole('textbox', { name: 'Describe the edit' })).toHaveFocus()
+    fireEvent.click(screen.getByRole('button', { name: 'Close AI command drawer' }))
+    expect(commands).toHaveFocus()
+  })
+
+  it('restores command-palette focus to the stable trigger when opened over a utility dialog', () => {
+    render(<ProofCanvasEditor />)
+    const commands = screen.getByRole('button', { name: 'Open command palette' })
+    fireEvent.click(screen.getByRole('button', { name: 'Project settings' }))
+    const settings = screen.getByRole('dialog', { name: 'Project settings' })
+    fireEvent.keyDown(settings, { key: 'k', ctrlKey: true })
+
+    expect(screen.queryByRole('dialog', { name: 'Project settings' })).not.toBeInTheDocument()
+    expect(screen.getByRole('searchbox', { name: 'Search commands' })).toHaveFocus()
+    fireEvent.click(screen.getByRole('button', { name: 'Close command palette' }))
+    expect(commands).toHaveFocus()
+  })
+
+  it('cancels a timeline draft when undo changes its canonical base', () => {
+    Object.defineProperty(window, 'PointerEvent', { configurable: true, value: MouseEvent })
+    const { container } = render(<ProofCanvasEditor />)
+    const title = screen.getByRole('textbox', { name: 'Project title' })
+    fireEvent.change(title, { target: { value: 'Gesture base' } })
+    fireEvent.blur(title)
+    expect(editor()).toHaveAttribute('data-history-past-count', '1')
+
+    const block = container.querySelector<HTMLElement>('.pc-animation-block[data-locked="false"]')!
+    const originalStart = block.dataset.start
+    const track = screen.getByTestId('timeline-track')
+    Object.defineProperty(track, 'clientWidth', { configurable: true, value: 1000 })
+    fireEvent.pointerDown(block, { pointerId: 4, clientX: 100 })
+    fireEvent.pointerMove(track, { pointerId: 4, clientX: 220 })
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+    fireEvent.pointerUp(track, { pointerId: 4, clientX: 220 })
+
+    expect(editor()).toHaveAttribute('data-history-past-count', '0')
+    expect(container.querySelector<HTMLElement>(`[data-animation-id="${block.dataset.animationId}"]`)).toHaveAttribute('data-start', originalStart)
   })
 
   it('keeps editor command shortcuts active after toolbar buttons receive focus', () => {
@@ -368,10 +605,9 @@ describe('ProofCanvas editor client', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Insert focus callout' }))
     expect(screen.getByRole('treeitem', { name: /Focus callout/ })).toBeInTheDocument()
     expect(editor()).toHaveAttribute('data-history-past-count', '3')
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Objects' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Add raster image' }))
-    expect(container.querySelector('image[data-object-type="image"]')).toHaveAttribute('href', expect.stringContaining('data:image/png;base64'))
+    expect(screen.queryByRole('tab', { name: 'Media' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add raster image' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add SVG' })).not.toBeInTheDocument()
   })
 
   it('derives a selected group frame from authored visible descendants independently of output style', () => {
@@ -401,16 +637,22 @@ describe('ProofCanvas editor client', () => {
 
   it('wires every visible object and semantic-component insertion control', () => {
     const { container } = render(<ProofCanvasEditor />)
-    const objectControls = [
-      ['Add text', 'text'], ['Add math', 'math'], ['Add circle', 'circle'], ['Add rectangle', 'rectangle'],
-      ['Add line', 'line'], ['Add arrow', 'arrow'], ['Add brace', 'brace'], ['Add coordinate axes', 'axes'],
-      ['Add function graph', 'graph'], ['Add raster image', 'image'], ['Add SVG', 'svg'],
+    const tabs = [
+      ['Text', [['Add text', 'text']]],
+      ['Math', [['Add math', 'math'], ['Add brace', 'brace']]],
+      ['Shapes', [['Add circle', 'circle'], ['Add rectangle', 'rectangle'], ['Add line', 'line'], ['Add arrow', 'arrow']]],
+      ['Graphs', [['Add coordinate axes', 'axes'], ['Add function graph', 'graph']]],
     ] as const
-    for (const [label, type] of objectControls) {
-      fireEvent.click(screen.getByRole('button', { name: label }))
-      expect(container.querySelector(`[data-object-type="${type}"]`)).toBeInTheDocument()
+    for (const [tab, objectControls] of tabs) {
+      fireEvent.click(screen.getByRole('tab', { name: tab }))
+      for (const [label, type] of objectControls) {
+        fireEvent.click(screen.getByRole('button', { name: label }))
+        expect(container.querySelector(`[data-object-type="${type}"]`)).toBeInTheDocument()
+      }
     }
-    expect(container.querySelector('image[data-object-type="svg"]')).toHaveAttribute('href', '/proofcanvas/assets/editorial-mark.svg')
+    expect(screen.queryByRole('tab', { name: 'Media' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add raster image' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add SVG' })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('tab', { name: 'Components' }))
     for (const label of [
@@ -481,7 +723,8 @@ describe('ProofCanvas editor client', () => {
     fireEvent.keyDown(screen.getByRole('group', { name: /canvas at 8.0 seconds/ }), { key: 'ArrowRight' })
 
     expect(editor()).toHaveAttribute('data-history-past-count', '1')
-    expect(screen.getByRole('status', { name: 'Editor status' })).toHaveTextContent('animated geometry')
+    fireEvent.click(screen.getByRole('button', { name: 'Open command palette' }))
+    expect(screen.getByRole('option', { name: /Nudge right/ })).toBeDisabled()
   })
 
   it('deletes a focused timeline block without deleting the scene selection and disables locked blocks', () => {
@@ -512,7 +755,7 @@ describe('ProofCanvas editor client', () => {
     const easing = screen.getByRole('combobox', { name: 'Easing' })
     expect(easing).toBeEnabled()
     expect(easing).toHaveValue('editorial')
-    expect(screen.getByText(/saved emphasise easing remains previewable but cannot render/i)).toBeInTheDocument()
+    expect(screen.getByText(/saved legacy easing: choose there-and-back to repair rendering/i)).toBeInTheDocument()
     fireEvent.change(easing, { target: { value: 'there-and-back' } })
 
     expect(easing).toHaveValue('there-and-back')
@@ -548,14 +791,17 @@ describe('ProofCanvas editor client', () => {
     fireEvent.blur(name)
     expect(screen.getByRole('treeitem', { name: /A renamed theorem/ })).toBeInTheDocument()
 
+    openOwnerMenu()
     fireEvent.click(screen.getByRole('button', { name: 'Save project' }))
     expect(window.localStorage.getItem('proofcanvas_project_v1')).toContain('A renamed theorem')
-    fireEvent.click(screen.getByRole('button', { name: 'Reset demo' }))
+    openOwnerMenu()
+    fireEvent.click(screen.getByRole('button', { name: 'Reset sample project' }))
     expect(screen.queryByRole('treeitem', { name: /A renamed theorem/ })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
     expect(screen.getByRole('treeitem', { name: /A renamed theorem/ })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Redo' }))
     expect(screen.queryByRole('treeitem', { name: /A renamed theorem/ })).not.toBeInTheDocument()
+    openOwnerMenu()
     fireEvent.click(screen.getByRole('button', { name: 'Load saved project' }))
     expect(screen.getByRole('treeitem', { name: /A renamed theorem/ })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
@@ -573,6 +819,7 @@ describe('ProofCanvas editor client', () => {
 
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/schema version|unsupported|invalid|expected/i))
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    openRenderDialog()
     fireEvent.click(screen.getByRole('button', { name: 'Render MP4' }))
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('ProofCanvas rendering is not configured'))
   })
@@ -638,9 +885,10 @@ describe('ProofCanvas editor client', () => {
 
   it('invalidates composition critique when its project or proposal context changes', async () => {
     render(<ProofCanvasEditor />)
+    openAssistant()
     fireEvent.click(screen.getByRole('button', { name: 'Critique composition' }))
     expect(screen.getByText(/Current revision/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /^Run AI preset 1:/ }))
+    runAiPreset()
     await screen.findByRole('region', { name: 'Proposed changes' })
     expect(screen.queryByText(/Current revision/)).not.toBeInTheDocument()
 
@@ -651,8 +899,19 @@ describe('ProofCanvas editor client', () => {
   })
 
   it('shows exact compiler diagnostics alongside the Python preview', () => {
-    render(<ProofCanvasEditor />)
-    fireEvent.click(screen.getByRole('button', { name: 'Add raster image' }))
+    const project = cloneSerializable(createCantorDemoProject())
+    project.shots[0].objects.push({
+      id: 'object-image',
+      type: 'image',
+      name: 'Image asset',
+      locked: false,
+      visible: true,
+      transform: { x: 480, y: 270, width: 150, height: 70, rotation: 0, scaleX: 1, scaleY: 1 },
+      style: {},
+      properties: { source: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' },
+    })
+    render(<ProofCanvasEditor initialProject={project} />)
+    openRenderDialog()
     fireEvent.click(screen.getByRole('button', { name: 'Export Manim Python' }))
     const dialog = screen.getByRole('dialog', { name: /Manim Python/ })
     const diagnostics = within(dialog).getByRole('region', { name: 'Compiler diagnostics' })
@@ -672,6 +931,7 @@ describe('ProofCanvas editor client', () => {
     Object.defineProperty(file, 'text', { configurable: true, value: jest.fn().mockResolvedValue(canonicalProjectJson(rejected)) })
     fireEvent.change(screen.getByLabelText('Import project JSON'), { target: { files: [file] } })
     await waitFor(() => expect(editor()).toHaveAttribute('data-project-id', rejected.metadata.id))
+    openRenderDialog()
     fireEvent.click(screen.getByRole('button', { name: 'Export Manim Python' }))
     expect(screen.getByRole('dialog', { name: /Manim Python/ })).toHaveTextContent('from manim import')
     expect(screen.getByRole('region', { name: 'Compiler diagnostics' })).toHaveTextContent('AUDIO_CLIP_RENDER_UNSUPPORTED')
@@ -693,6 +953,7 @@ describe('ProofCanvas editor client', () => {
     }))
     render(<ProofCanvasEditor />)
 
+    openRenderDialog()
     fireEvent.click(screen.getByRole('button', { name: 'Render MP4' }))
     const renderStatus = await screen.findByRole('region', { name: 'Render status' })
     expect(renderStatus).toHaveAttribute('data-render-status', 'succeeded')
@@ -714,6 +975,7 @@ describe('ProofCanvas editor client', () => {
       .mockResolvedValueOnce(jsonResponse(200, { ok: true, job: { id, status: 'succeeded', quality: 'preview', sourceSha256, error: null, video: { sha256: 'b'.repeat(64), bytes: 1024 } } }))
     render(<ProofCanvasEditor />)
 
+    openRenderDialog()
     fireEvent.click(screen.getByRole('button', { name: 'Render MP4' }))
     await waitFor(() => expect(screen.getByRole('region', { name: 'Render status' })).toHaveAttribute('data-render-status', 'succeeded'), { timeout: 6000 })
     expect(fetchMock).toHaveBeenCalledTimes(4)
