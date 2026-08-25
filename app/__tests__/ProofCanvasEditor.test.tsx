@@ -84,13 +84,14 @@ describe('ProofCanvas editor client', () => {
     expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: 'Media' })).not.toBeInTheDocument()
     expect(screen.getByRole('tablist', { name: 'Shots' })).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Animation timeline' })).toHaveAttribute('data-shot-id', 'shot-cantor-construction')
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('data-shot-id', 'shot-cantor-construction')
     expect(container.querySelector('[data-object-id="object-removal-first"]')).not.toBeInTheDocument()
   })
 
   it('keeps the visible range, canvas, output, and timeline line on one playback clock', () => {
     const project = cloneSerializable(createCantorDemoProject())
-    const duration = project.shots[0].duration
+    const shotDuration = project.shots[0].duration
+    const duration = project.shots.reduce((total, candidate) => total + candidate.duration, 0)
     const frames = new Map<number, FrameRequestCallback>()
     let frameId = 0
     const requestFrame = jest.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
@@ -107,32 +108,34 @@ describe('ProofCanvas editor client', () => {
       act(() => entry[1](time))
     }
     const expectCoherentTime = (time: number) => {
-      expect((screen.getByRole('slider', { name: 'Playhead' }) as HTMLInputElement).valueAsNumber).toBeCloseTo(time, 5)
+      expect((screen.getByRole('slider', { name: 'Sequence time' }) as HTMLInputElement).valueAsNumber).toBeCloseTo(time, 5)
       expect(Number(screen.getByRole('region', { name: 'Scene canvas' }).getAttribute('data-preview-time'))).toBeCloseTo(time, 5)
-      expect(screen.getByRole('status', { name: 'Playhead time' })).toHaveTextContent(`${time.toFixed(2)}s`)
-      expect(Number.parseFloat((document.querySelector('.pc-playhead') as HTMLElement).style.left)).toBeCloseTo(time / duration * 100, 5)
+      expect(screen.getByRole('status', { name: 'Shot playhead time' })).toHaveTextContent(`${time.toFixed(2)}s`)
+      expect(Number.parseFloat((document.querySelector('.pc-playhead') as HTMLElement).style.left)).toBeCloseTo(time / shotDuration * 100, 5)
     }
 
     try {
       render(<ProofCanvasEditor initialProject={project} />)
       expectCoherentTime(0)
-      fireEvent.click(screen.getByRole('button', { name: 'Play preview' }))
-      expect(screen.getByRole('slider', { name: 'Playhead' })).toBeDisabled()
+      fireEvent.click(screen.getByRole('button', { name: 'Play sequence' }))
+      expect(screen.getByRole('slider', { name: 'Sequence time' })).toBeDisabled()
       runNextFrame(1_500)
       expectCoherentTime(0.5)
 
-      fireEvent.click(screen.getByRole('button', { name: 'Pause preview' }))
-      expect(screen.getByRole('slider', { name: 'Playhead' })).toBeEnabled()
+      fireEvent.click(screen.getByRole('button', { name: 'Pause sequence' }))
+      expect(screen.getByRole('slider', { name: 'Sequence time' })).toBeEnabled()
       expectCoherentTime(0.5)
-      fireEvent.change(screen.getByRole('slider', { name: 'Playhead' }), { target: { value: '1.25' } })
+      fireEvent.change(screen.getByRole('slider', { name: 'Sequence time' }), { target: { value: '1.25' } })
       expectCoherentTime(1.25)
 
-      fireEvent.click(screen.getByRole('button', { name: 'Play preview' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Play sequence' }))
       runNextFrame(1_000 + (duration - 1.25) * 1_000)
-      expect(screen.getByRole('button', { name: 'Play preview' })).toBeInTheDocument()
-      expect(screen.getByRole('slider', { name: 'Playhead' })).toBeEnabled()
-      expectCoherentTime(duration)
-      fireEvent.click(screen.getByRole('button', { name: 'Jump to start' }))
+      expect(screen.getByRole('button', { name: 'Play sequence' })).toBeInTheDocument()
+      expect(screen.getByRole('slider', { name: 'Sequence time' })).toBeEnabled()
+      expect((screen.getByRole('slider', { name: 'Sequence time' }) as HTMLInputElement).valueAsNumber).toBeCloseTo(duration, 5)
+      expect(editor()).toHaveAttribute('data-active-shot-id', project.shots.at(-1)!.id)
+      expect(Number(screen.getByRole('region', { name: 'Scene canvas' }).getAttribute('data-preview-time'))).toBeCloseTo(project.shots.at(-1)!.duration, 5)
+      fireEvent.click(screen.getByRole('button', { name: 'Jump to sequence start' }))
       expectCoherentTime(0)
     } finally {
       requestFrame.mockRestore()
@@ -431,7 +434,7 @@ describe('ProofCanvas editor client', () => {
 
   it('exposes keyboard-operable resize and rotate handles', () => {
     render(<ProofCanvasEditor />)
-    fireEvent.change(screen.getByRole('slider', { name: 'Playhead' }), { target: { value: '1.2' } })
+    fireEvent.change(screen.getByRole('slider', { name: 'Sequence time' }), { target: { value: '1.2' } })
     fireEvent.click(screen.getByRole('treeitem', { name: /Uncountable, Yet Zero Length/ }))
     const rotate = screen.getByRole('button', { name: /Rotate selected object/ })
     const resize = screen.getByRole('button', { name: /Resize selected object/ })
@@ -444,7 +447,7 @@ describe('ProofCanvas editor client', () => {
 
   it('resolves rapid keyboard resize and rotate intents from the latest canonical transform', () => {
     render(<ProofCanvasEditor />)
-    fireEvent.change(screen.getByRole('slider', { name: 'Playhead' }), { target: { value: '1.2' } })
+    fireEvent.change(screen.getByRole('slider', { name: 'Sequence time' }), { target: { value: '1.2' } })
     fireEvent.click(screen.getByRole('treeitem', { name: /Uncountable, Yet Zero Length/ }))
     const initialWidth = Number((screen.getByRole('spinbutton', { name: 'Width' }) as HTMLInputElement).value)
     const initialRotation = Number((screen.getByRole('spinbutton', { name: 'Rotation' }) as HTMLInputElement).value)
@@ -477,7 +480,7 @@ describe('ProofCanvas editor client', () => {
 
   it('reserves arrow navigation for focused controls and nudges only from the canvas', () => {
     render(<ProofCanvasEditor />)
-    fireEvent.change(screen.getByRole('slider', { name: 'Playhead' }), { target: { value: '1.2' } })
+    fireEvent.change(screen.getByRole('slider', { name: 'Sequence time' }), { target: { value: '1.2' } })
     const title = screen.getByRole('treeitem', { name: /Uncountable, Yet Zero Length/ })
     fireEvent.click(title)
     const x = screen.getByRole('spinbutton', { name: 'X position' })
@@ -513,12 +516,12 @@ describe('ProofCanvas editor client', () => {
     expect(editor()).toHaveAttribute('data-history-past-count', '2')
   })
 
-  it('executes palette nudges contextually and disables inapplicable object commands', () => {
+  it('executes palette nudges contextually and routes typed shot versus object commands', () => {
     const project = cloneSerializable(createCantorDemoProject())
     project.shots[0].animations = []
     const { container } = render(<ProofCanvasEditor initialProject={project} />)
     fireEvent.click(screen.getByRole('button', { name: 'Open command palette' }))
-    expect(screen.getByRole('option', { name: /Duplicate selection/ })).toBeDisabled()
+    expect(screen.getByRole('option', { name: /Duplicate selection/ })).toBeEnabled()
     expect(screen.getByRole('option', { name: /Group selection/ })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Close command palette' }))
 
@@ -541,7 +544,7 @@ describe('ProofCanvas editor client', () => {
     fireEvent.keyDown(search, { key: 'ArrowDown' })
     expect(screen.getByRole('option', { name: /Play or pause/ })).toHaveAttribute('aria-selected', 'true')
     fireEvent.keyDown(search, { key: 'ArrowDown' })
-    expect(screen.getByRole('option', { name: /Save now/ })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('option', { name: /Delete selection/ })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('option', { name: /Undo/ })).toBeDisabled()
     expect(search).toHaveFocus()
 
@@ -635,8 +638,8 @@ describe('ProofCanvas editor client', () => {
 
   it('uses roving focus and arrow navigation across shot tabs', async () => {
     render(<ProofCanvasEditor />)
-    const construction = screen.getByRole('tab', { name: 'Select shot The construction' })
-    const paradox = screen.getByRole('tab', { name: 'Select shot The paradox' })
+    const construction = screen.getByRole('tab', { name: /Shot 1, The construction/ })
+    const paradox = screen.getByRole('tab', { name: /Shot 2, The paradox/ })
     expect(construction).toHaveAttribute('tabindex', '0')
     expect(paradox).toHaveAttribute('tabindex', '-1')
 
@@ -724,7 +727,7 @@ describe('ProofCanvas editor client', () => {
     const { container } = render(<ProofCanvasEditor />)
     const camera = container.querySelector('[data-pc-camera-transform]')!
     const initialTransform = camera.getAttribute('transform')
-    fireEvent.change(screen.getByRole('slider', { name: 'Playhead' }), { target: { value: '13.6' } })
+    fireEvent.change(screen.getByRole('slider', { name: 'Sequence time' }), { target: { value: '13.6' } })
     expect(camera.getAttribute('transform')).not.toBe(initialTransform)
 
     fireEvent.click(screen.getByRole('treeitem', { name: /Uncountable, Yet Zero Length/ }))
@@ -735,7 +738,7 @@ describe('ProofCanvas editor client', () => {
     fireEvent.blur(targetX)
     expect(screen.getByRole('spinbutton', { name: 'Target X' })).toHaveValue(410)
 
-    fireEvent.change(screen.getByRole('slider', { name: 'Playhead' }), { target: { value: '16' } })
+    fireEvent.change(screen.getByRole('slider', { name: 'Sequence time' }), { target: { value: '16' } })
     fireEvent.change(screen.getByRole('combobox', { name: 'Animation type' }), { target: { value: 'camera-focus' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add animation' }))
     const cameraX = screen.getByRole('spinbutton', { name: 'Camera X' })
@@ -746,7 +749,7 @@ describe('ProofCanvas editor client', () => {
 
   it('uses relative deltas for multi-target move animations', () => {
     render(<ProofCanvasEditor />)
-    fireEvent.change(screen.getByRole('slider', { name: 'Playhead' }), { target: { value: '2' } })
+    fireEvent.change(screen.getByRole('slider', { name: 'Sequence time' }), { target: { value: '2' } })
     fireEvent.click(screen.getByRole('treeitem', { name: /Uncountable, Yet Zero Length/ }))
     fireEvent.click(screen.getByRole('treeitem', { name: /A quiet paradox/ }), { shiftKey: true })
     fireEvent.change(screen.getByRole('combobox', { name: 'Animation type' }), { target: { value: 'move' } })
@@ -774,7 +777,7 @@ describe('ProofCanvas editor client', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'Animation type' }), { target: { value: 'move' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add animation' }))
     expect(editor()).toHaveAttribute('data-history-past-count', '1')
-    fireEvent.change(screen.getByRole('slider', { name: 'Playhead' }), { target: { value: '8' } })
+    fireEvent.change(screen.getByRole('slider', { name: 'Sequence time' }), { target: { value: '8' } })
     fireEvent.keyDown(screen.getByRole('group', { name: /canvas at 8.0 seconds/ }), { key: 'ArrowRight' })
 
     expect(editor()).toHaveAttribute('data-history-past-count', '1')

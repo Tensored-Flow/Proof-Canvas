@@ -199,3 +199,52 @@ test('cancels an absolute transform draft when its canonical project revision ch
   fireEvent.pointerUp(svg, { pointerId: 1, clientX: 130, clientY: 120 })
   expect(onCommitTransforms).not.toHaveBeenCalled()
 })
+
+test('cancels canvas authoring and any live gesture while sequence playback is active', () => {
+  Object.defineProperty(window, 'PointerEvent', { configurable: true, value: MouseEvent })
+  const project = cloneSerializable(createCantorDemoProject())
+  const shot = project.shots[1]
+  project.shots = [shot]
+  shot.animations = []
+  shot.propertyTracks = []
+  shot.objects = [shot.objects[0]]
+  const parsed = ProjectDocumentSchema.parse(project)
+  const onSelect = jest.fn()
+  const onCommitTransforms = jest.fn()
+  const shared = {
+    project: parsed,
+    shot: parsed.shots[0],
+    playhead: 0,
+    previewStyle: parsed.styles.find(({ id }) => id === parsed.activeStyleId)!,
+    projectRevision: 'revision-a',
+    previewQuality: parsed.settings.previewQuality,
+    selectedIds: [parsed.shots[0].objects[0].id],
+    onSelect,
+    onCommitTransforms,
+    onCommitKeyboardTransform: jest.fn(),
+    onNotice: jest.fn(),
+  }
+  const view = render(<CanvasStage {...shared} authoringEnabled/>)
+  const svg = view.container.querySelector('svg.pc-stage') as SVGSVGElement
+  Object.defineProperty(svg, 'createSVGPoint', { configurable: true, value: () => {
+    const point = { x: 0, y: 0, matrixTransform: () => ({ x: point.x, y: point.y }) }
+    return point
+  } })
+  Object.defineProperty(svg, 'getScreenCTM', { configurable: true, value: () => ({ inverse: () => ({}) }) })
+  const object = view.container.querySelector('[data-object-id]')!
+  fireEvent.pointerDown(object, { button: 0, pointerId: 1, clientX: 100, clientY: 100 })
+  fireEvent.pointerMove(svg, { pointerId: 1, clientX: 130, clientY: 120 })
+
+  view.rerender(<CanvasStage {...shared} authoringEnabled={false}/>)
+  fireEvent.pointerUp(svg, { pointerId: 1, clientX: 130, clientY: 120 })
+  fireEvent.pointerDown(svg, { button: 0, pointerId: 2, clientX: 0, clientY: 0 })
+
+  expect(svg).not.toHaveAttribute('aria-readonly')
+  expect(svg).toHaveAttribute('aria-disabled', 'true')
+  expect(svg).toHaveAttribute('data-authoring-enabled', 'false')
+  expect(svg).toHaveAccessibleName(/playback preview, editing disabled/)
+  expect(view.container.querySelector('[data-object-id]')).not.toBeInTheDocument()
+  expect(view.container.querySelector('.pc-selection-handles')).not.toBeInTheDocument()
+  expect(onSelect).toHaveBeenCalledTimes(1)
+  expect(onCommitTransforms).not.toHaveBeenCalled()
+})

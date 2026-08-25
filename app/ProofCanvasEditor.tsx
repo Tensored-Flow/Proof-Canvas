@@ -2,6 +2,7 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent, type ComponentProps, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import CanvasStage, { resolveCanvasKeyboardTransformIntent, temporallyTransformsObject, type CanvasKeyboardTransformIntent } from './CanvasStage'
+import ShotStoryboard, { type StoryboardActionResult } from './ShotStoryboard'
 import { REQUIRED_AI_COMMANDS, interpretDemoCommand, type AiProposal } from '@/lib/proofcanvas/ai'
 import { compileManim } from '@/lib/proofcanvas/compiler'
 import { SEMANTIC_COMPONENTS, insertSemanticComponent, type SemanticComponentId } from '@/lib/proofcanvas/components'
@@ -11,9 +12,10 @@ import { createCantorDemoProject } from '@/lib/proofcanvas/demo'
 import { applyDocumentOperations } from '@/lib/proofcanvas/documentOperations'
 import { addTimelineTimes, compareTimelineTimes, logicalFrameFor, resolutionFor, subtractTimelineTimes, type LogicalFrame } from '@/lib/proofcanvas/frame'
 import { canRedo, canUndo, commitOperations, commitProject, createHistory, redo, undo, type ProjectHistory } from '@/lib/proofcanvas/history'
-import { commandTargetWithin, createEditorCommandController, EDITOR_COMMANDS, type EditorCommandId } from '@/lib/proofcanvas/editorCommands'
-import { EditorPlaybackClock } from '@/lib/proofcanvas/editorPlayback'
+import { commandTargetWithin, createEditorCommandController, EDITOR_COMMANDS, type EditorCommandId, type EditorCommandInvocation } from '@/lib/proofcanvas/editorCommands'
+import { EditorSequencePlaybackClock, type EditorSequencePlaybackSnapshot } from '@/lib/proofcanvas/editorPlayback'
 import { animationSelection, normalizeEditorSelection, objectSelection, projectSelection, selectedAnimationIds, selectedObjectIds, shotSelection, type EditorSelection } from '@/lib/proofcanvas/editorSelection'
+import { beginEditorShotSequencePlayback, buildEditorShotSequence, commitEditorShotAction, deriveEditorShotSequencePosition, minimumAuthoredShotDuration, resolveEditorShotActivation, seekEditorShotSequence, advanceEditorShotSequencePlayback, validateEditorShotWorkspace, type EditorShotAction, type EditorShotWorkspace } from '@/lib/proofcanvas/editorShotSequence'
 import { allocateId, collectProjectIds } from '@/lib/proofcanvas/ids'
 import { applyOperations, duplicateObjects, effectiveLockOwner, effectiveVisibilityOwner, inspectOperations } from '@/lib/proofcanvas/operations'
 import { PROOFCANVAS_BRACE_LABEL_MAX_CHARS, PROOFCANVAS_LATEX_MAX_CHARS, PROOFCANVAS_PROJECT_MAX_BYTES, PROOFCANVAS_SCHEMA_LIMITS, PROOFCANVAS_TEXT_MAX_CHARS, ProjectDocumentSchema, SceneOperationSchema, animationAuthoringCompatibilityIssue, canonicalProjectJson, cloneSerializable, parseProjectDocument, type AnimationType, type Easing, type ProjectDocument, type SceneAnimation, type SceneObject, type SceneOperation, type Shot } from '@/lib/proofcanvas/schema'
@@ -48,6 +50,64 @@ const MIN_RIGHT_PANEL = 240
 const MAX_RIGHT_PANEL = 400
 const MIN_TIMELINE_HEIGHT = 156
 const MAX_TIMELINE_HEIGHT = 380
+
+type EditorAuthority = Readonly<{
+  history: ProjectHistory
+  workspace: EditorShotWorkspace
+  isPlaying: boolean
+}>
+
+type ShotDialogState = Readonly<{
+  kind: 'rename' | 'duration' | 'delete'
+  shotId: string
+}> | null
+
+function reconcileEditorWorkspace(project: ProjectDocument, candidate: EditorShotWorkspace): EditorShotWorkspace {
+  const activeShot = project.shots.find(({ id }) => id === candidate.activeShotId) ?? project.shots[0]
+  const playhead = Number.isFinite(candidate.playhead)
+    ? Math.max(0, Math.min(activeShot.duration, candidate.playhead))
+    : 0
+  let selection = normalizeEditorSelection(candidate.selection, project, activeShot.id)
+  if (selection.kind === 'shot' && (selection.primaryShotId !== activeShot.id || !selection.shotIds.includes(activeShot.id))) {
+    selection = shotSelection([activeShot.id])
+  }
+  const reconciled = { activeShotId: activeShot.id, selection, playhead }
+  return validateEditorShotWorkspace(project, reconciled).ok
+    ? reconciled
+    : { activeShotId: activeShot.id, selection: shotSelection([activeShot.id]), playhead }
+}
+
+function sequenceClockSnapshot(project: ProjectDocument, workspace: EditorShotWorkspace): EditorSequencePlaybackSnapshot {
+  const reconciled = reconcileEditorWorkspace(project, workspace)
+  const position = deriveEditorShotSequencePosition(project, reconciled)
+  return position.ok
+    ? { globalTime: position.globalTime, shotId: reconciled.activeShotId, localTime: reconciled.playhead, atFinalEndpoint: position.atFinalEndpoint }
+    : { globalTime: 0, shotId: reconciled.activeShotId, localTime: reconciled.playhead, atFinalEndpoint: false }
+}
+
+function storyboardCardFor(shotId: string): HTMLElement | null {
+  return [...document.querySelectorAll<HTMLElement>('.pc-storyboard-card[data-shot-id]')]
+    .find(({ dataset }) => dataset.shotId === shotId) ?? null
+}
+
+function storyboardShotIdFromCommandTarget(target: EventTarget | null | undefined, project: ProjectDocument): string | null {
+  if (!target || typeof (target as Element).closest !== 'function') return null
+  const shotId = (target as Element).closest<HTMLElement>('.pc-storyboard-card[data-shot-id]')?.dataset.shotId
+  return shotId && project.shots.some(({ id }) => id === shotId) ? shotId : null
+}
+
+function counted(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`
+}
+
+function shotDeleteDescription(project: ProjectDocument, shot: Shot): string {
+  const keyframes = shot.propertyTracks.reduce((total, track) => total + track.keyframes.length, 0)
+  const shotIndex = project.shots.findIndex(({ id }) => id === shot.id)
+  const activation = shotIndex >= 0 && shotIndex < project.shots.length - 1
+    ? 'The next shot at this position becomes active.'
+    : 'The previous shot becomes active.'
+  return `Delete “${shot.name}” (${shot.duration.toFixed(2)} seconds)? This removes ${counted(shot.objects.length, 'object')}, ${counted(shot.animations.length, 'semantic animation')}, ${counted(keyframes, 'keyframe')}, ${counted(shot.audioClips.length, 'audio clip')}, ${counted(shot.captionClips.length, 'caption')}, and ${counted(shot.markers.length, 'marker')} from the sequence. ${activation} Undo can restore this shot until another branch edit.`
+}
 
 type ClientRenderJob = {
   id: string
@@ -346,13 +406,13 @@ const IsolatedCanvasStage = memo(function IsolatedCanvasStage({
   previewStyleId,
   ...stageProps
 }: Omit<ComponentProps<typeof CanvasStage>, 'playhead'> & {
-  clock: EditorPlaybackClock
+  clock: EditorSequencePlaybackClock
   isPlaying: boolean
   pausedPlayhead: number
   previewStyleId: string
 }) {
-  const livePlayhead = useSyncExternalStore(clock.subscribe, clock.getSnapshot, clock.getServerSnapshot)
-  const shownPlayhead = isPlaying ? livePlayhead : pausedPlayhead
+  const livePosition = useSyncExternalStore(clock.subscribe, clock.getSnapshot, clock.getServerSnapshot)
+  const shownPlayhead = isPlaying && livePosition.shotId === stageProps.shot.id ? livePosition.localTime : pausedPlayhead
   return <div role="region" aria-label="Scene canvas" data-pc-canvas data-preview-time={shownPlayhead} data-preview-style-id={previewStyleId} className="pc-canvas-region"><CanvasStage {...stageProps} playhead={shownPlayhead}/></div>
 })
 
@@ -361,33 +421,35 @@ const IsolatedTimelinePlayhead = memo(function IsolatedTimelinePlayhead({
   isPlaying,
   pausedPlayhead,
   duration,
+  shotId,
 }: {
-  clock: EditorPlaybackClock
+  clock: EditorSequencePlaybackClock
   isPlaying: boolean
   pausedPlayhead: number
   duration: number
+  shotId: string
 }) {
-  const livePlayhead = useSyncExternalStore(clock.subscribe, clock.getSnapshot, clock.getServerSnapshot)
-  const shownPlayhead = isPlaying ? livePlayhead : pausedPlayhead
-  return <><div className="pc-playhead" style={{ left: `${shownPlayhead / duration * 100}%` }}/><output aria-label="Playhead time">{shownPlayhead.toFixed(2)}s</output></>
+  const livePosition = useSyncExternalStore(clock.subscribe, clock.getSnapshot, clock.getServerSnapshot)
+  const shownPlayhead = isPlaying && livePosition.shotId === shotId ? livePosition.localTime : pausedPlayhead
+  return <><div className="pc-playhead" style={{ left: `${shownPlayhead / duration * 100}%` }}/><output aria-label="Shot playhead time">{shownPlayhead.toFixed(2)}s</output></>
 })
 
-const IsolatedPlayheadScrubber = memo(function IsolatedPlayheadScrubber({
+const IsolatedSequenceScrubber = memo(function IsolatedSequenceScrubber({
   clock,
   isPlaying,
-  pausedPlayhead,
+  pausedGlobalTime,
   duration,
   onSeek,
 }: {
-  clock: EditorPlaybackClock
+  clock: EditorSequencePlaybackClock
   isPlaying: boolean
-  pausedPlayhead: number
+  pausedGlobalTime: number
   duration: number
   onSeek(time: number): void
 }) {
-  const livePlayhead = useSyncExternalStore(clock.subscribe, clock.getSnapshot, clock.getServerSnapshot)
-  const shownPlayhead = isPlaying ? livePlayhead : pausedPlayhead
-  return <label className="pc-scrubber"><span>Playhead</span><input type="range" min="0" max={duration} step="any" value={shownPlayhead} disabled={isPlaying} aria-label="Playhead" onChange={(event) => onSeek(event.target.valueAsNumber)}/></label>
+  const livePosition = useSyncExternalStore(clock.subscribe, clock.getSnapshot, clock.getServerSnapshot)
+  const shownTime = isPlaying ? livePosition.globalTime : pausedGlobalTime
+  return <label className="pc-scrubber"><span>Sequence</span><input type="range" min="0" max={duration} step="any" value={shownTime} disabled={isPlaying} aria-label="Sequence time" onChange={(event) => onSeek(event.target.valueAsNumber)}/><output aria-label="Sequence time display">{shownTime.toFixed(2)}s / {duration.toFixed(2)}s</output></label>
 })
 
 export default function ProofCanvasEditor({
@@ -400,11 +462,18 @@ export default function ProofCanvasEditor({
   durableProject?: DurableEditorContext
 }) {
   const startingProjectRef = useRef<ProjectDocument>(ProjectDocumentSchema.parse(cloneSerializable(initialProject ?? createCantorDemoProject())))
-  const [history, setHistory] = useState<ProjectHistory>(() => createHistory(startingProjectRef.current))
-  const [activeShotId, setActiveShotId] = useState(startingProjectRef.current.shots[0].id)
-  const [selection, setSelection] = useState<EditorSelection>(() => shotSelection([startingProjectRef.current.shots[0].id]))
-  const [playhead, setPlayhead] = useState(initialProject ? 0 : INITIAL_DEMO_PLAYHEAD)
-  const [isPlaying, setIsPlaying] = useState(false)
+  const initialWorkspaceRef = useRef<EditorShotWorkspace>({
+    activeShotId: startingProjectRef.current.shots[0].id,
+    selection: shotSelection([startingProjectRef.current.shots[0].id]),
+    playhead: initialProject ? 0 : INITIAL_DEMO_PLAYHEAD,
+  })
+  const [editorAuthority, setEditorAuthority] = useState<EditorAuthority>(() => ({
+    history: createHistory(startingProjectRef.current),
+    workspace: initialWorkspaceRef.current,
+    isPlaying: false,
+  }))
+  const { history, workspace, isPlaying } = editorAuthority
+  const { activeShotId, selection, playhead } = workspace
   const [libraryTab, setLibraryTab] = useState<LibraryTab>('text')
   const [librarySearch, setLibrarySearch] = useState('')
   const [animationType, setAnimationType] = useState<AnimationType>('fade-in')
@@ -449,6 +518,7 @@ export default function ProofCanvasEditor({
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false)
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false)
   const [timelineCollapsed, setTimelineCollapsed] = useState(false)
+  const [shotDialog, setShotDialog] = useState<ShotDialogState>(null)
   const [panelResize, setPanelResize] = useState<{ kind: 'left' | 'right' | 'timeline'; start: number; initial: number } | null>(null)
   const trackRef = useRef<HTMLDivElement | null>(null)
   const exportDialogRef = useRef<HTMLDivElement | null>(null)
@@ -463,6 +533,9 @@ export default function ProofCanvasEditor({
   const assistantTriggerRef = useRef<HTMLElement | null>(null)
   const ownerMenuRef = useRef<HTMLDetailsElement | null>(null)
   const ownerMenuTriggerRef = useRef<HTMLElement | null>(null)
+  const shotDialogRef = useRef<HTMLDivElement | null>(null)
+  const shotDialogTriggerRef = useRef<HTMLElement | null>(null)
+  const shotDialogInputRef = useRef<HTMLInputElement | null>(null)
   const aiRequestSequence = useRef(0)
   const importRequestSequence = useRef(0)
   const aiAbortController = useRef<AbortController | null>(null)
@@ -474,45 +547,55 @@ export default function ProofCanvasEditor({
   const revisionMutationTailRef = useRef<Promise<void>>(Promise.resolve())
   const saveConflictRef = useRef(false)
   const recoveryAppliedRef = useRef(false)
+  const authorityRef = useRef(editorAuthority)
   const historyRef = useRef(history)
+  const workspaceRef = useRef(workspace)
   const selectionRef = useRef(selection)
   const activeShotIdRef = useRef(activeShotId)
-  const playbackClockRef = useRef(new EditorPlaybackClock(initialProject ? 0 : INITIAL_DEMO_PLAYHEAD))
-  const livePlayheadRef = useRef(playhead)
+  const [workspaceSnapshots] = useState(() => new WeakMap<ProjectDocument, EditorShotWorkspace>([[history.present, workspace]]))
+  const workspaceSnapshotsRef = useRef(workspaceSnapshots)
+  const [playbackClock] = useState(() => new EditorSequencePlaybackClock(sequenceClockSnapshot(history.present, workspace)))
+  const playbackClockRef = useRef(playbackClock)
+  const playbackGenerationRef = useRef(0)
+  const playbackFrameRef = useRef<number | null>(null)
 
   serverRevisionRef.current = serverRevision
   csrfTokenRef.current = csrfToken
-  historyRef.current = history
-  selectionRef.current = selection
-  activeShotIdRef.current = activeShotId
-
   const project = history.present
   const logicalFrame = logicalFrameFor(project.settings.aspectRatio)
   const shot = project.shots.find(({ id }) => id === activeShotId) ?? project.shots[0]
   const previewStyle = styleById(project.styles, project.activeStyleId) ?? project.styles[0]
+  const publishWorkspaceOnly = useCallback((nextWorkspace: EditorShotWorkspace, nextPlaying = authorityRef.current.isPlaying) => {
+    const current = authorityRef.current
+    const reconciled = reconcileEditorWorkspace(current.history.present, nextWorkspace)
+    const next: EditorAuthority = { history: current.history, workspace: reconciled, isPlaying: nextPlaying }
+    authorityRef.current = next
+    workspaceRef.current = reconciled
+    selectionRef.current = reconciled.selection
+    activeShotIdRef.current = reconciled.activeShotId
+    workspaceSnapshotsRef.current.set(current.history.present, reconciled)
+    if (!nextPlaying) playbackClockRef.current.publish(sequenceClockSnapshot(current.history.present, reconciled))
+    setEditorAuthority(next)
+  }, [])
   const setSelectedIds = useCallback((value: readonly string[] | ((ids: readonly string[]) => readonly string[])) => {
-    setSelection((current) => {
-      const latestProject = historyRef.current.present
-      const latestShot = latestProject.shots.find(({ id }) => id === activeShotIdRef.current) ?? latestProject.shots[0]
-      const currentIds = selectedObjectIds(current, latestShot.id)
-      const next = typeof value === 'function' ? value(currentIds) : value
-      const normalized = objectSelection(latestShot, selectionRootIds(latestShot, next))
-      selectionRef.current = normalized
-      return normalized
-    })
-  }, [])
+    const current = authorityRef.current
+    const latestProject = current.history.present
+    const latestShot = latestProject.shots.find(({ id }) => id === current.workspace.activeShotId) ?? latestProject.shots[0]
+    const currentIds = selectedObjectIds(current.workspace.selection, latestShot.id)
+    const next = typeof value === 'function' ? value(currentIds) : value
+    publishWorkspaceOnly({ ...current.workspace, selection: objectSelection(latestShot, selectionRootIds(latestShot, next)) })
+  }, [publishWorkspaceOnly])
   const setSelectedAnimationId = useCallback((id: string | null) => {
-    const latestProject = historyRef.current.present
-    const latestShot = latestProject.shots.find(({ id: candidateId }) => candidateId === activeShotIdRef.current) ?? latestProject.shots[0]
+    const current = authorityRef.current
+    const latestProject = current.history.present
+    const latestShot = latestProject.shots.find(({ id: candidateId }) => candidateId === current.workspace.activeShotId) ?? latestProject.shots[0]
     const next = id ? animationSelection(latestShot, [id]) : { kind: 'none', shotId: latestShot.id } as const
-    selectionRef.current = next
-    setSelection(next)
-  }, [])
+    publishWorkspaceOnly({ ...current.workspace, selection: next })
+  }, [publishWorkspaceOnly])
   const selectProjectContext = useCallback(() => {
-    const next = projectSelection()
-    selectionRef.current = next
-    setSelection(next)
-  }, [])
+    const current = authorityRef.current
+    publishWorkspaceOnly({ ...current.workspace, selection: projectSelection() })
+  }, [publishWorkspaceOnly])
   const selectedRootIds = selectionRootIds(shot, selectedObjectIds(selection, shot.id))
   const selectedObjects = selectedRootIds.map((id) => shot.objects.find((object) => object.id === id)).filter((object): object is SceneObject => Boolean(object))
   const primary = selectedObjects.at(-1)
@@ -662,7 +745,10 @@ export default function ProofCanvasEditor({
   const aiContextRef = useRef(aiContextKey)
   const proposalReviews = useMemo(() => proposal ? reviewOperations(project, shot.id, proposal) : [], [project, proposal, shot.id])
   const animationLanes = useMemo(() => timelineLaneMap(shot.animations, timelineDraft), [shot.animations, timelineDraft])
-  const minimumShotDuration = Math.max(1, ...shot.animations.map((animation) => addTimelineTimes(animation.start, animation.duration)))
+  const shotSequence = useMemo(() => buildEditorShotSequence(project), [project])
+  const pausedSequencePosition = deriveEditorShotSequencePosition(project, workspace)
+  const pausedGlobalTime = pausedSequencePosition.ok ? pausedSequencePosition.globalTime : 0
+  const minimumShotDuration = minimumAuthoredShotDuration(project, shot)
   const lockedAnimationCount = project.shots.reduce((count, candidateShot) => count + candidateShot.animations.filter((animation) => animationTargetsLocked(candidateShot, animation)).length, 0)
   const coordinateBounds = { min: -PROOFCANVAS_SCHEMA_LIMITS.animationCoordinateMagnitude, max: PROOFCANVAS_SCHEMA_LIMITS.animationCoordinateMagnitude }
   const signedScaleBounds = { min: -PROOFCANVAS_SCHEMA_LIMITS.animationScaleMaxMagnitude, max: PROOFCANVAS_SCHEMA_LIMITS.animationScaleMaxMagnitude, minMagnitude: PROOFCANVAS_SCHEMA_LIMITS.animationScaleMinMagnitude }
@@ -731,19 +817,6 @@ export default function ProofCanvasEditor({
   }, [durableProject, performDurableSave, projectRevision])
 
   useEffect(() => {
-    if (shot.id !== activeShotId) {
-      activeShotIdRef.current = shot.id
-      setActiveShotId(shot.id)
-    }
-    setPlayhead((value) => Math.min(value, shot.duration))
-    setSelection((current) => {
-      const normalized = normalizeEditorSelection(current, project, shot.id)
-      selectionRef.current = normalized
-      return normalized
-    })
-  }, [activeShotId, project, shot.id, shot.duration])
-
-  useEffect(() => {
     if (!ownerMenuOpen) return
     const onPointerDown = (event: PointerEvent) => {
       if (event.target instanceof Node && !ownerMenuRef.current?.contains(event.target)) setOwnerMenuOpen(false)
@@ -760,32 +833,59 @@ export default function ProofCanvasEditor({
   }, [projectRevision, timelineGesture])
 
   useEffect(() => {
-    if (isPlaying) return
-    livePlayheadRef.current = playhead
-    playbackClockRef.current.publish(playhead)
-  }, [isPlaying, playhead])
-
-  useEffect(() => {
     if (!isPlaying) return
-    const startTime = performance.now()
-    const startPlayhead = compareTimelineTimes(livePlayheadRef.current, shot.duration) >= 0 ? 0 : livePlayheadRef.current
-    livePlayheadRef.current = startPlayhead
-    playbackClockRef.current.publish(startPlayhead)
-    let frame = 0
+    const baseAuthority = authorityRef.current
+    const baseProject = baseAuthority.history.present
+    const baseWorkspace = baseAuthority.workspace
+    const generation = ++playbackGenerationRef.current
+    const startedAt = performance.now()
     const tick = (now: number) => {
-      const next = Math.min(shot.duration, startPlayhead + (now - startTime) / 1000)
-      livePlayheadRef.current = next
-      playbackClockRef.current.publish(next)
-      if (compareTimelineTimes(next, shot.duration) >= 0) {
-        setPlayhead(shot.duration)
-        setIsPlaying(false)
+      if (generation !== playbackGenerationRef.current || authorityRef.current.history.present !== baseProject || !authorityRef.current.isPlaying) return
+      const advanced = advanceEditorShotSequencePlayback(baseProject, baseWorkspace, Math.max(0, (now - startedAt) / 1_000))
+      if (!advanced.ok) {
+        const current = authorityRef.current
+        const next = { ...current, isPlaying: false }
+        authorityRef.current = next
+        setEditorAuthority(next)
+        setStatus(advanced.diagnostic.message)
         return
       }
-      frame = window.requestAnimationFrame(tick)
+      const position = deriveEditorShotSequencePosition(baseProject, advanced.workspace)
+      if (!position.ok || generation !== playbackGenerationRef.current) return
+      playbackClockRef.current.publish({
+        globalTime: advanced.globalTime,
+        shotId: advanced.workspace.activeShotId,
+        localTime: advanced.workspace.playhead,
+        atFinalEndpoint: position.atFinalEndpoint,
+      })
+      const current = authorityRef.current
+      if (current.workspace.activeShotId !== advanced.workspace.activeShotId || advanced.playback === 'pause') {
+        const next: EditorAuthority = {
+          history: current.history,
+          workspace: advanced.workspace,
+          isPlaying: advanced.playback === 'play',
+        }
+        authorityRef.current = next
+        workspaceRef.current = advanced.workspace
+        selectionRef.current = advanced.workspace.selection
+        activeShotIdRef.current = advanced.workspace.activeShotId
+        workspaceSnapshotsRef.current.set(current.history.present, advanced.workspace)
+        setEditorAuthority(next)
+      }
+      if (advanced.playback === 'pause') {
+        playbackFrameRef.current = null
+        setStatus('Sequence finished')
+        return
+      }
+      playbackFrameRef.current = window.requestAnimationFrame(tick)
     }
-    frame = window.requestAnimationFrame(tick)
-    return () => window.cancelAnimationFrame(frame)
-  }, [isPlaying, shot.duration])
+    playbackFrameRef.current = window.requestAnimationFrame(tick)
+    return () => {
+      playbackGenerationRef.current += 1
+      if (playbackFrameRef.current !== null) window.cancelAnimationFrame(playbackFrameRef.current)
+      playbackFrameRef.current = null
+    }
+  }, [isPlaying, projectRevision])
 
   useEffect(() => {
     if (!panelResize) return
@@ -931,6 +1031,31 @@ export default function ProofCanvasEditor({
   }, [commandPaletteOpen])
 
   useEffect(() => {
+    const dialog = shotDialogRef.current
+    if (!shotDialog || !dialog) return
+    const background = [...dialog.parentElement!.children].filter((element): element is HTMLElement => element instanceof HTMLElement && element !== dialog)
+    for (const element of background) element.inert = true
+    const focusable = () => [...dialog.querySelectorAll<HTMLElement>('button, input, [tabindex]:not([tabindex="-1"])')].filter((element) => !element.hasAttribute('disabled'))
+    ;(shotDialogInputRef.current ?? dialog.querySelector<HTMLElement>('[data-autofocus]') ?? focusable()[0])?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); setShotDialog(null); return }
+      if (event.key !== 'Tab') return
+      const candidates = focusable()
+      if (!candidates.length) return
+      const first = candidates[0]
+      const last = candidates.at(-1)!
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+    }
+    dialog.addEventListener('keydown', onKeyDown)
+    return () => {
+      dialog.removeEventListener('keydown', onKeyDown)
+      for (const element of background) element.inert = false
+      if (shotDialogTriggerRef.current?.isConnected) shotDialogTriggerRef.current.focus()
+    }
+  }, [shotDialog])
+
+  useEffect(() => {
     const drawer = assistantRef.current ?? document.querySelector<HTMLElement>('.pc-assistant-drawer')
     if (!assistantOpen || !drawer) return
     assistantTriggerRef.current ??= commandButtonRef.current ?? commandTriggerRef.current
@@ -948,44 +1073,78 @@ export default function ProofCanvasEditor({
     setCritique(null)
   }, [])
 
+  const cancelPlaybackLoop = useCallback(() => {
+    playbackGenerationRef.current += 1
+    if (playbackFrameRef.current !== null) window.cancelAnimationFrame(playbackFrameRef.current)
+    playbackFrameRef.current = null
+  }, [])
+
+  const materializeLiveWorkspace = useCallback((authority = authorityRef.current): EditorShotWorkspace => {
+    if (!authority.isPlaying) return authority.workspace
+    const live = playbackClockRef.current.getSnapshot()
+    const resolved = seekEditorShotSequence(authority.history.present, authority.workspace, live.globalTime)
+    return resolved.ok ? resolved.workspace : authority.workspace
+  }, [])
+
+  const publishEditorAuthority = useCallback((
+    nextHistory: ProjectHistory,
+    requestedWorkspace: EditorShotWorkspace,
+    playback: 'play' | 'pause' | 'preserve',
+    options: Readonly<{ invalidateAi?: boolean; status?: string }> = {},
+  ) => {
+    const current = authorityRef.current
+    const nextWorkspace = reconcileEditorWorkspace(nextHistory.present, requestedWorkspace)
+    const keepPlaying = playback === 'play' || (playback === 'preserve' && current.isPlaying)
+    workspaceSnapshotsRef.current.set(current.history.present, materializeLiveWorkspace(current))
+    workspaceSnapshotsRef.current.set(nextHistory.present, nextWorkspace)
+    cancelPlaybackLoop()
+    const next: EditorAuthority = { history: nextHistory, workspace: nextWorkspace, isPlaying: keepPlaying }
+    authorityRef.current = next
+    historyRef.current = nextHistory
+    workspaceRef.current = nextWorkspace
+    selectionRef.current = nextWorkspace.selection
+    activeShotIdRef.current = nextWorkspace.activeShotId
+    projectRevisionRef.current = canonicalProjectJson(nextHistory.present)
+    playbackClockRef.current.publish(sequenceClockSnapshot(nextHistory.present, nextWorkspace))
+    setEditorAuthority(next)
+    if (options.invalidateAi !== false && nextHistory !== current.history) invalidateAiContext()
+    if (options.status) setStatus(options.status)
+  }, [cancelPlaybackLoop, invalidateAiContext, materializeLiveWorkspace])
+
   const commitOps = useCallback((operations: readonly SceneOperation[], label: string) => {
     try {
-      const current = historyRef.current
-      const next = commitOperations(current, activeShotIdRef.current, operations, label)
-      historyRef.current = next
-      projectRevisionRef.current = canonicalProjectJson(next.present)
-      setHistory(next)
-      setStatus(next === current ? 'No project values changed' : label)
-      if (next !== current) invalidateAiContext()
+      const currentAuthority = authorityRef.current
+      const current = currentAuthority.history
+      const liveWorkspace = materializeLiveWorkspace(currentAuthority)
+      const next = commitOperations(current, liveWorkspace.activeShotId, operations, label)
+      publishEditorAuthority(next, reconcileEditorWorkspace(next.present, liveWorkspace), 'pause', { status: next === current ? 'No project values changed' : label })
       setAiError('')
       return true
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'The edit could not be applied')
       return false
     }
-  }, [invalidateAiContext])
+  }, [materializeLiveWorkspace, publishEditorAuthority])
 
   const commitDocument = useCallback((document: ProjectDocument, label: string) => {
     try {
-      const current = historyRef.current
+      const currentAuthority = authorityRef.current
+      const current = currentAuthority.history
+      const liveWorkspace = materializeLiveWorkspace(currentAuthority)
       const next = commitProject(current, ProjectDocumentSchema.parse(document), label)
-      historyRef.current = next
-      projectRevisionRef.current = canonicalProjectJson(next.present)
-      setHistory(next)
-      setStatus(next === current ? 'No project values changed' : label)
-      if (next !== current) invalidateAiContext()
+      publishEditorAuthority(next, reconcileEditorWorkspace(next.present, liveWorkspace), 'pause', { status: next === current ? 'No project values changed' : label })
       return true
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'The project change was invalid')
       return false
     }
-  }, [invalidateAiContext])
+  }, [materializeLiveWorkspace, publishEditorAuthority])
 
   const commitCanvasKeyboardTransform = useCallback((intent: CanvasKeyboardTransformIntent) => {
     const latestProject = historyRef.current.present
     const latestShot = latestProject.shots.find(({ id }) => id === activeShotIdRef.current) ?? latestProject.shots[0]
     const latestStyle = styleById(latestProject.styles, latestProject.activeStyleId) ?? latestProject.styles[0]
-    const resolution = resolveCanvasKeyboardTransformIntent(latestProject, latestShot.id, latestStyle, livePlayheadRef.current, intent)
+    const resolution = resolveCanvasKeyboardTransformIntent(latestProject, latestShot.id, latestStyle, playbackClockRef.current.getSnapshot().localTime, intent)
     if (!resolution) return
     if ('notice' in resolution) {
       setStatus(resolution.notice)
@@ -1104,8 +1263,10 @@ export default function ProofCanvasEditor({
   }
 
   const nudge = useCallback((dx: number, dy: number) => {
-    const latestProject = historyRef.current.present
-    const latestShot = latestProject.shots.find(({ id }) => id === shot.id) ?? latestProject.shots[0]
+    const latestAuthority = authorityRef.current
+    if (latestAuthority.isPlaying) return
+    const latestProject = latestAuthority.history.present
+    const latestShot = latestProject.shots.find(({ id }) => id === latestAuthority.workspace.activeShotId) ?? latestProject.shots[0]
     const latestObjects = selectionRootIds(latestShot, selectedRootIds).map((id) => latestShot.objects.find((object) => object.id === id)).filter((object): object is SceneObject => Boolean(object))
     if (!latestObjects.length) return
     const selectedFamilyIds = new Set(latestObjects.flatMap((object) => familyObjectIds(latestShot, [object.id])))
@@ -1113,61 +1274,69 @@ export default function ProofCanvasEditor({
       setStatus('The selection contains a locked object; unlock it before nudging the selection.')
       return
     }
-    if ([...selectedFamilyIds].some((id) => temporallyTransformsObject(latestShot, id, livePlayheadRef.current))) {
+    if ([...selectedFamilyIds].some((id) => temporallyTransformsObject(latestShot, id, playbackClockRef.current.getSnapshot().localTime))) {
       setStatus('This playhead shows animated geometry. Edit the timeline block, or scrub before the spatial animation begins, to change the base pose.')
       return
     }
     commitOps(latestObjects.map((object) => ({ type: 'update-object', objectId: object.id, patch: { transform: { x: object.transform.x + dx, y: object.transform.y + dy } } })), 'Nudge selection')
-  }, [commitOps, selectedRootIds, shot.id])
+  }, [commitOps, selectedRootIds])
 
   const undoHistory = useCallback(() => {
-    const current = historyRef.current
+    const currentAuthority = authorityRef.current
+    const current = currentAuthority.history
     const label = current.past.at(-1)?.label
     if (!label) return setStatus('Nothing to undo')
+    workspaceSnapshotsRef.current.set(current.present, materializeLiveWorkspace(currentAuthority))
     const next = undo(current)
-    historyRef.current = next
-    projectRevisionRef.current = canonicalProjectJson(next.present)
-    setHistory(next)
-    invalidateAiContext()
-    setStatus(`Undid: ${label}`)
-  }, [invalidateAiContext])
+    const restored = workspaceSnapshotsRef.current.get(next.present)
+      ?? reconcileEditorWorkspace(next.present, currentAuthority.workspace)
+    publishEditorAuthority(next, restored, 'pause', { status: `Undid: ${label}` })
+  }, [materializeLiveWorkspace, publishEditorAuthority])
 
   const redoHistory = useCallback(() => {
-    const current = historyRef.current
+    const currentAuthority = authorityRef.current
+    const current = currentAuthority.history
     const label = current.future[0]?.label
     if (!label) return setStatus('Nothing to redo')
+    workspaceSnapshotsRef.current.set(current.present, materializeLiveWorkspace(currentAuthority))
     const next = redo(current)
-    historyRef.current = next
-    projectRevisionRef.current = canonicalProjectJson(next.present)
-    setHistory(next)
-    invalidateAiContext()
-    setStatus(`Redid: ${label}`)
-  }, [invalidateAiContext])
+    const restored = workspaceSnapshotsRef.current.get(next.present)
+      ?? reconcileEditorWorkspace(next.present, currentAuthority.workspace)
+    publishEditorAuthority(next, restored, 'pause', { status: `Redid: ${label}` })
+  }, [materializeLiveWorkspace, publishEditorAuthority])
 
   const togglePlayback = useCallback(() => {
-    if (isPlaying) {
-      const current = playbackClockRef.current.getSnapshot()
-      livePlayheadRef.current = current
-      setPlayhead(current)
-      setIsPlaying(false)
-      setStatus('Preview paused')
+    const current = authorityRef.current
+    if (current.isPlaying) {
+      publishEditorAuthority(current.history, materializeLiveWorkspace(current), 'pause', { invalidateAi: false, status: 'Sequence paused' })
       return
     }
-    if (compareTimelineTimes(playhead, shot.duration) >= 0) {
-      livePlayheadRef.current = 0
-      playbackClockRef.current.publish(0)
-      setPlayhead(0)
+    const started = beginEditorShotSequencePlayback(current.history.present, current.workspace)
+    if (!started.ok) {
+      setStatus(started.diagnostic.message)
+      return
     }
-    setIsPlaying(true)
-    setStatus('Preview playing')
-  }, [isPlaying, playhead, shot.duration])
+    publishEditorAuthority(current.history, started.workspace, 'play', { invalidateAi: false, status: started.globalTime === 0 ? 'Sequence playing from start' : 'Sequence playing' })
+  }, [materializeLiveWorkspace, publishEditorAuthority])
 
-  const jumpPlayhead = useCallback((time: number) => {
-    setIsPlaying(false)
-    livePlayheadRef.current = time
-    playbackClockRef.current.publish(time)
-    setPlayhead(time)
-  }, [])
+  const jumpSequenceTime = useCallback((time: number) => {
+    const current = authorityRef.current
+    const resolved = seekEditorShotSequence(current.history.present, current.workspace, time)
+    if (!resolved.ok) {
+      setStatus(resolved.diagnostic.message)
+      return false
+    }
+    publishEditorAuthority(current.history, resolved.workspace, 'pause', { invalidateAi: false })
+    return true
+  }, [publishEditorAuthority])
+
+  const jumpLocalPlayhead = useCallback((time: number) => {
+    const current = authorityRef.current
+    const sequence = buildEditorShotSequence(current.history.present)
+    const entry = sequence.entries.find(({ shotId }) => shotId === current.workspace.activeShotId)
+    if (!entry) return false
+    return jumpSequenceTime(addTimelineTimes(entry.start, time))
+  }, [jumpSequenceTime])
 
   const selectLibraryTab = (event: ReactKeyboardEvent<HTMLButtonElement>, current: LibraryTab) => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
@@ -1209,67 +1378,99 @@ export default function ProofCanvasEditor({
     window.requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-layer-object-id="${target.id}"]`)?.focus())
   }
 
-  const selectShot = (candidate: Shot) => {
+  const selectShot = useCallback((shotId: string) => {
+    const current = authorityRef.current
+    // Reselecting the active storyboard card is intentionally inert. In
+    // particular, do not materialize the external playback clock: publishing
+    // that equivalent workspace would cancel the current rAF generation.
+    if (shotId === current.workspace.activeShotId) return true
+    const resolved = resolveEditorShotActivation(current.history.present, materializeLiveWorkspace(current), shotId)
+    if (!resolved.ok) {
+      setStatus(resolved.diagnostic.message)
+      return false
+    }
+    if (resolved.workspace === current.workspace && resolved.playback === 'preserve') return true
+    publishEditorAuthority(current.history, resolved.workspace, resolved.playback, { invalidateAi: false, status: `Selected ${current.history.present.shots.find(({ id }) => id === shotId)?.name ?? 'shot'}` })
     invalidateAiContext()
-    setIsPlaying(false)
-    activeShotIdRef.current = candidate.id
-    setActiveShotId(candidate.id)
-    const nextSelection = shotSelection([candidate.id])
-    selectionRef.current = nextSelection
-    setSelection(nextSelection)
-    setPlayhead(0)
-    livePlayheadRef.current = 0
-    playbackClockRef.current.publish(0)
-  }
+    return true
+  }, [invalidateAiContext, materializeLiveWorkspace, publishEditorAuthority])
 
-  const navigateShotTabs = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => {
-    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
-    event.preventDefault()
-    event.stopPropagation()
-    const targetIndex = event.key === 'Home' ? 0
-      : event.key === 'End' ? project.shots.length - 1
-        : event.key === 'ArrowLeft' ? Math.max(0, index - 1)
-          : Math.min(project.shots.length - 1, index + 1)
-    if (targetIndex === index) return
-    const target = project.shots[targetIndex]
-    if (!target) return
-    selectShot(target)
-    window.requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-shot-id="${target.id}"]`)?.focus())
-  }
+  const resetWorkspaceToShot = useCallback((shotId: string, nextPlayhead = 0) => {
+    const current = authorityRef.current
+    publishEditorAuthority(current.history, { activeShotId: shotId, selection: shotSelection([shotId]), playhead: nextPlayhead }, 'pause', { invalidateAi: false })
+    invalidateAiContext()
+  }, [invalidateAiContext, publishEditorAuthority])
 
-  const addShot = () => {
-    const id = allocateId('shot', collectProjectIds(project), `scene-${project.shots.length + 1}`)
-    const next = cloneSerializable(project)
-    next.shots.push({ id, name: `Scene ${project.shots.length + 1}`, duration: 6, objects: [], animations: [], propertyTracks: [], audioClips: [], captionClips: [], markers: [], camera: { x: logicalFrame.centerX, y: logicalFrame.centerY, zoom: 1, rotation: 0 } })
-    if (commitDocument(next, 'Add shot')) {
-      const nextSelection = shotSelection([id])
-      activeShotIdRef.current = id
-      selectionRef.current = nextSelection
-      setActiveShotId(id)
-      setSelection(nextSelection)
-      jumpPlayhead(0)
+  const runEditorShotAction = useCallback((action: EditorShotAction): StoryboardActionResult => {
+    const current = authorityRef.current
+    const liveWorkspace = materializeLiveWorkspace(current)
+    const expectedRevision = canonicalProjectJson(current.history.present)
+    const resolution = commitEditorShotAction(current.history, liveWorkspace, { ...action, expectedRevision })
+    if (!resolution.ok) {
+      setStatus(resolution.diagnostic.message)
+      return { ok: false, activeShotId: current.workspace.activeShotId }
     }
-  }
+    publishEditorAuthority(resolution.history, resolution.workspace, resolution.playback, { status: resolution.label })
+    return { ok: true, activeShotId: resolution.workspace.activeShotId }
+  }, [materializeLiveWorkspace, publishEditorAuthority])
 
-  const editShot = (patch: Partial<Pick<Shot, 'name' | 'duration'>>, label: string) => {
-    const next = cloneSerializable(project)
-    const target = next.shots.find(({ id }) => id === shot.id)!
-    if (patch.name !== undefined && patch.name.trim()) target.name = patch.name.trim()
-    if (patch.duration !== undefined) {
-      const minimum = Math.max(1, ...target.animations.map((animation) => addTimelineTimes(animation.start, animation.duration)))
-      target.duration = Math.max(minimum, Math.min(300, patch.duration))
+  const splitActiveShot = useCallback((): StoryboardActionResult => {
+    const current = authorityRef.current
+    const liveWorkspace = materializeLiveWorkspace(current)
+    return runEditorShotAction({ type: 'split-shot', shotId: liveWorkspace.activeShotId, time: liveWorkspace.playhead })
+  }, [materializeLiveWorkspace, runEditorShotAction])
+
+  const focusStoryboardShot = useCallback((shotId: string) => {
+    window.requestAnimationFrame(() => {
+      const card = storyboardCardFor(shotId)
+      card?.focus({ preventScroll: true })
+      card?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+    })
+  }, [])
+
+  const openShotDialog = useCallback((kind: NonNullable<ShotDialogState>['kind'], shotId: string, trigger: HTMLElement) => {
+    shotDialogTriggerRef.current = trigger
+    setOwnerMenuOpen(false)
+    setCommandPaletteOpen(false)
+    setUtilityDialog(null)
+    setExportPreview(null)
+    setShotDialog({ kind, shotId })
+  }, [])
+
+  const commitShotDialog = useCallback(() => {
+    const dialog = shotDialog
+    if (!dialog) return
+    const target = authorityRef.current.history.present.shots.find(({ id }) => id === dialog.shotId)
+    if (!target) {
+      setStatus(`Shot not found: ${dialog.shotId}`)
+      return
     }
-    return commitDocument(next, label)
+    const input = shotDialogInputRef.current
+    const result = dialog.kind === 'rename'
+      ? runEditorShotAction({ type: 'rename-shot', shotId: target.id, name: input?.value ?? '' })
+      : dialog.kind === 'duration'
+        ? runEditorShotAction({ type: 'set-shot-duration', shotId: target.id, duration: input?.valueAsNumber ?? Number.NaN })
+        : runEditorShotAction({ type: 'delete-shot', shotId: target.id })
+    if (!result.ok) {
+      input?.focus()
+      return
+    }
+    shotDialogTriggerRef.current = storyboardCardFor(result.activeShotId)
+    setShotDialog(null)
+    focusStoryboardShot(result.activeShotId)
+  }, [focusStoryboardShot, runEditorShotAction, shotDialog])
+
+  const editShot = (patch: Partial<Pick<Shot, 'name' | 'duration'>>, _label: string) => {
+    const current = authorityRef.current.workspace
+    if (patch.name !== undefined) return runEditorShotAction({ type: 'rename-shot', shotId: current.activeShotId, name: patch.name }).ok
+    if (patch.duration !== undefined) return runEditorShotAction({ type: 'set-shot-duration', shotId: current.activeShotId, duration: patch.duration }).ok
+    return false
   }
 
   const reorderShot = (direction: -1 | 1) => {
-    const index = project.shots.findIndex(({ id }) => id === shot.id)
-    const target = index + direction
-    if (target < 0 || target >= project.shots.length) return setStatus('Shot is already at that edge')
-    const next = cloneSerializable(project)
-    const [moved] = next.shots.splice(index, 1)
-    next.shots.splice(target, 0, moved)
-    commitDocument(next, 'Reorder shots')
+    const current = authorityRef.current
+    const index = current.history.present.shots.findIndex(({ id }) => id === current.workspace.activeShotId)
+    return runEditorShotAction({ type: 'reorder-shot', shotId: current.workspace.activeShotId, index: index + direction }).ok
   }
 
   const addAnimation = () => {
@@ -1567,7 +1768,7 @@ export default function ProofCanvasEditor({
       const raw = window.localStorage.getItem(STORAGE_KEY)
       if (!raw) return setStatus('No saved ProofCanvas project was found')
       const loaded = parseProjectDocument(raw)
-      if (commitDocument(loaded, 'Load saved project')) { selectShot(loaded.shots[0]); setCritique(null) }
+      if (commitDocument(loaded, 'Load saved project')) { resetWorkspaceToShot(loaded.shots[0].id); setCritique(null) }
     } catch (error) { setStatus(error instanceof Error ? error.message : 'Saved project is invalid') }
   }
 
@@ -1636,7 +1837,7 @@ export default function ProofCanvasEditor({
     recoveryAppliedRef.current = true
     setRecoveryIgnored(true)
     if (commitDocument(recovered, 'Recover explicit browser copy')) {
-      selectShot(recovered.shots[0])
+      resetWorkspaceToShot(recovered.shots[0].id)
       setSaveMessage('Browser recovery applied; durable autosave is pending.')
     }
   }
@@ -1647,7 +1848,7 @@ export default function ProofCanvasEditor({
       ...source,
       metadata: { ...source.metadata, id: durableProject.projectId, title: project.metadata.title, createdAt: project.metadata.createdAt, updatedAt: project.metadata.updatedAt },
     }) : source
-    if (commitDocument(demo, 'Reset to preloaded demo')) { selectShot(demo.shots[0]); setPlayhead(INITIAL_DEMO_PLAYHEAD); setCritique(null) }
+    if (commitDocument(demo, 'Reset to preloaded demo')) { resetWorkspaceToShot(demo.shots[0].id, INITIAL_DEMO_PLAYHEAD); setCritique(null) }
   }
 
   const importJson = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -1670,7 +1871,7 @@ export default function ProofCanvasEditor({
         setImportError('The project changed while the import was being read. Select the file again.')
         return
       }
-      if (commitDocument(loaded, `Import ${file.name}`)) { selectShot(loaded.shots[0]); setCritique(null); setImportError(''); setStatus(`Imported ${file.name}`) }
+      if (commitDocument(loaded, `Import ${file.name}`)) { resetWorkspaceToShot(loaded.shots[0].id); setCritique(null); setImportError(''); setStatus(`Imported ${file.name}`) }
     } catch (error) {
       if (requestId === importRequestSequence.current) setImportError(error instanceof Error ? error.message : 'The selected project is invalid')
     }
@@ -1754,6 +1955,7 @@ export default function ProofCanvasEditor({
   const logoutOwner = () => durableProject ? guardedLeave('/login', true) : Promise.resolve()
 
   const dismissContext = useCallback(() => {
+    if (shotDialog) { setShotDialog(null); return }
     if (utilityDialog) { setUtilityDialog(null); return }
     if (exportPreview) { setExportPreview(null); return }
     if (commandPaletteOpen) { setCommandPaletteOpen(false); setCommandSearch(''); return }
@@ -1763,40 +1965,77 @@ export default function ProofCanvasEditor({
     if (proposal) { setProposal(null); setProposalBase(null); return }
     if (recoveryOpen) { setRecoveryOpen(false); return }
     if (rendererMessage || importError) { setRendererMessage(''); setImportError(''); return }
-    const next = shotSelection([shot.id])
-    selectionRef.current = next
-    setSelection(next)
+    const current = authorityRef.current
+    publishWorkspaceOnly({ ...current.workspace, selection: shotSelection([current.workspace.activeShotId]) })
     setStatus('Selection cleared')
-  }, [assistantOpen, commandPaletteOpen, exportPreview, importError, ownerMenuOpen, proposal, recoveryOpen, rendererMessage, shot.id, timelineDraft, timelineGesture, utilityDialog])
+  }, [assistantOpen, commandPaletteOpen, exportPreview, importError, ownerMenuOpen, proposal, publishWorkspaceOnly, recoveryOpen, rendererMessage, shotDialog, timelineDraft, timelineGesture, utilityDialog])
 
-  const deleteContextSelection = useCallback(() => {
+  const deleteContextSelection = useCallback((invocation: EditorCommandInvocation) => {
+    const latest = authorityRef.current
+    const keyboardShotId = invocation.source === 'keyboard'
+      ? storyboardShotIdFromCommandTarget(invocation.event?.target, latest.history.present)
+      : null
+    const currentSelection = latest.workspace.selection
+    const contextualShotId = keyboardShotId ?? (currentSelection.kind === 'shot' ? currentSelection.primaryShotId : null)
+    if (contextualShotId) {
+      const trigger = invocation.event?.target && typeof (invocation.event.target as HTMLElement).focus === 'function'
+        ? invocation.event.target as HTMLElement
+        : storyboardCardFor(contextualShotId) ?? document.body
+      openShotDialog('delete', contextualShotId, trigger)
+      return
+    }
     if (selectedAnimation) { deleteTimelineAnimation(selectedAnimation); return }
     deleteSelection()
-  }, [deleteSelection, selectedAnimation])
+  }, [deleteSelection, openShotDialog, selectedAnimation])
+
+  const duplicateContextSelection = useCallback((invocation: EditorCommandInvocation) => {
+    const latest = authorityRef.current
+    const keyboardShotId = invocation.source === 'keyboard'
+      ? storyboardShotIdFromCommandTarget(invocation.event?.target, latest.history.present)
+      : null
+    const currentSelection = latest.workspace.selection
+    const contextualShotId = keyboardShotId ?? (currentSelection.kind === 'shot' ? currentSelection.primaryShotId : null)
+    if (contextualShotId) {
+      const result = runEditorShotAction({ type: 'duplicate-shot', shotId: contextualShotId })
+      if (result.ok) focusStoryboardShot(result.activeShotId)
+      return
+    }
+    duplicateSelection()
+  }, [duplicateSelection, focusStoryboardShot, runEditorShotAction])
 
   const canExecuteEditorCommand = useCallback((id: EditorCommandId, invocation: { source: 'keyboard' | 'toolbar' | 'menu' | 'palette'; event?: KeyboardEvent; shiftKey: boolean }) => {
     const target = invocation.event?.target
     const insideDialog = commandTargetWithin(target ?? null, '[role="dialog"]')
     if (insideDialog && !['dismiss', 'save-project', 'open-command-palette', 'open-render-export'].includes(id)) return false
-    if (id === 'undo') return canUndo(history)
-    if (id === 'redo') return canRedo(history)
-    if (id === 'delete-selection') return Boolean(selectedRootIds.length || selectedAnimation)
-    if (id === 'duplicate-selection') return selectedRootIds.length > 0
+    const latest = authorityRef.current
+    const latestSelection = latest.workspace.selection
+    if (id === 'undo') return canUndo(latest.history)
+    if (id === 'redo') return canRedo(latest.history)
+    const keyboardShotId = invocation.source === 'keyboard'
+      ? storyboardShotIdFromCommandTarget(target, latest.history.present)
+      : null
+    if (id === 'delete-selection') return keyboardShotId !== null || latestSelection.kind === 'shot'
+      ? latest.history.present.shots.length > 1
+      : Boolean(selectedObjectIds(latestSelection, latest.workspace.activeShotId).length || latestSelection.kind === 'animation')
+    if (id === 'duplicate-selection') return keyboardShotId !== null || latestSelection.kind === 'shot'
+      ? latest.history.present.shots.length < PROOFCANVAS_SCHEMA_LIMITS.shots
+      : selectedObjectIds(latestSelection, latest.workspace.activeShotId).length > 0
     if (id === 'group-selection') return selectedRootIds.length > 1
     if (id === 'ungroup-selection') return selectedObjects.some(({ type }) => type === 'group')
     if (id.startsWith('nudge-')) {
+      if (latest.isPlaying) return false
       if (!selectedRootIds.length) return false
       return invocation.source !== 'keyboard' || commandTargetWithin(target ?? null, '[data-pc-canvas]')
     }
     return true
-  }, [history, selectedAnimation, selectedObjects, selectedRootIds.length])
+  }, [selectedObjects, selectedRootIds.length])
 
   const commandController = useMemo(() => createEditorCommandController({
     'toggle-playback': togglePlayback,
     undo: undoHistory,
     redo: redoHistory,
-    'delete-selection': deleteContextSelection,
-    'duplicate-selection': duplicateSelection,
+    'delete-selection': (invocation) => deleteContextSelection(invocation),
+    'duplicate-selection': duplicateContextSelection,
     'group-selection': groupSelection,
     'ungroup-selection': ungroupSelection,
     'open-command-palette': () => {
@@ -1816,7 +2055,7 @@ export default function ProofCanvasEditor({
     'nudge-up': ({ shiftKey }) => nudge(0, shiftKey ? -10 : -1),
     'nudge-down': ({ shiftKey }) => nudge(0, shiftKey ? 10 : 1),
     dismiss: dismissContext,
-  }, canExecuteEditorCommand), [canExecuteEditorCommand, deleteContextSelection, dismissContext, duplicateSelection, groupSelection, nudge, redoHistory, saveProject, togglePlayback, undoHistory, ungroupSelection])
+  }, canExecuteEditorCommand), [canExecuteEditorCommand, deleteContextSelection, dismissContext, duplicateContextSelection, groupSelection, nudge, redoHistory, saveProject, togglePlayback, undoHistory, ungroupSelection])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => { commandController.handleKeyboard(event) }
@@ -1863,8 +2102,12 @@ export default function ProofCanvasEditor({
     commandSearchRef.current?.focus()
   }
 
+  const shotDialogTarget = shotDialog
+    ? project.shots.find(({ id }) => id === shotDialog.shotId) ?? null
+    : null
+
   return (
-    <main className="proofcanvas-app" role="application" aria-label="ProofCanvas editor" aria-busy={leavePending} data-testid="proofcanvas-editor" data-pc-editor data-project-id={project.metadata.id} data-schema-version={project.schemaVersion} data-active-shot-id={shot.id} data-selection-kind={selection.kind} data-history-past-count={history.past.length} data-history-future-count={history.future.length} data-durable={durableProject ? 'true' : 'false'} data-server-revision={durableProject ? serverRevision : undefined} data-save-state={durableProject ? saveState : undefined} data-left-collapsed={leftPanelCollapsed ? 'true' : 'false'} data-right-collapsed={rightPanelCollapsed ? 'true' : 'false'} data-timeline-collapsed={timelineCollapsed ? 'true' : 'false'} style={{ '--pc-left-width': leftPanelCollapsed ? '0px' : `${leftPanelWidth}px`, '--pc-right-width': rightPanelCollapsed ? '0px' : `${rightPanelWidth}px`, '--pc-timeline-height': timelineCollapsed ? '42px' : `${timelineHeight}px` } as CSSProperties}>
+    <div className="proofcanvas-app" role="application" aria-label="ProofCanvas editor" aria-busy={leavePending} data-testid="proofcanvas-editor" data-pc-editor data-project-id={project.metadata.id} data-schema-version={project.schemaVersion} data-active-shot-id={shot.id} data-selection-kind={selection.kind} data-history-past-count={history.past.length} data-history-future-count={history.future.length} data-durable={durableProject ? 'true' : 'false'} data-server-revision={durableProject ? serverRevision : undefined} data-save-state={durableProject ? saveState : undefined} data-left-collapsed={leftPanelCollapsed ? 'true' : 'false'} data-right-collapsed={rightPanelCollapsed ? 'true' : 'false'} data-timeline-collapsed={timelineCollapsed ? 'true' : 'false'} style={{ '--pc-left-width': leftPanelCollapsed ? '0px' : `${leftPanelWidth}px`, '--pc-right-width': rightPanelCollapsed ? '0px' : `${rightPanelWidth}px`, '--pc-timeline-height': timelineCollapsed ? '150px' : `${timelineHeight}px` } as CSSProperties}>
       <div className="pc-desktop-notice" aria-label="Desktop viewport required"><strong>A wider workspace is required</strong><span>ProofCanvas is a desktop editor. Use a viewport at least 1024 px wide; your project remains safely autosaved.</span></div>
       <header className="pc-header" aria-label="Project actions">
         <a href="/" className="pc-back-link" aria-label="Back to projects" aria-disabled={leavePending} onClick={(event) => { event.preventDefault(); void guardedLeave('/') }}>←</a>
@@ -1917,7 +2160,7 @@ export default function ProofCanvasEditor({
           </div>
           <button type="button" onClick={() => setRightPanelCollapsed((value) => !value)} aria-pressed={!rightPanelCollapsed} aria-label={rightPanelCollapsed ? 'Show inspector panel' : 'Hide inspector panel'}>Inspector</button>
         </div>
-        <IsolatedCanvasStage clock={playbackClockRef.current} isPlaying={isPlaying} pausedPlayhead={playhead} previewStyleId={previewStyle.id} project={project} projectRevision={projectRevision} shot={shot} previewStyle={previewStyle} previewQuality={project.settings.previewQuality} selectedIds={selectedRootIds} onSelect={(ids) => setSelectedIds(selectionRootIds(shot, ids))} onNotice={setStatus} onCommitTransforms={(updates, label) => commitOps(updates.map(({ objectId, transform }) => ({ type: 'update-object', objectId, patch: { transform } })), label)} onCommitKeyboardTransform={commitCanvasKeyboardTransform}/>
+        <IsolatedCanvasStage clock={playbackClockRef.current} isPlaying={isPlaying} pausedPlayhead={playhead} previewStyleId={previewStyle.id} project={project} projectRevision={projectRevision} shot={shot} previewStyle={previewStyle} previewQuality={project.settings.previewQuality} selectedIds={selectedRootIds} authoringEnabled={!isPlaying} onSelect={(ids) => setSelectedIds(selectionRootIds(shot, ids))} onNotice={setStatus} onCommitTransforms={(updates, label) => commitOps(updates.map(({ objectId, transform }) => ({ type: 'update-object', objectId, patch: { transform } })), label)} onCommitKeyboardTransform={commitCanvasKeyboardTransform}/>
         <p className="pc-status" role="status" aria-label="Editor status">{status}</p>
       </section>
 
@@ -1958,17 +2201,30 @@ export default function ProofCanvasEditor({
           {animationPropertyFields.map((field) => { const value = typeof selectedAnimation.properties[field.key] === 'number' ? Number(selectedAnimation.properties[field.key]) : field.fallback; return <label key={field.key}>{field.label}<input type="number" min={field.min} max={field.max} step="0.1" aria-label={field.label} defaultValue={value} key={`${selectedAnimation.id}-${field.key}-${String(selectedAnimation.properties[field.key])}`} disabled={selectedAnimationLocked || selectedAnimationCompatibilityUnsupported} onBlur={(event) => commitNumericInput(event, field, value, (next) => updateAnimation({ properties: { [field.key]: next } }, `Set ${field.label.toLowerCase()}`))}/></label> })}
           <button type="button" className="pc-danger-action" disabled={selectedAnimationLocked || selectedAnimationCompatibilityUnsupported} onClick={() => deleteTimelineAnimation(selectedAnimation)}>Delete animation</button>
         </section>}
-        {!primary && !selectedAnimation && <section className="pc-context-summary" aria-label={selection.kind === 'project' ? 'Project inspector' : 'Shot inspector'}><div className="pc-section-heading"><h2>{selection.kind === 'project' ? 'Project' : 'Shot'}</h2><span>{selection.kind === 'project' ? project.settings.aspectRatio : `${shot.duration.toFixed(1)}s`}</span></div>{selection.kind === 'project' ? <><p>{project.shots.length} shots · {project.settings.frameRate} fps · {project.settings.resolution.width}×{project.settings.resolution.height}</p><button type="button" onClick={() => openUtilityDialog('settings')}>Open project settings</button></> : <><label>Name<input aria-label="Shot name" key={`inspector-${shot.id}-${shot.name}`} defaultValue={shot.name} onBlur={(event) => commitTextInput(event, shot.name, 'Shot name', (value) => editShot({ name: value }, 'Rename shot'), { trim: true, required: true })}/></label><label>Duration<input type="number" min={minimumShotDuration} max="300" step="0.5" aria-label="Shot duration" key={`inspector-${shot.id}-${shot.duration}`} defaultValue={shot.duration} onBlur={(event) => commitNumericInput(event, { key: 'shotDuration', label: 'Shot duration', fallback: shot.duration, min: minimumShotDuration, max: 300 }, shot.duration, (value) => editShot({ duration: value }, 'Set shot duration'))}/></label><div className="pc-context-actions"><button type="button" onClick={() => reorderShot(-1)} aria-label="Move shot earlier">Move earlier</button><button type="button" onClick={() => reorderShot(1)} aria-label="Move shot later">Move later</button></div><p>{shot.objects.length} layers · {shot.animations.length} animations</p></>}</section>}
+        {!primary && !selectedAnimation && <section className="pc-context-summary" aria-label={selection.kind === 'project' ? 'Project inspector' : 'Shot inspector'}><div className="pc-section-heading"><h2>{selection.kind === 'project' ? 'Project' : 'Shot'}</h2><span>{selection.kind === 'project' ? project.settings.aspectRatio : `${shot.duration.toFixed(1)}s`}</span></div>{selection.kind === 'project' ? <><p>{project.shots.length} shots · {project.settings.frameRate} fps · {project.settings.resolution.width}×{project.settings.resolution.height}</p><button type="button" onClick={() => openUtilityDialog('settings')}>Open project settings</button></> : <><label>Name<input aria-label="Shot name" key={`inspector-${shot.id}-${shot.name}`} defaultValue={shot.name} maxLength={120} onBlur={(event) => commitTextInput(event, shot.name, 'Shot name', (value) => editShot({ name: value }, 'Rename shot'), { trim: true, required: true })}/></label><label>Duration<input type="number" min={minimumShotDuration} max="300" step="0.5" aria-label="Shot duration" key={`inspector-${shot.id}-${shot.duration}`} defaultValue={shot.duration} onBlur={(event) => commitNumericInput(event, { key: 'shotDuration', label: 'Shot duration', fallback: shot.duration, min: minimumShotDuration, max: 300 }, shot.duration, (value) => editShot({ duration: value }, 'Set shot duration'))}/></label><div className="pc-context-actions"><button type="button" onClick={() => reorderShot(-1)} aria-label="Move shot earlier">Move earlier</button><button type="button" onClick={() => reorderShot(1)} aria-label="Move shot later">Move later</button></div><p>{shot.objects.length} layers · {shot.animations.length} animations</p></>}</section>}
       </aside>
 
-      <section className="pc-shots" aria-label="Shot rail"><div className="pc-section-heading"><h2>Shots</h2><button type="button" onClick={addShot}>Add shot</button></div><div className="pc-shot-list" role="tablist" aria-label="Shots">{project.shots.map((candidate, index) => <button type="button" role="tab" key={candidate.id} className={candidate.id === shot.id ? 'active' : ''} data-shot-id={candidate.id} aria-selected={candidate.id === shot.id} tabIndex={candidate.id === shot.id ? 0 : -1} onKeyDown={(event) => navigateShotTabs(event, index)} onClick={() => selectShot(candidate)} aria-label={`Select shot ${candidate.name}`}><span>{String(index + 1).padStart(2, '0')}</span><strong>{candidate.name}</strong><small>{candidate.duration.toFixed(1)}s</small></button>)}</div>
-      </section>
+      <div className="pc-bottom-workspace">
+        <ShotStoryboard project={project} activeShotId={shot.id} previewStyle={previewStyle} sequence={shotSequence} onActivate={selectShot} onCommitAction={runEditorShotAction} onSplitActive={splitActiveShot} onRequestDialog={openShotDialog}/>
 
-      <section className="pc-timeline" role="region" aria-label="Animation timeline" data-shot-id={shot.id}><div className="pc-timeline-head"><div className="pc-transport" aria-label="Preview transport"><button type="button" onClick={() => jumpPlayhead(0)} aria-label="Jump to start">↤</button><button type="button" className="pc-play-button" onClick={togglePlayback} aria-label={isPlaying ? 'Pause preview' : 'Play preview'} aria-pressed={isPlaying}>{isPlaying ? '❚❚' : '▶'}</button><button type="button" onClick={() => jumpPlayhead(shot.duration)} aria-label="Jump to end">↦</button></div><h2>Timeline</h2><label>Animation<select aria-label="Animation type" value={animationType} disabled={isPlaying} onChange={(event) => setAnimationType(event.target.value as AnimationType)}>{ANIMATION_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label><button type="button" onClick={addAnimation} disabled={isPlaying}>Add animation</button><IsolatedPlayheadScrubber clock={playbackClockRef.current} isPlaying={isPlaying} pausedPlayhead={playhead} duration={shot.duration} onSeek={jumpPlayhead}/><button type="button" onClick={() => setTimelineCollapsed((value) => !value)} aria-expanded={!timelineCollapsed} aria-label={timelineCollapsed ? 'Expand timeline' : 'Collapse timeline'}>{timelineCollapsed ? 'Expand' : 'Collapse'}</button></div>
-        <div ref={trackRef} className="pc-timeline-track" data-testid="timeline-track" onPointerMove={moveTimelineGesture} onPointerUp={endTimelineGesture} onPointerCancel={cancelTimelineGesture} onPointerDown={(event) => { if (event.target === event.currentTarget && trackRef.current) { const rect = trackRef.current.getBoundingClientRect(); jumpPlayhead(Math.max(0, Math.min(shot.duration, (event.clientX - rect.left) / rect.width * shot.duration))) } }}>
-          <IsolatedTimelinePlayhead clock={playbackClockRef.current} isPlaying={isPlaying} pausedPlayhead={playhead} duration={shot.duration}/>{shot.animations.map((animation) => { const timing = timelineDraft?.id === animation.id ? timelineDraft : animation; const lane = animationLanes.get(animation.id) ?? 0; const targets = animation.targetIds.map((id) => shot.objects.find((object) => object.id === id)?.name ?? id).join(', '); const locked = animationTargetsLocked(shot, animation); const lockedNotice = () => { setSelectedAnimationId(animation.id); setStatus('This animation targets a locked object family; unlock it before editing the block.') }; return <button type="button" key={animation.id} className={`pc-animation-block ${selectedAnimationId === animation.id ? 'selected' : ''} ${locked ? 'locked' : ''}`} style={{ left: `${timing.start / shot.duration * 100}%`, width: `${Math.max(1.5, timing.duration / shot.duration * 100)}%`, top: `${8 + lane * 31}px` }} data-animation-id={animation.id} data-animation-type={animation.type} data-target-ids={animation.targetIds.join(' ')} data-timeline-lane={lane} data-start={timing.start} data-duration={timing.duration} data-locked={locked ? 'true' : 'false'} aria-disabled={locked} aria-label={`${animation.type} animation targeting ${targets}; ${locked ? 'locked' : 'drag the right edge to resize'}`} onKeyDown={(event) => { if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); event.stopPropagation(); deleteTimelineAnimation(animation) } }} onClick={() => setSelectedAnimationId(animation.id)} onPointerDown={(event) => { if (isPlaying) { event.stopPropagation(); setStatus('Pause preview before editing timeline blocks.'); return } if (locked) { event.stopPropagation(); lockedNotice(); return } beginTimelineGesture(event, animation, 'move') }}><span>{animation.type}</span><i aria-hidden="true" onPointerDown={(event) => { if (locked) { event.stopPropagation(); lockedNotice(); return } beginTimelineGesture(event, animation, 'resize') }}/></button> })}
+        <section id="pc-active-shot-panel" className="pc-timeline" role="tabpanel" aria-labelledby={`pc-shot-tab-${shot.id}`} aria-label="Animation timeline" data-shot-id={shot.id}><div className="pc-timeline-head"><div className="pc-transport" aria-label="Sequence transport"><button type="button" onClick={() => jumpSequenceTime(0)} aria-label="Jump to sequence start">↤</button><button type="button" className="pc-play-button" onClick={togglePlayback} aria-label={isPlaying ? 'Pause sequence' : 'Play sequence'} aria-pressed={isPlaying}>{isPlaying ? '❚❚' : '▶'}</button><button type="button" onClick={() => jumpSequenceTime(shotSequence.totalDuration)} aria-label="Jump to sequence end">↦</button></div><h2>Timeline</h2><label>Animation<select aria-label="Animation type" value={animationType} disabled={isPlaying} onChange={(event) => setAnimationType(event.target.value as AnimationType)}>{ANIMATION_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label><button type="button" onClick={addAnimation} disabled={isPlaying}>Add animation</button><IsolatedSequenceScrubber clock={playbackClockRef.current} isPlaying={isPlaying} pausedGlobalTime={pausedGlobalTime} duration={shotSequence.totalDuration} onSeek={jumpSequenceTime}/><button type="button" onClick={() => setTimelineCollapsed((value) => !value)} aria-expanded={!timelineCollapsed} aria-label={timelineCollapsed ? 'Expand shot timeline' : 'Collapse shot timeline'}>{timelineCollapsed ? 'Expand' : 'Collapse'}</button></div>
+        <div ref={trackRef} className="pc-timeline-track" data-testid="timeline-track" onPointerMove={moveTimelineGesture} onPointerUp={endTimelineGesture} onPointerCancel={cancelTimelineGesture} onPointerDown={(event) => { if (event.target === event.currentTarget && trackRef.current) { const rect = trackRef.current.getBoundingClientRect(); jumpLocalPlayhead(Math.max(0, Math.min(shot.duration, (event.clientX - rect.left) / rect.width * shot.duration))) } }}>
+          <IsolatedTimelinePlayhead clock={playbackClockRef.current} isPlaying={isPlaying} pausedPlayhead={playhead} duration={shot.duration} shotId={shot.id}/>{shot.animations.map((animation) => { const timing = timelineDraft?.id === animation.id ? timelineDraft : animation; const lane = animationLanes.get(animation.id) ?? 0; const targets = animation.targetIds.map((id) => shot.objects.find((object) => object.id === id)?.name ?? id).join(', '); const locked = animationTargetsLocked(shot, animation); const lockedNotice = () => { setSelectedAnimationId(animation.id); setStatus('This animation targets a locked object family; unlock it before editing the block.') }; return <button type="button" key={animation.id} className={`pc-animation-block ${selectedAnimationId === animation.id ? 'selected' : ''} ${locked ? 'locked' : ''}`} style={{ left: `${timing.start / shot.duration * 100}%`, width: `${Math.max(1.5, timing.duration / shot.duration * 100)}%`, top: `${8 + lane * 31}px` }} data-animation-id={animation.id} data-animation-type={animation.type} data-target-ids={animation.targetIds.join(' ')} data-timeline-lane={lane} data-start={timing.start} data-duration={timing.duration} data-locked={locked ? 'true' : 'false'} aria-disabled={locked} aria-label={`${animation.type} animation targeting ${targets}; ${locked ? 'locked' : 'drag the right edge to resize'}`} onKeyDown={(event) => { if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); event.stopPropagation(); deleteTimelineAnimation(animation) } }} onClick={() => setSelectedAnimationId(animation.id)} onPointerDown={(event) => { if (isPlaying) { event.stopPropagation(); setStatus('Pause preview before editing timeline blocks.'); return } if (locked) { event.stopPropagation(); lockedNotice(); return } beginTimelineGesture(event, animation, 'move') }}><span>{animation.type}</span><i aria-hidden="true" onPointerDown={(event) => { if (locked) { event.stopPropagation(); lockedNotice(); return } beginTimelineGesture(event, animation, 'resize') }}/></button> })}
         </div>
-      </section>
+        </section>
+      </div>
+
+      {shotDialog && shotDialogTarget && <div ref={shotDialogRef} className="pc-shot-dialog" role="dialog" aria-modal="true" aria-labelledby="pc-shot-dialog-title" aria-describedby="pc-shot-dialog-description">
+        <form noValidate onSubmit={(event) => { event.preventDefault(); commitShotDialog() }}>
+          <header><div><span>Storyboard</span><h2 id="pc-shot-dialog-title">{shotDialog.kind === 'rename' ? 'Rename shot' : shotDialog.kind === 'duration' ? 'Set shot duration' : 'Delete shot'}</h2></div><button type="button" onClick={() => setShotDialog(null)} aria-label="Close shot dialog">×</button></header>
+          <div className="pc-shot-dialog-body">
+            {shotDialog.kind === 'rename' && <><p id="pc-shot-dialog-description">Choose a concise storyboard name. This edit is one undoable history step.</p><label>Name<input ref={shotDialogInputRef} name="shot-name" defaultValue={shotDialogTarget.name} maxLength={120} aria-label="Shot name"/></label></>}
+            {shotDialog.kind === 'duration' && <><p id="pc-shot-dialog-description">Duration must keep every authored lifetime, animation, keyframe, clip, caption, and marker in range.</p><label>Duration in seconds<input ref={shotDialogInputRef} name="shot-duration" type="number" min={minimumAuthoredShotDuration(project, shotDialogTarget)} max="300" step="any" defaultValue={shotDialogTarget.duration} aria-label="Shot duration"/></label></>}
+            {shotDialog.kind === 'delete' && <p id="pc-shot-dialog-description">{shotDeleteDescription(project, shotDialogTarget)}</p>}
+          </div>
+          <footer><button type="button" data-autofocus={shotDialog.kind === 'delete' ? '' : undefined} onClick={() => setShotDialog(null)}>Cancel</button><button type="submit" className={shotDialog.kind === 'delete' ? 'pc-danger-action' : 'pc-primary'}>{shotDialog.kind === 'rename' ? 'Rename shot' : shotDialog.kind === 'duration' ? 'Set duration' : 'Delete shot'}</button></footer>
+        </form>
+      </div>}
 
       {commandPaletteOpen && <div ref={commandPaletteRef} className="pc-command-palette" role="dialog" aria-modal="true" aria-label="Command palette"><header><div><span>Command palette</span><h2>What would you like to do?</h2></div><button type="button" onClick={() => setCommandPaletteOpen(false)} aria-label="Close command palette">×</button></header><label><span className="pc-visually-hidden">Search commands</span><input ref={commandSearchRef} type="search" aria-label="Search commands" aria-controls="pc-editor-command-list" aria-activedescendant={activeCommandOptionId ?? undefined} placeholder="Search actions" value={commandSearch} onKeyDown={navigateCommandListbox} onChange={(event) => setCommandSearch(event.target.value)}/></label><div id="pc-editor-command-list" className="pc-command-list" role="listbox" aria-label="Editor commands" onKeyDown={navigateCommandListbox}>{aiCommandVisible && <button id="pc-command-option-ai" type="button" role="option" aria-selected={activeCommandOptionId === 'pc-command-option-ai'} onFocus={() => setActiveCommandOptionId('pc-command-option-ai')} onClick={() => { assistantTriggerRef.current = commandButtonRef.current; setCommandPaletteOpen(false); setAssistantOpen(true) }}><span>AI structured edit…</span><kbd>Review first</kbd></button>}{paletteCommands.map(({ command, id, disabled }) => <button id={id} type="button" role="option" aria-selected={activeCommandOptionId === id} key={command.id} disabled={disabled} onFocus={() => { if (!disabled) setActiveCommandOptionId(id) }} onClick={() => { if (commandController.execute(command.id, { source: 'palette', shiftKey: false })) setCommandPaletteOpen(false) }}><span>{command.label}</span><kbd>{command.shortcut.replace('Mod', 'Ctrl/Cmd')}</kbd></button>)}{paletteCommands.length === 0 && !aiCommandVisible && <p role="status">No commands match “{commandSearch}”.</p>}</div></div>}
 
@@ -1993,6 +2249,6 @@ export default function ProofCanvasEditor({
         {renderPollingPaused && (renderJob.status === 'pending' || renderJob.status === 'running') && <button type="button" onClick={() => { setRendererMessage(''); setRenderPollFailures(0); setRenderPollingPaused(false) }}>Resume status polling</button>}
       </section>}
       {exportPreview && <div ref={exportDialogRef} className="pc-export-dialog" role="dialog" aria-modal="true" aria-label={exportPreview.title}><header><h2>{exportPreview.title}</h2><button type="button" onClick={() => setExportPreview(null)} aria-label="Close export preview">×</button></header><div className="pc-export-body">{exportPreview.diagnostics && exportPreview.diagnostics.length > 0 && <section className="pc-export-diagnostics" aria-label="Compiler diagnostics"><h3>Compiler diagnostics</h3><ul>{exportPreview.diagnostics.map((diagnostic) => <li key={diagnostic}>{diagnostic}</li>)}</ul></section>}<pre tabIndex={0}>{exportPreview.contents}</pre></div></div>}
-    </main>
+    </div>
   )
 }
