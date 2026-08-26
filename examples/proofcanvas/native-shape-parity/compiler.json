@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 4,
+  "projectId": "project-4e4154495645534841504553",
+  "revision": 2,
+  "projectSha256": "e6e4d9bd32031b01bbd5c559fd01a6363ed791a40560d3e7ee804b0ecb99e538",
+  "sourceSha256": "eb59c5ea3a806d124e75ecb8109ca3dbaba6a8af0053ebd6a348bf58f2ea3c8b",
+  "compilerDeterministic": true,
+  "objectTypes": [
+    "ellipse",
+    "polygon",
+    "dashed-line",
+    "double-arrow",
+    "freeform-path"
+  ],
+  "colors": {
+    "ellipse": "#ff0000",
+    "polygon": "#00ff00",
+    "dashed-line": "#0000ff",
+    "double-arrow": "#ff00ff",
+    "freeform-path": "#00ffff"
+  },
+  "diagnostics": [
+    {
+      "severity": "info",
+      "code": "RENDER_SETTINGS_EXTERNAL",
+      "message": "Renderer transport must apply 854x480 at 15fps (draft); preview quality standard is editor-only."
+    }
+  ]
+}

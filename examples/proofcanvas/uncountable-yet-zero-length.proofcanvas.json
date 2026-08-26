@@ -8,7 +8,7 @@
     "title": "Uncountable, Yet Zero Length",
     "updatedAt": "2026-08-23T00:00:00.000Z"
   },
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "settings": {
     "aspectRatio": "16:9",
     "frameRate": 30,

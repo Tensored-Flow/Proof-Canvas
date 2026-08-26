@@ -24,14 +24,19 @@ const EXPECTED_TYPES: Readonly<Record<ShapePresetId, readonly SceneObject["type"
   rectangle: ["rectangle"],
   "rounded-rectangle": ["rectangle"],
   circle: ["circle"],
-  "dot-point": ["circle"],
+  ellipse: ["ellipse"],
+  polygon: ["polygon"],
   line: ["line"],
+  "dashed-line": ["dashed-line"],
   arrow: ["arrow"],
+  "double-arrow": ["double-arrow"],
   brace: ["brace"],
-  bracket: ["group", "line", "line", "line"],
+  bracket: ["freeform-path"],
+  "freeform-path": ["freeform-path"],
   "highlight-box": ["rectangle"],
   underline: ["line"],
   "cross-out": ["group", "line", "line"],
+  "dot-point": ["circle"],
 };
 
 function blankProject(aspectRatio: ProofCanvasAspectRatio = "16:9"): ProjectDocument {
@@ -97,6 +102,9 @@ describe("shape preset catalogue", () => {
 
     expect(searchShapePresets("vertex marker").map(({ id }) => id)).toEqual(["dot-point"]);
     expect(searchShapePresets("square delimiter").map(({ id }) => id)).toEqual(["bracket"]);
+    expect(searchShapePresets("bezier handles").map(({ id }) => id)).toEqual(["freeform-path"]);
+    expect(searchShapePresets("bidirectional tips").map(({ id }) => id)).toEqual(["double-arrow"]);
+    expect(searchShapePresets("oval conic").map(({ id }) => id)).toEqual(["ellipse"]);
     expect(searchShapePresets("focus emphasis").map(({ id }) => id)).toEqual(["highlight-box"]);
     expect(searchShapePresets("  ")).toBe(SHAPE_PRESETS);
     expect(searchShapePresets("no-such-shape")).toEqual([]);
@@ -106,7 +114,7 @@ describe("shape preset catalogue", () => {
 });
 
 describe("shape preset instantiation", () => {
-  test.each(SHAPE_PRESET_IDS)("instantiates and inserts the %s preset as exact V3 primitives", (presetId) => {
+  test.each(SHAPE_PRESET_IDS)("instantiates and inserts the %s preset as exact V4 primitives", (presetId) => {
     const project = blankProject();
     const before = JSON.stringify(project);
     const existingIds = collectProjectIds(project);
@@ -166,6 +174,11 @@ describe("shape preset instantiation", () => {
     const rounded = instantiateShapePreset(project, project.shots[0].id, "rounded-rectangle")[0];
     const dot = instantiateShapePreset(project, project.shots[0].id, "dot-point")[0];
     const arrow = instantiateShapePreset(project, project.shots[0].id, "arrow")[0];
+    const dashed = instantiateShapePreset(project, project.shots[0].id, "dashed-line")[0];
+    const doubleArrow = instantiateShapePreset(project, project.shots[0].id, "double-arrow")[0];
+    const polygon = instantiateShapePreset(project, project.shots[0].id, "polygon")[0];
+    const bracket = instantiateShapePreset(project, project.shots[0].id, "bracket")[0];
+    const freeform = instantiateShapePreset(project, project.shots[0].id, "freeform-path")[0];
     const brace = instantiateShapePreset(project, project.shots[0].id, "brace")[0];
     const highlight = instantiateShapePreset(project, project.shots[0].id, "highlight-box")[0];
 
@@ -178,6 +191,34 @@ describe("shape preset instantiation", () => {
       tipShape: "triangle",
       tipSizeRatio: 0.25,
     });
+    expect(shapeRecord(dashed)).toEqual({
+      kind: "dashed-line",
+      lineCap: "butt",
+      dashLength: 14,
+      gapLength: 9,
+    });
+    expect(shapeRecord(doubleArrow)).toEqual({
+      kind: "double-arrow",
+      lineCap: "butt",
+      startTipShape: "triangle",
+      endTipShape: "triangle",
+      tipSizeRatio: 0.25,
+    });
+    expect(shapeRecord(polygon)).toMatchObject({ kind: "polygon", lineJoin: "miter" });
+    expect((shapeRecord(polygon)?.vertices as unknown[])).toHaveLength(5);
+    expect(shapeRecord(bracket)).toEqual({
+      kind: "freeform-path",
+      closed: false,
+      lineCap: "square",
+      lineJoin: "miter",
+      nodes: [
+        { point: { x: 0.5, y: -0.5 } },
+        { point: { x: -0.5, y: -0.5 } },
+        { point: { x: -0.5, y: 0.5 } },
+        { point: { x: 0.5, y: 0.5 } },
+      ],
+    });
+    expect(shapeRecord(freeform)).toMatchObject({ kind: "freeform-path", closed: false, lineCap: "round", lineJoin: "round" });
     expect(brace.properties).toEqual({
       label: "annotation",
       shape: { kind: "brace", direction: "below", spacing: 12 },
@@ -212,7 +253,7 @@ describe("shape preset instantiation", () => {
 
   test("reserves every emitted ID against global project namespaces", () => {
     const project = cloneSerializable(blankProject());
-    project.metadata.id = "group-shape-bracket";
+    project.metadata.id = "object-shape-bracket";
     project.customEasings = [
       { id: "object-shape-bracket-stem", name: "Stem collision", curve: { x1: 0.2, y1: 0, x2: 0.8, y2: 1 } },
       { id: "object-shape-bracket-top", name: "Top collision", curve: { x1: 0.2, y1: 0, x2: 0.8, y2: 1 } },
@@ -222,22 +263,12 @@ describe("shape preset instantiation", () => {
     const existing = collectProjectIds(parsed);
     const objects = instantiateShapePreset(parsed, parsed.shots[0].id, "bracket");
 
-    expect(objects.map(({ id }) => id)).toEqual([
-      "group-shape-bracket-2",
-      "object-shape-bracket-stem-2",
-      "object-shape-bracket-top-2",
-      "object-shape-bracket-bottom-2",
-    ]);
+    expect(objects.map(({ id }) => id)).toEqual(["object-shape-bracket-2"]);
     expect(objects.every(({ id }) => !existing.has(id))).toBe(true);
 
     const once = insertShapePreset(parsed, parsed.shots[0].id, "bracket");
     const twiceObjects = instantiateShapePreset(once, once.shots[0].id, "bracket");
-    expect(twiceObjects.map(({ id }) => id)).toEqual([
-      "group-shape-bracket-3",
-      "object-shape-bracket-stem-3",
-      "object-shape-bracket-top-3",
-      "object-shape-bracket-bottom-3",
-    ]);
+    expect(twiceObjects.map(({ id }) => id)).toEqual(["object-shape-bracket-3"]);
   });
 
   test.each(ASPECT_RATIOS)("keeps every preset inside the %s logical frame at extreme origins", (aspectRatio) => {

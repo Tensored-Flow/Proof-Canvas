@@ -52,7 +52,7 @@ function positiveTimelineIntervalsOverlap(
   return canonicalPositiveTimelineIntervalsOverlap(left, right);
 }
 
-export const PROJECT_SCHEMA_VERSION = 3 as const;
+export const PROJECT_SCHEMA_VERSION = 4 as const;
 export const LEGACY_FLOAT_TIMELINE_SCHEMA_VERSION = 2 as const;
 export const LEGACY_V2_TIME_EPSILON = 1e-9;
 export const PROOFCANVAS_PROJECT_MAX_BYTES = 2 * 1024 * 1024;
@@ -105,6 +105,13 @@ export const PROOFCANVAS_SCHEMA_LIMITS = Object.freeze({
   typographyScaleMax: 10,
   spacingMax: 4_096,
   cornerRadiusMax: 512,
+  shapePointsMax: 64,
+  normalizedShapeCoordinateMagnitude: 0.5,
+  dashPatternLengthMin: 1,
+  dashPatternRatioMin: 0.05,
+  dashPatternRatioMax: 0.95,
+  renderedDashesPerLineMax: 256,
+  nativeGeometryWorkPerProject: 4_096,
   hierarchyContrastMax: 100,
 } as const);
 
@@ -214,6 +221,11 @@ export const ObjectTypeSchema = z.enum([
   "line",
   "arrow",
   "brace",
+  "ellipse",
+  "polygon",
+  "dashed-line",
+  "double-arrow",
+  "freeform-path",
   "axes",
   "graph",
   "image",
@@ -478,12 +490,31 @@ export const AudioAnimatablePropertySchema = z.literal("volume");
 export type VisualStyleProperty = "color" | "fill" | "stroke" | "strokeWidth" | "opacity";
 
 /** Shared browser/compiler capability contract for visual style application. */
-export function objectTypeSupportsStyleProperty(objectType: string, property: VisualStyleProperty): boolean {
+export function objectTypeSupportsStyleProperty(
+  objectOrType: string | Readonly<{ type: string; properties?: Readonly<Record<string, JsonValue>> }>,
+  property: VisualStyleProperty,
+): boolean {
+  const objectType = typeof objectOrType === "string" ? objectOrType : objectOrType.type;
   if (property === "opacity") return true;
   if (objectType === "group") return true;
   if (objectType === "image" || objectType === "svg") return false;
-  if (property === "fill") return ["text", "math", "circle", "rectangle"].includes(objectType);
-  if (property === "stroke" || property === "strokeWidth") return ["circle", "rectangle", "line", "arrow", "brace", "axes", "graph"].includes(objectType);
+  if (property === "fill") {
+    if (objectType === "freeform-path") {
+      if (typeof objectOrType === "string") return false;
+      const shape = objectOrType.properties?.shape;
+      return typeof shape === "object"
+        && shape !== null
+        && !Array.isArray(shape)
+        && shape.kind === "freeform-path"
+        && shape.closed === true;
+    }
+    return ["text", "math", "circle", "rectangle", "ellipse", "polygon"].includes(objectType);
+  }
+  if (property === "stroke" || property === "strokeWidth") return [
+    "circle", "rectangle", "line", "arrow", "brace",
+    "ellipse", "polygon", "dashed-line", "double-arrow", "freeform-path",
+    "axes", "graph",
+  ].includes(objectType);
   return objectType === "text" || objectType === "math";
 }
 
@@ -576,12 +607,339 @@ export const MathPropertiesSchema = z.object({
   mode: z.enum(MATH_MODES),
 }).strict();
 
+export const ShapeLineCapSchema = z.enum(["butt", "round", "square"]);
+export const ShapeLineJoinSchema = z.enum(["miter", "round", "bevel"]);
+export const ArrowTipShapeSchema = z.enum(["triangle", "stealth", "circle", "square"]);
+
+export interface ResolvedDashedLinePattern {
+  readonly count: number;
+  readonly dashedRatio: number;
+  readonly renderedDashLength: number;
+  readonly renderedGapLength: number;
+}
+
+/** Exact open-line spacing used by pinned Manim 0.21 DashedVMobject. */
+export function resolveDashedLinePattern(
+  width: number,
+  dashLength: number,
+  gapLength: number,
+): ResolvedDashedLinePattern | null {
+  if (![width, dashLength, gapLength].every(Number.isFinite) || width <= 0 || dashLength <= 0 || gapLength <= 0) return null;
+  const dashedRatio = dashLength / (dashLength + gapLength);
+  const count = Math.max(2, Math.ceil((width / dashLength) * dashedRatio));
+  return {
+    count,
+    dashedRatio,
+    renderedDashLength: width * dashedRatio / count,
+    renderedGapLength: width * (1 - dashedRatio) / (count - 1),
+  };
+}
+
+export const NormalizedShapePointSchema = z.object({
+  x: z.number().finite()
+    .min(-PROOFCANVAS_SCHEMA_LIMITS.normalizedShapeCoordinateMagnitude)
+    .max(PROOFCANVAS_SCHEMA_LIMITS.normalizedShapeCoordinateMagnitude),
+  y: z.number().finite()
+    .min(-PROOFCANVAS_SCHEMA_LIMITS.normalizedShapeCoordinateMagnitude)
+    .max(PROOFCANVAS_SCHEMA_LIMITS.normalizedShapeCoordinateMagnitude),
+}).strict();
+
+type NormalizedShapePoint = z.infer<typeof NormalizedShapePointSchema>;
+
+function sameShapePoint(left: NormalizedShapePoint, right: NormalizedShapePoint): boolean {
+  return left.x === right.x && left.y === right.y;
+}
+
 /**
- * Schema-v3 already published a generic JSON property envelope. Shape
- * authoring uses one strict, namespaced record inside that envelope so new
- * controls cannot accidentally activate similarly named legacy/custom keys.
+ * The compiler's Python numeric dialect emits at most eight decimal places.
+ * Project the authored point into the exact emitted coordinate system before
+ * admitting topology that the renderer policy will evaluate there. The Y
+ * reflection mirrors the compiler's SVG-down to Manim-up conversion.
  */
-export const CurrentShapePropertiesSchema = z.discriminatedUnion("kind", [
+const SHAPE_COMPILER_DECIMAL_PLACES = 8;
+
+function compilerEmittedShapeCoordinate(value: number): number {
+  const emitted = Number(value.toFixed(SHAPE_COMPILER_DECIMAL_PLACES));
+  return Object.is(emitted, -0) ? 0 : emitted;
+}
+
+function compilerEmittedShapePoint(point: NormalizedShapePoint): NormalizedShapePoint {
+  return {
+    x: compilerEmittedShapeCoordinate(point.x),
+    y: compilerEmittedShapeCoordinate(-point.y),
+  };
+}
+
+function shapePointOrientation(left: NormalizedShapePoint, middle: NormalizedShapePoint, right: NormalizedShapePoint): number {
+  return (middle.x - left.x) * (right.y - left.y) - (middle.y - left.y) * (right.x - left.x);
+}
+
+function shapePointOnSegment(left: NormalizedShapePoint, point: NormalizedShapePoint, right: NormalizedShapePoint): boolean {
+  const epsilon = 1e-9;
+  return Math.abs(shapePointOrientation(left, point, right)) <= epsilon
+    && point.x >= Math.min(left.x, right.x) - epsilon
+    && point.x <= Math.max(left.x, right.x) + epsilon
+    && point.y >= Math.min(left.y, right.y) - epsilon
+    && point.y <= Math.max(left.y, right.y) + epsilon;
+}
+
+function shapeSegmentsIntersect(
+  leftStart: NormalizedShapePoint,
+  leftEnd: NormalizedShapePoint,
+  rightStart: NormalizedShapePoint,
+  rightEnd: NormalizedShapePoint,
+): boolean {
+  const epsilon = 1e-9;
+  const first = shapePointOrientation(leftStart, leftEnd, rightStart);
+  const second = shapePointOrientation(leftStart, leftEnd, rightEnd);
+  const third = shapePointOrientation(rightStart, rightEnd, leftStart);
+  const fourth = shapePointOrientation(rightStart, rightEnd, leftEnd);
+  if (((first > epsilon && second < -epsilon) || (first < -epsilon && second > epsilon))
+    && ((third > epsilon && fourth < -epsilon) || (third < -epsilon && fourth > epsilon))) return true;
+  return Math.abs(first) <= epsilon && shapePointOnSegment(leftStart, rightStart, leftEnd)
+    || Math.abs(second) <= epsilon && shapePointOnSegment(leftStart, rightEnd, leftEnd)
+    || Math.abs(third) <= epsilon && shapePointOnSegment(rightStart, leftStart, rightEnd)
+    || Math.abs(fourth) <= epsilon && shapePointOnSegment(rightStart, leftEnd, rightEnd);
+}
+
+function refineOpenShapePoints(
+  points: readonly NormalizedShapePoint[],
+  context: z.RefinementCtx,
+  pathForIndex: (index: number) => (string | number)[],
+  compilerQuantized = false,
+): boolean {
+  let valid = true;
+  for (let index = 1; index < points.length; index += 1) {
+    if (sameShapePoint(points[index - 1], points[index])) {
+      context.addIssue({
+        code: "custom",
+        path: pathForIndex(index),
+        message: compilerQuantized
+          ? "Adjacent shape points must remain distinct after eight-decimal compiler quantization"
+          : "Adjacent shape points must be distinct",
+      });
+      valid = false;
+    }
+  }
+  return valid;
+}
+
+function refinePolygonTopology(
+  vertices: readonly NormalizedShapePoint[],
+  context: z.RefinementCtx,
+  compilerQuantized = false,
+): boolean {
+  if (vertices.length < 3) return false;
+  let valid = refineOpenShapePoints(vertices, context, (index) => ["vertices", index], compilerQuantized);
+  if (sameShapePoint(vertices[0], vertices.at(-1)!)) {
+    context.addIssue({
+      code: "custom",
+      path: ["vertices", vertices.length - 1],
+      message: compilerQuantized
+        ? "A polygon's implicit closing vertices must remain distinct after eight-decimal compiler quantization"
+        : "A polygon closes implicitly; its final vertex must differ from its first",
+    });
+    valid = false;
+  }
+  const origin = vertices[0];
+  const axis = vertices.find((point) => !sameShapePoint(point, origin));
+  const nonCollinear = axis && vertices.some((point) => Math.abs(
+    (axis.x - origin.x) * (point.y - origin.y) - (axis.y - origin.y) * (point.x - origin.x),
+  ) >= 0.000_001);
+  if (!nonCollinear) {
+    context.addIssue({
+      code: "custom",
+      path: ["vertices"],
+      message: compilerQuantized
+        ? "Polygon vertices must remain non-collinear after eight-decimal compiler quantization"
+        : "Polygon vertices must not all be collinear",
+    });
+    valid = false;
+  }
+  for (let leftIndex = 0; leftIndex < vertices.length; leftIndex += 1) {
+    const leftNext = (leftIndex + 1) % vertices.length;
+    for (let rightIndex = leftIndex + 1; rightIndex < vertices.length; rightIndex += 1) {
+      const rightNext = (rightIndex + 1) % vertices.length;
+      if (leftIndex === rightIndex || leftNext === rightIndex || rightNext === leftIndex) continue;
+      if (shapeSegmentsIntersect(vertices[leftIndex], vertices[leftNext], vertices[rightIndex], vertices[rightNext])) {
+        context.addIssue({
+          code: "custom",
+          path: ["vertices", rightIndex],
+          message: compilerQuantized
+            ? "Polygon edges must remain non-intersecting outside adjacent vertices after eight-decimal compiler quantization"
+            : "Polygon edges must not intersect outside adjacent vertices",
+        });
+        return false;
+      }
+    }
+  }
+  return valid;
+}
+
+const PolygonShapePropertiesSchema = z.object({
+  kind: z.literal("polygon"),
+  vertices: z.array(NormalizedShapePointSchema).min(3).max(PROOFCANVAS_SCHEMA_LIMITS.shapePointsMax),
+  lineJoin: ShapeLineJoinSchema,
+}).strict().superRefine(({ vertices }, context) => {
+  if (!refinePolygonTopology(vertices, context)) return;
+  refinePolygonTopology(vertices.map(compilerEmittedShapePoint), context, true);
+});
+
+export const FreeformShapeNodeSchema = z.object({
+  point: NormalizedShapePointSchema,
+  inHandle: NormalizedShapePointSchema.optional(),
+  outHandle: NormalizedShapePointSchema.optional(),
+}).strict();
+
+type FreeformShapeNode = z.infer<typeof FreeformShapeNodeSchema>;
+
+function refineFreeformEndpointTopology(
+  nodes: readonly FreeformShapeNode[],
+  context: z.RefinementCtx,
+  closed: boolean,
+  compilerQuantized = false,
+): boolean {
+  if (nodes.length < (closed ? 3 : 2)) return false;
+  let valid = refineOpenShapePoints(
+    nodes.map(({ point }) => point),
+    context,
+    (index) => ["nodes", index, "point"],
+    compilerQuantized,
+  );
+  if (closed && sameShapePoint(nodes[0].point, nodes.at(-1)!.point)) {
+    context.addIssue({
+      code: "custom",
+      path: ["nodes", nodes.length - 1, "point"],
+      message: compilerQuantized
+        ? "A closed freeform path's implicit closing endpoints must remain distinct after eight-decimal compiler quantization"
+        : "A closed freeform path closes implicitly; its final node must differ from its first",
+    });
+    valid = false;
+  }
+  return valid;
+}
+
+function interpolateFreeformControl(
+  start: NormalizedShapePoint,
+  end: NormalizedShapePoint,
+  progress: number,
+): NormalizedShapePoint {
+  return {
+    x: start.x + (end.x - start.x) * progress,
+    y: start.y + (end.y - start.y) * progress,
+  };
+}
+
+/** Preserve every authored cubic control-point coincidence across emission. */
+function refineFreeformCompilerControls(
+  nodes: readonly FreeformShapeNode[],
+  context: z.RefinementCtx,
+  closed: boolean,
+): void {
+  const segmentIndexes = nodes.slice(0, -1).map((_, index) => [index, index + 1] as const);
+  if (closed) segmentIndexes.push([nodes.length - 1, 0]);
+  for (const [startIndex, endIndex] of segmentIndexes) {
+    const start = nodes[startIndex];
+    const end = nodes[endIndex];
+    const authored = [
+      start.point,
+      start.outHandle ?? interpolateFreeformControl(start.point, end.point, 1 / 3),
+      end.inHandle ?? interpolateFreeformControl(start.point, end.point, 2 / 3),
+      end.point,
+    ];
+    const emitted = authored.map(compilerEmittedShapePoint);
+    const paths = [
+      ["nodes", startIndex, "point"],
+      ["nodes", startIndex, start.outHandle ? "outHandle" : "point"],
+      ["nodes", endIndex, end.inHandle ? "inHandle" : "point"],
+      ["nodes", endIndex, "point"],
+    ] satisfies (string | number)[][];
+    for (let leftIndex = 0; leftIndex < authored.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < authored.length; rightIndex += 1) {
+        if (
+          !sameShapePoint(authored[leftIndex], authored[rightIndex])
+          && sameShapePoint(emitted[leftIndex], emitted[rightIndex])
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: paths[rightIndex],
+            message: "Distinct freeform cubic points must remain distinct after eight-decimal compiler quantization",
+          });
+          return;
+        }
+      }
+    }
+  }
+}
+
+function refineFreeformNodes(nodes: readonly FreeformShapeNode[], context: z.RefinementCtx, closed: boolean): void {
+  if (!refineFreeformEndpointTopology(nodes, context, closed)) return;
+  const compilerNodes = nodes.map((node) => ({
+    point: compilerEmittedShapePoint(node.point),
+    ...(node.inHandle ? { inHandle: compilerEmittedShapePoint(node.inHandle) } : {}),
+    ...(node.outHandle ? { outHandle: compilerEmittedShapePoint(node.outHandle) } : {}),
+  }));
+  if (!refineFreeformEndpointTopology(compilerNodes, context, closed, true)) return;
+  refineFreeformCompilerControls(nodes, context, closed);
+}
+
+const OpenFreeformShapePropertiesSchema = z.object({
+  kind: z.literal("freeform-path"),
+  closed: z.literal(false),
+  nodes: z.array(FreeformShapeNodeSchema).min(2).max(PROOFCANVAS_SCHEMA_LIMITS.shapePointsMax),
+  lineCap: ShapeLineCapSchema,
+  lineJoin: ShapeLineJoinSchema,
+}).strict().superRefine(({ nodes }, context) => {
+  refineFreeformNodes(nodes, context, false);
+  if (nodes[0]?.inHandle) context.addIssue({
+    code: "custom",
+    path: ["nodes", 0, "inHandle"],
+    message: "The first node of an open path cannot have an unused incoming handle",
+  });
+  if (nodes.at(-1)?.outHandle) context.addIssue({
+    code: "custom",
+    path: ["nodes", nodes.length - 1, "outHandle"],
+    message: "The final node of an open path cannot have an unused outgoing handle",
+  });
+});
+
+const ClosedFreeformShapePropertiesSchema = z.object({
+  kind: z.literal("freeform-path"),
+  closed: z.literal(true),
+  nodes: z.array(FreeformShapeNodeSchema).min(3).max(PROOFCANVAS_SCHEMA_LIMITS.shapePointsMax),
+  lineJoin: ShapeLineJoinSchema,
+}).strict().superRefine(({ nodes }, context) => refineFreeformNodes(nodes, context, true));
+
+const FreeformShapePropertiesSchema = z.discriminatedUnion("closed", [
+  OpenFreeformShapePropertiesSchema,
+  ClosedFreeformShapePropertiesSchema,
+]);
+
+const DashedLineShapePropertiesSchema = z.object({
+  kind: z.literal("dashed-line"),
+  lineCap: ShapeLineCapSchema,
+  dashLength: z.number().finite()
+    .min(PROOFCANVAS_SCHEMA_LIMITS.dashPatternLengthMin)
+    .max(PROOFCANVAS_SCHEMA_LIMITS.animationDimensionMax),
+  gapLength: z.number().finite()
+    .min(PROOFCANVAS_SCHEMA_LIMITS.dashPatternLengthMin)
+    .max(PROOFCANVAS_SCHEMA_LIMITS.animationDimensionMax),
+}).strict().superRefine(({ dashLength, gapLength }, context) => {
+  const ratio = dashLength / (dashLength + gapLength);
+  if (ratio < PROOFCANVAS_SCHEMA_LIMITS.dashPatternRatioMin || ratio > PROOFCANVAS_SCHEMA_LIMITS.dashPatternRatioMax) context.addIssue({
+    code: "custom",
+    path: ["gapLength"],
+    message: `Dashed-line dash ratio must be between ${PROOFCANVAS_SCHEMA_LIMITS.dashPatternRatioMin} and ${PROOFCANVAS_SCHEMA_LIMITS.dashPatternRatioMax}`,
+  });
+});
+
+/**
+ * Schema-v3 already published a generic JSON property envelope for its five
+ * native shapes. Their absent records therefore remain valid legacy input.
+ * Schema-v4 adds exact native types whose persistence boundary requires one
+ * strict, matching record from this shared vocabulary.
+ */
+export const CurrentShapePropertiesSchema = z.union([
   z.object({ kind: z.literal("circle") }).strict(),
   z.object({
     kind: z.literal("rectangle"),
@@ -589,12 +947,12 @@ export const CurrentShapePropertiesSchema = z.discriminatedUnion("kind", [
   }).strict(),
   z.object({
     kind: z.literal("line"),
-    lineCap: z.enum(["butt", "round", "square"]).optional(),
+    lineCap: ShapeLineCapSchema.optional(),
   }).strict(),
   z.object({
     kind: z.literal("arrow"),
-    lineCap: z.enum(["butt", "round", "square"]).optional(),
-    tipShape: z.enum(["triangle", "stealth", "circle", "square"]).optional(),
+    lineCap: ShapeLineCapSchema.optional(),
+    tipShape: ArrowTipShapeSchema.optional(),
     tipSizeRatio: z.number().finite().min(0.02).max(0.45).optional(),
   }).strict(),
   z.object({
@@ -602,9 +960,76 @@ export const CurrentShapePropertiesSchema = z.discriminatedUnion("kind", [
     direction: z.enum(["above", "below", "left", "right"]).optional(),
     spacing: z.number().finite().min(0).max(PROOFCANVAS_SCHEMA_LIMITS.spacingMax).optional(),
   }).strict(),
+  z.object({ kind: z.literal("ellipse") }).strict(),
+  PolygonShapePropertiesSchema,
+  DashedLineShapePropertiesSchema,
+  z.object({
+    kind: z.literal("double-arrow"),
+    lineCap: ShapeLineCapSchema,
+    startTipShape: ArrowTipShapeSchema,
+    endTipShape: ArrowTipShapeSchema,
+    tipSizeRatio: z.number().finite().min(0.02).max(0.45),
+  }).strict(),
+  FreeformShapePropertiesSchema,
 ]);
 
 export type CurrentShapeProperties = z.infer<typeof CurrentShapePropertiesSchema>;
+
+export interface CurrentShapePropertiesIssue {
+  readonly path: readonly (string | number)[];
+  readonly message: string;
+}
+
+/** First exact nested issue shared by schema diagnostics and editor rejection status. */
+export function currentShapePropertiesIssue(candidate: unknown): CurrentShapePropertiesIssue | undefined {
+  const parsed = CurrentShapePropertiesSchema.safeParse(candidate);
+  if (parsed.success) return undefined;
+  const issue = parsed.error.issues[0];
+  return issue ? {
+    path: issue.path.filter((part): part is string | number => typeof part === "string" || typeof part === "number"),
+    message: issue.message,
+  } : { path: [], message: "Shape settings are invalid" };
+}
+
+export function formatShapePropertiesIssue(issue: CurrentShapePropertiesIssue): string {
+  const path = issue.path.reduce<string>((result, part) => (
+    typeof part === "number" ? `${result}[${part}]` : result ? `${result}.${part}` : part
+  ), "");
+  return `Shape settings${path ? ` at ${path}` : ""}: ${issue.message}`;
+}
+
+export const V4_NATIVE_SHAPE_TYPES = [
+  "ellipse",
+  "polygon",
+  "dashed-line",
+  "double-arrow",
+  "freeform-path",
+] as const;
+
+export const LEGACY_V3_OBJECT_TYPES = [
+  "text", "math", "circle", "rectangle", "line", "arrow", "brace",
+  "axes", "graph", "image", "svg", "group",
+] as const;
+
+function isV4NativeShapeType(type: string): type is (typeof V4_NATIVE_SHAPE_TYPES)[number] {
+  return (V4_NATIVE_SHAPE_TYPES as readonly string[]).includes(type);
+}
+
+function legacyObjectVocabularyIssue(candidate: unknown): string | undefined {
+  const source = migrationRecord(candidate);
+  const shots = Array.isArray(source?.shots) ? source.shots : [];
+  for (let shotIndex = 0; shotIndex < shots.length; shotIndex += 1) {
+    const shot = migrationRecord(shots[shotIndex]);
+    const objects = Array.isArray(shot?.objects) ? shot.objects : [];
+    for (let objectIndex = 0; objectIndex < objects.length; objectIndex += 1) {
+      const object = migrationRecord(objects[objectIndex]);
+      if (typeof object?.type === "string" && !(LEGACY_V3_OBJECT_TYPES as readonly string[]).includes(object.type)) {
+        return `Legacy project contains non-legacy object type ${object.type} at shots[${shotIndex}].objects[${objectIndex}]`;
+      }
+    }
+  }
+  return undefined;
+}
 
 export function isSafeAssetSource(value: string): boolean {
   if (value.length > PROOFCANVAS_PROJECT_MAX_BYTES) return false;
@@ -660,6 +1085,36 @@ const SceneObjectObjectSchema = z.object({
   }
   if (object.type === "brace" && typeof object.properties.label === "string" && object.properties.label.length > PROOFCANVAS_BRACE_LABEL_MAX_CHARS) {
     context.addIssue({ code: "custom", path: ["properties", "label"], message: `Brace labels may contain at most ${PROOFCANVAS_BRACE_LABEL_MAX_CHARS} characters` });
+  }
+  if (isV4NativeShapeType(object.type)) {
+    const parsedShape = CurrentShapePropertiesSchema.safeParse(object.properties.shape);
+    if (!parsedShape.success) {
+      const issue = currentShapePropertiesIssue(object.properties.shape);
+      context.addIssue({
+        code: "custom",
+        path: ["properties", "shape", ...(issue?.path ?? [])],
+        message: issue?.message ?? `${object.type} requires an exact matching schema-v4 shape record`,
+      });
+    } else if (parsedShape.data.kind !== object.type) context.addIssue({
+      code: "custom",
+      path: ["properties", "shape", "kind"],
+      message: `Shape settings kind ${parsedShape.data.kind} does not match object type ${object.type}`,
+    });
+    const requiresHeight = object.type === "ellipse" || object.type === "polygon" || object.type === "freeform-path";
+    if (object.transform.width === undefined || (requiresHeight && object.transform.height === undefined)) context.addIssue({
+      code: "custom",
+      path: ["transform"],
+      message: `${object.type} requires authored width${requiresHeight ? " and height" : ""}`,
+    });
+    if (object.type === "dashed-line" && parsedShape.success && parsedShape.data.kind === "dashed-line" && object.transform.width !== undefined) {
+      const { dashLength, gapLength } = parsedShape.data;
+      const pattern = resolveDashedLinePattern(object.transform.width, dashLength, gapLength);
+      if (pattern && pattern.count > PROOFCANVAS_SCHEMA_LIMITS.renderedDashesPerLineMax) context.addIssue({
+        code: "custom",
+        path: ["properties", "shape"],
+        message: `Dashed-line pattern may create at most ${PROOFCANVAS_SCHEMA_LIMITS.renderedDashesPerLineMax} rendered dashes`,
+      });
+    }
   }
   if (object.type === "axes") {
     for (const key of ["xMin", "xMax", "yMin", "yMax"] as const) {
@@ -721,10 +1176,34 @@ export function mathPropertiesFor(object: Pick<z.infer<typeof SceneObjectObjectS
   return analysis.ok ? analysis.properties : null;
 }
 
+function duplicateAnimationTargetMessage(targetId: string, firstIndex: number): string {
+  return `Duplicate animation target ${targetId}; first targeted at index ${firstIndex}`;
+}
+
+/** Ordered serialization of the animation's semantic target set. */
+const AnimationTargetIdsSchema = z.array(IdSchema)
+  .min(1)
+  .max(PROOFCANVAS_SCHEMA_LIMITS.animationTargets)
+  .superRefine((targetIds, context) => {
+    const firstIndexByTarget = new Map<string, number>();
+    targetIds.forEach((targetId, targetIndex) => {
+      const firstIndex = firstIndexByTarget.get(targetId);
+      if (firstIndex !== undefined) {
+        context.addIssue({
+          code: "custom",
+          path: [targetIndex],
+          message: duplicateAnimationTargetMessage(targetId, firstIndex),
+        });
+      } else {
+        firstIndexByTarget.set(targetId, targetIndex);
+      }
+    });
+  });
+
 const SceneAnimationObjectSchema = z.object({
   id: IdSchema,
   type: AnimationTypeSchema,
-  targetIds: z.array(IdSchema).min(1).max(PROOFCANVAS_SCHEMA_LIMITS.animationTargets),
+  targetIds: AnimationTargetIdsSchema,
   start: NonnegativeTimelineTimeSchema,
   duration: PositiveTimelineDurationSchema,
   easing: EasingSchema,
@@ -1002,14 +1481,73 @@ export const ProjectDocumentSchema = z.object({
 
   let compilerExpandedTargets = 0;
   let compilerExpansionIssueAdded = false;
+  let nativeGeometryWork = 0;
+  let nativeGeometryIssueAdded = false;
   const timelineIds = new Set<string>();
   project.shots.forEach((shot, shotIndex) => {
     registerNamespacedId(timelineIds, shot.id, ["shots", shotIndex, "id"]);
     const objects = new Map(shot.objects.map((object) => [object.id, object]));
     shot.objects.forEach((object, objectIndex) => {
       registerNamespacedId(timelineIds, object.id, ["shots", shotIndex, "objects", objectIndex, "id"]);
+      if (!nativeGeometryIssueAdded && isV4NativeShapeType(object.type)) {
+        const parsedShape = CurrentShapePropertiesSchema.safeParse(object.properties.shape);
+        const objectAndAncestors = new Set<string>();
+        let cursor: typeof object | undefined = object;
+        while (cursor && !objectAndAncestors.has(cursor.id)) {
+          objectAndAncestors.add(cursor.id);
+          cursor = cursor.parentId ? objects.get(cursor.parentId) : undefined;
+        }
+        const targetTouchesShape = (targetIds: readonly string[]) => targetIds.some((id) => objectAndAncestors.has(id));
+        const absoluteTargetAnimations = shot.animations.filter((animation) => (
+          ["appear", "fade-in", "fade-out", "write", "create", "move", "scale", "transform"].includes(animation.type)
+          && targetTouchesShape(animation.targetIds)
+        )).length;
+        const trackTargetOccurrences = shot.propertyTracks.reduce((sum, track) => (
+          track.target.kind === "object" && objectAndAncestors.has(track.target.objectId)
+            ? sum + Math.max(1, track.keyframes.length * 2)
+            : sum
+        ), 0);
+        const lifetimeOccurrence = object.lifetime && compareTimelineTimes(object.lifetime.start, 0) > 0 ? 1 : 0;
+        const occurrences = 1 + absoluteTargetAnimations + trackTargetOccurrences + lifetimeOccurrence;
+        let unitWork = 1;
+        if (parsedShape.success && parsedShape.data.kind === "polygon") unitWork = parsedShape.data.vertices.length;
+        else if (parsedShape.success && parsedShape.data.kind === "dashed-line" && object.transform.width !== undefined) {
+          const { dashLength, gapLength } = parsedShape.data;
+          const candidateWidths = [object.transform.width];
+          for (const animation of shot.animations) {
+            if (animation.type !== "transform" || typeof animation.properties.width !== "number") continue;
+            if (animation.targetIds.includes(object.id)) candidateWidths.push(animation.properties.width);
+            else if (animation.targetIds.some((id) => objectAndAncestors.has(id))) candidateWidths.push(PROOFCANVAS_SCHEMA_LIMITS.animationDimensionMax);
+          }
+          for (const track of shot.propertyTracks) {
+            if (track.property !== "width" || track.target.kind !== "object" || !objectAndAncestors.has(track.target.objectId)) continue;
+            if (track.target.objectId === object.id) candidateWidths.push(...track.keyframes.map(({ value }) => Number(value)));
+            else candidateWidths.push(PROOFCANVAS_SCHEMA_LIMITS.animationDimensionMax);
+          }
+          const patterns = candidateWidths.map((candidateWidth) => resolveDashedLinePattern(candidateWidth, dashLength, gapLength)).filter((pattern): pattern is ResolvedDashedLinePattern => Boolean(pattern));
+          const unsafe = patterns.find(({ count }) => count > PROOFCANVAS_SCHEMA_LIMITS.renderedDashesPerLineMax);
+          if (unsafe) context.addIssue({
+            code: "custom",
+            path: ["shots", shotIndex, "objects", objectIndex, "properties", "shape"],
+            message: `Dashed-line authored and animated widths may create at most ${PROOFCANVAS_SCHEMA_LIMITS.renderedDashesPerLineMax} rendered dashes`,
+          });
+          unitWork = Math.max(0, ...patterns.map(({ count }) => count));
+        } else if (parsedShape.success && parsedShape.data.kind === "freeform-path") {
+          const segments = parsedShape.data.closed ? parsedShape.data.nodes.length : parsedShape.data.nodes.length - 1;
+          unitWork = 1 + 3 * Math.max(0, segments);
+        }
+        nativeGeometryWork += unitWork * occurrences;
+        if (nativeGeometryWork > PROOFCANVAS_SCHEMA_LIMITS.nativeGeometryWorkPerProject) {
+          context.addIssue({
+            code: "custom",
+            path: ["shots", shotIndex, "objects", objectIndex, "properties", "shape"],
+            message: `Native shape geometry exceeds the project work limit of ${PROOFCANVAS_SCHEMA_LIMITS.nativeGeometryWorkPerProject} points or dashes`,
+          });
+          nativeGeometryIssueAdded = true;
+        }
+      }
       for (const property of ["fill", "stroke", "strokeWidth"] as const) {
-        if (object.style[property] !== undefined && !objectTypeSupportsStyleProperty(object.type, property)) {
+        if (object.style[property] !== undefined && !objectTypeSupportsStyleProperty(object, property)) {
           context.addIssue({ code: "custom", path: ["shots", shotIndex, "objects", objectIndex, "style", property], message: `${object.type} objects do not support ${property} styling` });
         }
       }
@@ -1152,7 +1690,7 @@ export const ProjectDocumentSchema = z.object({
         if (!target) context.addIssue({ code: "custom", path: ["shots", shotIndex, "propertyTracks", trackIndex, "target", "objectId"], message: `Missing track target ${track.target.objectId}` });
         else {
           range = effectiveLifetime(target);
-          if (["fill", "stroke", "strokeWidth", "opacity"].includes(track.property) && !objectTypeSupportsStyleProperty(target.type, track.property as VisualStyleProperty)) {
+          if (["fill", "stroke", "strokeWidth", "opacity"].includes(track.property) && !objectTypeSupportsStyleProperty(target, track.property as VisualStyleProperty)) {
             context.addIssue({ code: "custom", path: ["shots", shotIndex, "propertyTracks", trackIndex, "property"], message: `${target.type} objects do not support ${track.property} tracks` });
           }
         }
@@ -1440,7 +1978,7 @@ const ObjectPatchSchema = z.object({
 }).strict();
 
 const AnimationPatchObjectSchema = z.object({
-  targetIds: z.array(IdSchema).min(1).max(PROOFCANVAS_SCHEMA_LIMITS.animationTargets).optional(),
+  targetIds: AnimationTargetIdsSchema.optional(),
   // Partial patches retain their raw temporal scalars until they are merged
   // with the current animation. SceneAnimationSchema then canonicalizes the
   // resulting absolute start/end pair exactly as it does for add-animation.
@@ -1506,6 +2044,48 @@ type MigrationBoundary = { identity: string; raw: number; canonical: number };
 
 function migrationRecord(value: unknown): MutableJsonRecord | undefined {
   return value && typeof value === "object" && !Array.isArray(value) ? value as MutableJsonRecord : undefined;
+}
+
+function legacyAnimationTargetListIssue(candidate: unknown): string | undefined {
+  const project = migrationRecord(candidate);
+  if (!project || !Array.isArray(project.shots)) return undefined;
+  for (let shotIndex = 0; shotIndex < project.shots.length; shotIndex += 1) {
+    const shot = migrationRecord(project.shots[shotIndex]);
+    if (!shot || !Array.isArray(shot.animations)) continue;
+    for (let animationIndex = 0; animationIndex < shot.animations.length; animationIndex += 1) {
+      const animation = migrationRecord(shot.animations[animationIndex]);
+      if (!animation || !Array.isArray(animation.targetIds)) continue;
+      if (animation.targetIds.length > PROOFCANVAS_SCHEMA_LIMITS.animationTargets) {
+        return `shots[${shotIndex}].animations[${animationIndex}].targetIds exceeds the legacy limit of ${PROOFCANVAS_SCHEMA_LIMITS.animationTargets}`;
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Animation targets are a semantic set. Published V1-V3 schemas accidentally
+ * admitted repeated serialized IDs, preview already evaluated them once, and
+ * compiler repetition was a defect. Migration keeps the first occurrence so
+ * stable target order is deterministic without changing authored semantics.
+ */
+function stableDeduplicateAnimationTargets(candidate: MutableJsonRecord): void {
+  if (!Array.isArray(candidate.shots)) return;
+  for (const shotCandidate of candidate.shots) {
+    const shot = migrationRecord(shotCandidate);
+    if (!shot || !Array.isArray(shot.animations)) continue;
+    for (const animationCandidate of shot.animations) {
+      const animation = migrationRecord(animationCandidate);
+      if (!animation || !Array.isArray(animation.targetIds)) continue;
+      const seen = new Set<string>();
+      animation.targetIds = animation.targetIds.filter((targetId) => {
+        if (typeof targetId !== "string") return true;
+        if (seen.has(targetId)) return false;
+        seen.add(targetId);
+        return true;
+      });
+    }
+  }
 }
 
 function canonicalLegacyMigrationValue(value: unknown): unknown {
@@ -1691,6 +2271,10 @@ export function classifyLegacyV2ProjectDocument(input: unknown): LegacyV2Migrati
   if (!source || source.schemaVersion !== LEGACY_FLOAT_TIMELINE_SCHEMA_VERSION) {
     return { status: "invalid", reason: "Document is not schema version 2" };
   }
+  const targetListIssue = legacyAnimationTargetListIssue(source);
+  if (targetListIssue) return { status: "invalid", reason: targetListIssue };
+  const legacyVocabularyIssue = legacyObjectVocabularyIssue(source);
+  if (legacyVocabularyIssue) return { status: "invalid", reason: legacyVocabularyIssue };
   let candidate: MutableJsonRecord;
   let frozenCompilerWork: number | undefined;
   try {
@@ -1705,6 +2289,7 @@ export function classifyLegacyV2ProjectDocument(input: unknown): LegacyV2Migrati
   } catch {
     return { status: "invalid", reason: "Document is not serializable JSON" };
   }
+  stableDeduplicateAnimationTargets(candidate);
   candidate.schemaVersion = PROJECT_SCHEMA_VERSION;
   const domains = new Map<string, MigrationBoundary[]>();
   const domain = (name: string) => {
@@ -2021,6 +2606,19 @@ export const PROJECT_MIGRATIONS: Readonly<Record<number, ProjectMigration>> = Ob
     if (classification.status === "migrated") return cloneSerializable(classification.document) as unknown as Record<string, unknown>;
     if (classification.status === "recovery-required") throw new ProjectTimelineMigrationRecoveryRequiredError(classification.reason);
     throw new Error(`Invalid ProofCanvas schema-v2 document: ${classification.reason}`);
+  },
+  // V4 expands the native object vocabulary and makes the existing semantic-set
+  // contract for animation targets structurally explicit. Preview already
+  // evaluated repeated V3 IDs once; migration stably removes only those
+  // redundant occurrences so compiler expansion matches the same semantics.
+  3: (candidate) => {
+    const vocabularyIssue = legacyObjectVocabularyIssue(candidate);
+    if (vocabularyIssue) throw new Error(`Invalid ProofCanvas schema-v3 document: ${vocabularyIssue}`);
+    const targetListIssue = legacyAnimationTargetListIssue(candidate);
+    if (targetListIssue) throw new Error(`Invalid ProofCanvas schema-v3 document: ${targetListIssue}`);
+    const migrated = cloneSerializable(candidate) as MutableJsonRecord;
+    stableDeduplicateAnimationTargets(migrated);
+    return { ...migrated, schemaVersion: PROJECT_SCHEMA_VERSION };
   },
 });
 

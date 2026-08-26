@@ -79,6 +79,13 @@ function schemaV2Json(document: unknown, mutate?: (candidate: Record<string, unk
   return canonicalLegacyJson(candidate);
 }
 
+function schemaV3Json(document: unknown, mutate?: (candidate: Record<string, unknown>) => void): string {
+  const candidate = cloneSerializable(document) as Record<string, unknown>;
+  candidate.schemaVersion = 3;
+  mutate?.(candidate);
+  return canonicalLegacyJson(candidate);
+}
+
 function downgradeDatabaseSchemaToV1(database: Database.Database): void {
   database.exec(`
     DROP TRIGGER legacy_document_archive_no_update;
@@ -86,8 +93,12 @@ function downgradeDatabaseSchemaToV1(database: Database.Database): void {
     DROP TABLE legacy_document_archive;
     ALTER TABLE checkpoints DROP COLUMN document_state;
     ALTER TABLE projects DROP COLUMN document_state;
-    DELETE FROM schema_migrations WHERE version = 2;
+    DELETE FROM schema_migrations WHERE version >= 2;
   `);
+}
+
+function downgradeDatabaseSchemaToV2(database: Database.Database): void {
+  database.prepare("DELETE FROM schema_migrations WHERE version = 3").run();
 }
 
 interface LeaseWorker {
@@ -263,6 +274,7 @@ test("runs checksummed STRICT migrations and required durability pragmas on reop
   expect(databaseMigrationManifest()).toEqual([
     { version: 1, name: "private-owner-project-store", checksum: "313de39642d6ae4c4df0a2f1ab06366ee1c236ce8468c69eaae0cd3f8e2f4c9d" },
     { version: 2, name: "loss-aware-v3-timeline-and-recovery-archive", checksum: "2f7cdbbadcd1b0c22e948b0c0111b9bf6756b8c054554b21e209f7add91fe348" },
+    { version: 3, name: "v4-native-shapes-and-target-sets", checksum: "606fc320ece7945f18f960c596205be2ceef744e191af0539fcda785a306d292" },
   ]);
   expect(first.database.pragma("journal_mode", { simple: true })).toBe("wal");
   expect(first.database.pragma("foreign_keys", { simple: true })).toBe(1);
@@ -280,7 +292,202 @@ test("runs checksummed STRICT migrations and required durability pragmas on reop
   first.database.close();
 
   const reopened = openProofCanvasDatabase({ path: first.path });
-  expect(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({ count: 2 });
+  expect(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({ count: 3 });
+  reopened.close();
+});
+
+test("accepts unique-target canonical V3 rows in historical migration 2 before advancing them to V4", () => {
+  const first = harness();
+  const created = first.repository.createProject({ kind: "sample", title: "Already V3", mutationId: "mutation-create-already-v3" });
+  const checkpoint = first.repository.createCheckpoint({
+    projectId: created.value.projectId,
+    expectedRevision: created.value.revision,
+    mutationId: "mutation-checkpoint-already-v3",
+    label: "Canonical V3",
+  });
+  const projectRow = first.database.prepare("SELECT document_json FROM projects WHERE id = ?").get(created.value.projectId) as { document_json: string };
+  const checkpointRow = first.database.prepare("SELECT document_json FROM checkpoints WHERE id = ?").get(checkpoint.value.checkpointId) as { document_json: string };
+  const expectedProjectV4 = projectRow.document_json;
+  const expectedCheckpointV4 = checkpointRow.document_json;
+  first.database.prepare("UPDATE projects SET document_json = ? WHERE id = ?")
+    .run(schemaV3Json(JSON.parse(projectRow.document_json)), created.value.projectId);
+  first.database.prepare("UPDATE checkpoints SET document_json = ? WHERE id = ?")
+    .run(schemaV3Json(JSON.parse(checkpointRow.document_json)), checkpoint.value.checkpointId);
+  downgradeDatabaseSchemaToV1(first.database);
+  first.database.close();
+
+  const reopened = openProofCanvasDatabase({ path: first.path });
+  expect(reopened.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
+  expect((reopened.prepare("SELECT document_json FROM projects WHERE id = ?").get(created.value.projectId) as { document_json: string }).document_json)
+    .toBe(expectedProjectV4);
+  expect((reopened.prepare("SELECT document_json FROM checkpoints WHERE id = ?").get(checkpoint.value.checkpointId) as { document_json: string }).document_json)
+    .toBe(expectedCheckpointV4);
+  expect(reopened.prepare("SELECT COUNT(*) AS count FROM legacy_document_archive").get()).toEqual({ count: 0 });
+  expect(() => assertProofCanvasPersistenceIntegrity(reopened)).not.toThrow();
+  reopened.close();
+});
+
+test("migration 3 advances ready canonical V3 JSON and leaves canonical V4 JSON unchanged", () => {
+  const first = harness();
+  const v3Created = first.repository.createProject({ kind: "sample", title: "Rewrite V3", mutationId: "mutation-create-rewrite-v3" });
+  const v3Checkpoint = first.repository.createCheckpoint({
+    projectId: v3Created.value.projectId,
+    expectedRevision: v3Created.value.revision,
+    mutationId: "mutation-checkpoint-rewrite-v3",
+    label: "Rewrite V3",
+  });
+  const v4Created = first.repository.createProject({ kind: "blank", title: "Keep V4", mutationId: "mutation-create-keep-v4" });
+  const v3ProjectRow = first.database.prepare("SELECT document_json FROM projects WHERE id = ?").get(v3Created.value.projectId) as { document_json: string };
+  const v3CheckpointRow = first.database.prepare("SELECT document_json FROM checkpoints WHERE id = ?").get(v3Checkpoint.value.checkpointId) as { document_json: string };
+  const v4ProjectRow = first.database.prepare("SELECT document_json FROM projects WHERE id = ?").get(v4Created.value.projectId) as { document_json: string };
+  first.database.prepare("UPDATE projects SET document_json = ? WHERE id = ?")
+    .run(schemaV3Json(JSON.parse(v3ProjectRow.document_json)), v3Created.value.projectId);
+  first.database.prepare("UPDATE checkpoints SET document_json = ? WHERE id = ?")
+    .run(schemaV3Json(JSON.parse(v3CheckpointRow.document_json)), v3Checkpoint.value.checkpointId);
+  downgradeDatabaseSchemaToV2(first.database);
+  first.database.close();
+
+  const reopened = openProofCanvasDatabase({ path: first.path });
+  expect((reopened.prepare("SELECT document_json FROM projects WHERE id = ?").get(v3Created.value.projectId) as { document_json: string }).document_json)
+    .toBe(v3ProjectRow.document_json);
+  expect((reopened.prepare("SELECT document_json FROM checkpoints WHERE id = ?").get(v3Checkpoint.value.checkpointId) as { document_json: string }).document_json)
+    .toBe(v3CheckpointRow.document_json);
+  expect((reopened.prepare("SELECT document_json FROM projects WHERE id = ?").get(v4Created.value.projectId) as { document_json: string }).document_json)
+    .toBe(v4ProjectRow.document_json);
+  expect(() => assertProofCanvasPersistenceIntegrity(reopened)).not.toThrow();
+  reopened.close();
+});
+
+test("migration 3 stably deduplicates ready V3 animation targets in projects and checkpoints", () => {
+  const first = harness();
+  const created = first.repository.createProject({ kind: "sample", title: "V3 target set", mutationId: "mutation-create-v3-target-set" });
+  const checkpoint = first.repository.createCheckpoint({
+    projectId: created.value.projectId,
+    expectedRevision: created.value.revision,
+    mutationId: "mutation-checkpoint-v3-target-set",
+    label: "V3 target set",
+  });
+  const projectRow = first.database.prepare("SELECT document_json FROM projects WHERE id = ?").get(created.value.projectId) as { document_json: string };
+  const checkpointRow = first.database.prepare("SELECT document_json FROM checkpoints WHERE id = ?").get(checkpoint.value.checkpointId) as { document_json: string };
+  const withRepeatedFirstTarget = (candidate: Record<string, unknown>) => {
+    const shot = (candidate.shots as Array<Record<string, unknown>>)[0];
+    const animation = (shot.animations as Array<Record<string, unknown>>)[0];
+    const firstTarget = (animation.targetIds as string[])[0];
+    animation.targetIds = [firstTarget, firstTarget, firstTarget];
+  };
+  const projectV3 = schemaV3Json(JSON.parse(projectRow.document_json), withRepeatedFirstTarget);
+  const checkpointV3 = schemaV3Json(JSON.parse(checkpointRow.document_json), withRepeatedFirstTarget);
+  first.database.prepare("UPDATE projects SET document_json = ? WHERE id = ?").run(projectV3, created.value.projectId);
+  first.database.prepare("UPDATE checkpoints SET document_json = ? WHERE id = ?").run(checkpointV3, checkpoint.value.checkpointId);
+  downgradeDatabaseSchemaToV2(first.database);
+  first.database.close();
+
+  const reopened = openProofCanvasDatabase({ path: first.path });
+  expect((reopened.prepare("SELECT document_json FROM projects WHERE id = ?").get(created.value.projectId) as { document_json: string }).document_json)
+    .toBe(projectRow.document_json);
+  expect((reopened.prepare("SELECT document_json FROM checkpoints WHERE id = ?").get(checkpoint.value.checkpointId) as { document_json: string }).document_json)
+    .toBe(checkpointRow.document_json);
+  expect(() => assertProofCanvasPersistenceIntegrity(reopened)).not.toThrow();
+  reopened.close();
+});
+
+test("rejects a schema-v4-only native shape falsely labeled as canonical V3", () => {
+  const first = harness();
+  const created = first.repository.createProject({ kind: "sample", title: "False V3 shape", mutationId: "mutation-create-false-v3" });
+  const projectRow = first.database.prepare("SELECT document_json FROM projects WHERE id = ?").get(created.value.projectId) as { document_json: string };
+  const falseV3 = schemaV3Json(JSON.parse(projectRow.document_json), (candidate) => {
+    const object = ((candidate.shots as Array<Record<string, unknown>>)[0].objects as Array<Record<string, unknown>>)[3];
+    object.type = "ellipse";
+    object.properties = { shape: { kind: "ellipse" } };
+  });
+  first.database.prepare("UPDATE projects SET document_json = ? WHERE id = ?").run(falseV3, created.value.projectId);
+  downgradeDatabaseSchemaToV2(first.database);
+  first.database.close();
+
+  expect(() => openProofCanvasDatabase({ path: first.path })).toThrow(/valid schema-v3|schema-v4 object type ellipse/);
+  const raw = new Database(first.path, { readonly: true });
+  expect(raw.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }]);
+  expect((raw.prepare("SELECT document_json FROM projects WHERE id = ?").get(created.value.projectId) as { document_json: string }).document_json).toBe(falseV3);
+  raw.close();
+});
+
+test("rolls back migration 3 atomically when any ready V3 row is noncanonical", () => {
+  const first = harness();
+  const validCreated = first.repository.createProject({ kind: "blank", title: "Valid V3", mutationId: "mutation-create-valid-v3" });
+  const invalidCreated = first.repository.createProject({ kind: "blank", title: "Invalid V3", mutationId: "mutation-create-invalid-v3-json" });
+  const validV4 = first.database.prepare("SELECT document_json FROM projects WHERE id = ?").get(validCreated.value.projectId) as { document_json: string };
+  const invalidV4 = first.database.prepare("SELECT document_json FROM projects WHERE id = ?").get(invalidCreated.value.projectId) as { document_json: string };
+  const validV3 = schemaV3Json(JSON.parse(validV4.document_json));
+  const invalidV3 = JSON.stringify(JSON.parse(schemaV3Json(JSON.parse(invalidV4.document_json))));
+  first.database.prepare("UPDATE projects SET document_json = ? WHERE id = ?").run(validV3, validCreated.value.projectId);
+  first.database.prepare("UPDATE projects SET document_json = ? WHERE id = ?").run(invalidV3, invalidCreated.value.projectId);
+  downgradeDatabaseSchemaToV2(first.database);
+  first.database.close();
+
+  expect(() => openProofCanvasDatabase({ path: first.path })).toThrow(/schema-v3 JSON is not canonical/);
+  const raw = new Database(first.path, { readonly: true });
+  expect(raw.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }]);
+  expect((raw.prepare("SELECT document_json FROM projects WHERE id = ?").get(validCreated.value.projectId) as { document_json: string }).document_json).toBe(validV3);
+  expect((raw.prepare("SELECT document_json FROM projects WHERE id = ?").get(invalidCreated.value.projectId) as { document_json: string }).document_json).toBe(invalidV3);
+  raw.close();
+});
+
+test("migrates V2 duplicate target sets while preserving exact immutable project and checkpoint archives", () => {
+  const first = harness();
+  const created = first.repository.createProject({ kind: "sample", title: "V2 target set", mutationId: "mutation-create-v2-target-set" });
+  const checkpoint = first.repository.createCheckpoint({
+    projectId: created.value.projectId,
+    expectedRevision: created.value.revision,
+    mutationId: "mutation-checkpoint-v2-target-set",
+    label: "V2 target set",
+  });
+  const projectRow = first.database.prepare("SELECT document_json FROM projects WHERE id = ?").get(created.value.projectId) as { document_json: string };
+  const checkpointRow = first.database.prepare("SELECT document_json FROM checkpoints WHERE id = ?").get(checkpoint.value.checkpointId) as { document_json: string };
+  const withRepeatedFirstTarget = (candidate: Record<string, unknown>) => {
+    const shot = (candidate.shots as Array<Record<string, unknown>>)[0];
+    const animation = (shot.animations as Array<Record<string, unknown>>)[0];
+    const firstTarget = (animation.targetIds as string[])[0];
+    animation.targetIds = [firstTarget, firstTarget];
+  };
+  const projectV2 = schemaV2Json(JSON.parse(projectRow.document_json), withRepeatedFirstTarget);
+  const checkpointV2 = schemaV2Json(JSON.parse(checkpointRow.document_json), withRepeatedFirstTarget);
+  first.database.prepare("UPDATE projects SET document_json = ? WHERE id = ?").run(projectV2, created.value.projectId);
+  first.database.prepare("UPDATE checkpoints SET document_json = ? WHERE id = ?").run(checkpointV2, checkpoint.value.checkpointId);
+  downgradeDatabaseSchemaToV1(first.database);
+  first.database.close();
+
+  const reopened = openProofCanvasDatabase({ path: first.path });
+  expect((reopened.prepare("SELECT document_json FROM projects WHERE id = ?").get(created.value.projectId) as { document_json: string }).document_json)
+    .toBe(projectRow.document_json);
+  expect((reopened.prepare("SELECT document_json FROM checkpoints WHERE id = ?").get(checkpoint.value.checkpointId) as { document_json: string }).document_json)
+    .toBe(checkpointRow.document_json);
+  const archives = reopened.prepare(`SELECT owner_type, owner_id, document_json, document_sha256, migration_status
+    FROM legacy_document_archive WHERE project_id = ? ORDER BY owner_type, owner_id`).all(created.value.projectId) as Array<{
+      owner_type: "project" | "checkpoint";
+      owner_id: string;
+      document_json: string;
+      document_sha256: string;
+      migration_status: string;
+    }>;
+  expect(archives).toEqual([
+    {
+      owner_type: "checkpoint",
+      owner_id: checkpoint.value.checkpointId,
+      document_json: checkpointV2,
+      document_sha256: createHash("sha256").update(checkpointV2, "utf8").digest("hex"),
+      migration_status: "migrated",
+    },
+    {
+      owner_type: "project",
+      owner_id: created.value.projectId,
+      document_json: projectV2,
+      document_sha256: createHash("sha256").update(projectV2, "utf8").digest("hex"),
+      migration_status: "migrated",
+    },
+  ]);
+  expect(() => reopened.prepare("UPDATE legacy_document_archive SET reason = 'changed' WHERE project_id = ?").run(created.value.projectId))
+    .toThrow(/immutable/);
+  expect(() => assertProofCanvasPersistenceIntegrity(reopened)).not.toThrow();
   reopened.close();
 });
 
@@ -346,8 +553,25 @@ test("migrates lossless V2 rows and independently quarantines lossy projects and
 
   const reopened = openProofCanvasDatabase({ path: first.path });
   const repository = new SqliteProjectRepository(reopened);
-  expect(reopened.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }]);
-  expect(repository.getProject(ready.id).document.schemaVersion).toBe(3);
+  expect(reopened.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
+  expect(repository.getProject(ready.id).document.schemaVersion).toBe(4);
+  const exactArchives = new Map((reopened.prepare(`SELECT owner_type, owner_id, document_json, migration_status, reason
+    FROM legacy_document_archive ORDER BY owner_type, owner_id`).all() as Array<{
+      owner_type: "project" | "checkpoint";
+      owner_id: string;
+      document_json: string;
+      migration_status: "migrated" | "recovery-required";
+      reason: string;
+    }>).map((row) => [`${row.owner_type}:${row.owner_id}`, row]));
+  expect(exactArchives.size).toBe(4);
+  expect(exactArchives.get(`project:${ready.id}`)).toMatchObject({
+    document_json: readyRaw,
+    migration_status: "migrated",
+    reason: "Lossless schema-v2 to schema-v3 fixed-tick migration",
+  });
+  expect(exactArchives.get(`project:${blocked.id}`)?.document_json).toBe(blockedRaw);
+  expect(exactArchives.get(`project:${readyDuplicate.id}`)?.document_json).toBe(duplicateBlockedRaw);
+  expect(exactArchives.get(`checkpoint:${readyCheckpoint.value.checkpointId}`)?.document_json).toBe(blockedCheckpointRaw);
   expect(repository.getProject(ready.id).durationSeconds).toBe(5);
   expect(repository.listProjects()).toEqual(expect.arrayContaining([
     expect.objectContaining({ id: ready.id, recoveryRequired: false, durationSeconds: 5 }),
@@ -469,6 +693,9 @@ test("atomically rejects schema-v2 rows whose metadata, counters, or checkpoint 
       const raw = schemaV2Json(first.repository.getProject(durable.id).document);
       first.database.prepare("UPDATE projects SET document_json = ?, shot_count = shot_count + 1 WHERE id = ?").run(raw, durable.id);
     } else {
+      const project = first.database.prepare("SELECT document_json FROM projects WHERE id = ?").get(durable.id) as { document_json: string };
+      first.database.prepare("UPDATE projects SET document_json = ? WHERE id = ?")
+        .run(schemaV3Json(JSON.parse(project.document_json)), durable.id);
       const checkpoint = first.database.prepare("SELECT document_json FROM checkpoints WHERE id = ?").get(checkpointId) as { document_json: string };
       const raw = schemaV2Json(JSON.parse(checkpoint.document_json), (candidate) => {
         const metadata = candidate.metadata as Record<string, unknown>;
@@ -1148,7 +1375,7 @@ test("upgrades an old backup only on the private snapshot before validation and 
   const destination = temporaryDirectory();
   restoreOfflineBackup(source.path, { dataDirectory: destination });
   const restored = openProofCanvasDatabase({ path: join(destination, "proofcanvas.sqlite3") });
-  expect(new SqliteProjectRepository(restored).getProject(durable.id).document.schemaVersion).toBe(3);
+  expect(new SqliteProjectRepository(restored).getProject(durable.id).document.schemaVersion).toBe(4);
   expect(() => assertProofCanvasPersistenceIntegrity(restored)).not.toThrow();
   restored.close();
   expect(createHash("sha256").update(readFileSync(source.path)).digest("hex")).toBe(beforeHash);

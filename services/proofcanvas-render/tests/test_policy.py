@@ -698,6 +698,40 @@ def test_rejects_current_shape_become_descriptor_mutations(initializer: str, pay
         validate(current_shape_become_source(initializer, payload))
 
 
+DERIVED_ROUNDED_RECTANGLE = (
+    'RoundedRectangle(corner_radius=min(0.4, 2.0 / 2.0, 1.0 / 2.0), width=2.0, height=1.0)'
+    '.set_fill("#111111", opacity=1.0).set_stroke("#222222", width=2.0)'
+)
+
+
+def test_accepts_dimension_clamped_rounded_rectangle_from_same_authored_radius() -> None:
+    payload = (
+        'RoundedRectangle(corner_radius=min(0.4, 0.4 / 2.0, 1.0 / 2.0), width=0.4, height=1.0)'
+        '.set_fill("#111111", opacity=1.0).set_stroke("#222222", width=2.0)'
+        '.shift([1.0, -1.0, 0])'
+    )
+    validate(current_shape_become_source(DERIVED_ROUNDED_RECTANGLE, payload))
+
+
+@pytest.mark.parametrize(
+    "corner",
+    [
+        pytest.param('min(0.3, 0.4 / 2.0, 1.0 / 2.0)', id="authored-radius"),
+        pytest.param('min(0.4, 0.5 / 2.0, 1.0 / 2.0)', id="detached-width"),
+        pytest.param('min(0.4, 0.4 / 3.0, 1.0 / 2.0)', id="noncompiler-divisor"),
+        pytest.param('0.2', id="missing-authored-origin"),
+    ],
+)
+def test_rejects_dimension_clamped_rounded_rectangle_corner_tampering(corner: str) -> None:
+    payload = (
+        f'RoundedRectangle(corner_radius={corner}, width=0.4, height=1.0)'
+        '.set_fill("#111111", opacity=1.0).set_stroke("#222222", width=2.0)'
+        '.shift([1.0, -1.0, 0])'
+    )
+    with pytest.raises(SourcePolicyError):
+        validate(current_shape_become_source(DERIVED_ROUNDED_RECTANGLE, payload))
+
+
 @pytest.mark.parametrize(
     "target",
     [
@@ -1328,3 +1362,554 @@ def test_enforces_the_independent_custom_easing_lambda_budget() -> None:
     validate(source_for(MAX_RATE_LAMBDAS))
     with pytest.raises(SourcePolicyError, match="too many custom easing lambdas"):
         validate(source_for(MAX_RATE_LAMBDAS + 1))
+
+
+V4_ELLIPSE = (
+    'Ellipse(width=2.0, height=1.0).set_fill("#111111", opacity=1.0)'
+    '.set_stroke("#222222", width=2.0)'
+)
+V4_POLYGON = (
+    'Polygon([-0.5, 0.5, 0], [0.5, 0.5, 0], [0.0, -0.5, 0], joint_type=LineJointType.ROUND)'
+    '.stretch(2.0, 0, about_point=ORIGIN).stretch(1.0, 1, about_point=ORIGIN)'
+    '.set_fill("#111111", opacity=1.0).set_stroke("#222222", width=2.0)'
+)
+V4_DASHED_LINE = (
+    'DashedLine([-1.0, 0.0, 0], [1.0, 0.0, 0], dash_length=0.2, dashed_ratio=0.6, '
+    'cap_style=CapStyleType.ROUND).set_stroke("#222222", width=2.0)'
+)
+V4_DOUBLE_ARROW = (
+    'DoubleArrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, '
+    'max_tip_length_to_length_ratio=0.25, tip_shape_start=StealthTip, '
+    'tip_shape_end=ArrowCircleFilledTip).set_cap_style(CapStyleType.ROUND)'
+    '.set_color("#222222").set_stroke("#222222", width=2.0)'
+)
+V4_FREEFORM_OPEN = (
+    'VMobject(joint_type=LineJointType.ROUND, cap_style=CapStyleType.ROUND)'
+    '.start_new_path([-0.5, 0.25, 0])'
+    '.add_cubic_bezier_curve_to([-0.25, 0.25, 0], [-0.1, -0.25, 0], [0.0, -0.25, 0])'
+    '.add_cubic_bezier_curve_to([0.1, -0.25, 0], [0.25, 0.25, 0], [0.5, 0.25, 0])'
+    '.stretch(2.0, 0, about_point=ORIGIN).stretch(1.0, 1, about_point=ORIGIN)'
+    '.set_fill("#222222", opacity=0.0).set_stroke("#222222", width=2.0, opacity=0.8)'
+)
+V4_FREEFORM_CLOSED = (
+    'VMobject(joint_type=LineJointType.BEVEL)'
+    '.start_new_path([-0.5, 0.25, 0])'
+    '.add_cubic_bezier_curve_to([-0.4, 0.1, 0], [-0.1, -0.25, 0], [0.0, -0.25, 0])'
+    '.add_cubic_bezier_curve_to([0.1, -0.25, 0], [0.4, 0.1, 0], [0.5, 0.25, 0])'
+    '.add_cubic_bezier_curve_to([0.25, 0.4, 0], [-0.25, 0.4, 0], [-0.5, 0.25, 0])'
+    '.stretch(2.0, 0, about_point=ORIGIN).stretch(1.0, 1, about_point=ORIGIN)'
+    '.set_fill("#111111", opacity=1.0).set_stroke("#222222", width=2.0)'
+)
+
+
+def v4_polygon_expression(vertices: list[tuple[float, float]]) -> str:
+    points = ", ".join(f"[{x}, {y}, 0]" for x, y in vertices)
+    return (
+        f"Polygon({points}, joint_type=LineJointType.ROUND)"
+        '.stretch(2.0, 0, about_point=ORIGIN).stretch(1.0, 1, about_point=ORIGIN)'
+        '.set_fill("#111111", opacity=1.0).set_stroke("#222222", width=2.0)'
+    )
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        pytest.param(V4_ELLIPSE, id="ellipse"),
+        pytest.param(V4_ELLIPSE + ".set_opacity(0.5)", id="ellipse-opacity"),
+        pytest.param(V4_POLYGON, id="polygon"),
+        pytest.param(V4_DASHED_LINE, id="dashed-line"),
+        pytest.param(V4_DASHED_LINE + ".set_opacity(0.5)", id="dashed-line-opacity"),
+        pytest.param(V4_DOUBLE_ARROW, id="double-arrow"),
+        pytest.param(V4_FREEFORM_OPEN, id="freeform-open"),
+        pytest.param(V4_FREEFORM_CLOSED, id="freeform-closed"),
+        pytest.param(V4_FREEFORM_CLOSED + ".set_opacity(0.5)", id="freeform-closed-opacity"),
+    ],
+)
+def test_accepts_exact_schema_v4_native_shape_dialect(expression: str) -> None:
+    validate(source_with(
+        f"        pc_shape = {expression}\n"
+        "        pc_shape.shift([0.0, 0.0, 0])\n"
+    ))
+
+
+@pytest.mark.parametrize(
+    "vertices",
+    [
+        pytest.param(
+            [(-0.5, -0.5), (0.5, 0.5), (-0.5, 0.5), (0.5, -0.5)],
+            id="bow-tie",
+        ),
+        pytest.param(
+            [(-0.5, -0.5), (0.5, -0.5), (0.0, 0.0), (0.5, 0.5), (-0.5, 0.5), (0.0, 0.0)],
+            id="non-adjacent-shared-vertex",
+        ),
+        pytest.param(
+            [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5), (-0.25, -0.5), (0.25, -0.5)],
+            id="non-adjacent-collinear-overlap",
+        ),
+    ],
+)
+def test_rejects_schema_v4_polygon_non_adjacent_edge_intersections(
+    vertices: list[tuple[float, float]],
+) -> None:
+    with pytest.raises(SourcePolicyError, match="edges must not intersect outside adjacent vertices"):
+        validate(source_with(f"        pc_shape = {v4_polygon_expression(vertices)}\n"))
+
+
+@pytest.mark.parametrize(
+    "vertices",
+    [
+        pytest.param(
+            [(-0.5, -0.5), (0.0, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)],
+            id="adjacent-collinear-edges",
+        ),
+        pytest.param(
+            [(-0.5, -0.5), (0.5, -0.5), (0.1, 0.0), (0.5, 0.5), (-0.5, 0.5)],
+            id="simple-concave-with-closing-adjacency",
+        ),
+    ],
+)
+def test_accepts_schema_v4_simple_polygons_with_only_adjacent_contacts(
+    vertices: list[tuple[float, float]],
+) -> None:
+    validate(source_with(
+        f"        pc_shape = {v4_polygon_expression(vertices)}\n"
+        "        pc_shape.shift([0.0, 0.0, 0])\n"
+    ))
+
+
+def v4_shape_become_source(initializer: str, payload: str, *, freeform: bool = False) -> str:
+    final_paint = ".set_stroke(opacity=0.4)" if freeform else ".set_opacity(0.4)"
+    return source_with(
+        f"        pc_shape = {initializer}\n"
+        "        pc_shape.shift([0.0, 0.0, 0])\n"
+        "        pc_shape_ref = pc_shape.copy()\n"
+        "        self.add(pc_shape)\n"
+        f"        self.play(Transform(pc_shape, pc_shape_ref.copy().become({payload}){final_paint}, "
+        "run_time=1.0, rate_func=linear))\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("initializer", "payload", "freeform"),
+    [
+        pytest.param(
+            V4_ELLIPSE,
+            'Ellipse(width=3.0, height=2.0).set_fill("#abcdef", opacity=1.0)'
+            '.set_stroke("#654321", width=3.0).shift([1.0, -1.0, 0])',
+            False,
+            id="ellipse-dimensions-and-paint",
+        ),
+        pytest.param(
+            V4_POLYGON,
+            'Polygon([-0.5, 0.5, 0], [0.5, 0.5, 0], [0.0, -0.5, 0], joint_type=LineJointType.ROUND)'
+            '.stretch(3.0, 0, about_point=ORIGIN).stretch(2.0, 1, about_point=ORIGIN)'
+            '.set_fill("#abcdef", opacity=1.0).set_stroke("#654321", width=3.0)'
+            '.shift([1.0, -1.0, 0])',
+            False,
+            id="polygon-dimensions-and-paint",
+        ),
+        pytest.param(
+            V4_DASHED_LINE,
+            'DashedLine([-1.5, 0.0, 0], [1.5, 0.0, 0], dash_length=0.2, dashed_ratio=0.6, '
+            'cap_style=CapStyleType.ROUND).set_stroke("#654321", width=3.0).shift([1.0, -1.0, 0])',
+            False,
+            id="dashed-line-dimensions-and-paint",
+        ),
+        pytest.param(
+            V4_DOUBLE_ARROW,
+            'DoubleArrow([-1.5, 0.0, 0], [1.5, 0.0, 0], buff=0, '
+            'max_tip_length_to_length_ratio=0.25, tip_shape_start=StealthTip, '
+            'tip_shape_end=ArrowCircleFilledTip).set_cap_style(CapStyleType.ROUND)'
+            '.set_color("#654321").set_stroke("#654321", width=3.0).shift([1.0, -1.0, 0])',
+            False,
+            id="double-arrow-dimensions-and-paint",
+        ),
+        pytest.param(
+            V4_FREEFORM_OPEN,
+            'VMobject(joint_type=LineJointType.ROUND, cap_style=CapStyleType.ROUND)'
+            '.start_new_path([-0.5, 0.25, 0])'
+            '.add_cubic_bezier_curve_to([-0.25, 0.25, 0], [-0.1, -0.25, 0], [0.0, -0.25, 0])'
+            '.add_cubic_bezier_curve_to([0.1, -0.25, 0], [0.25, 0.25, 0], [0.5, 0.25, 0])'
+            '.stretch(3.0, 0, about_point=ORIGIN).stretch(2.0, 1, about_point=ORIGIN)'
+            '.set_fill("#654321", opacity=0.0).set_stroke("#654321", width=3.0, opacity=0.4)'
+            '.shift([1.0, -1.0, 0])',
+            True,
+            id="freeform-dimensions-and-paint",
+        ),
+        pytest.param(
+            V4_FREEFORM_CLOSED,
+            'VMobject(joint_type=LineJointType.BEVEL)'
+            '.start_new_path([-0.5, 0.25, 0])'
+            '.add_cubic_bezier_curve_to([-0.4, 0.1, 0], [-0.1, -0.25, 0], [0.0, -0.25, 0])'
+            '.add_cubic_bezier_curve_to([0.1, -0.25, 0], [0.4, 0.1, 0], [0.5, 0.25, 0])'
+            '.add_cubic_bezier_curve_to([0.25, 0.4, 0], [-0.25, 0.4, 0], [-0.5, 0.25, 0])'
+            '.stretch(3.0, 0, about_point=ORIGIN).stretch(2.0, 1, about_point=ORIGIN)'
+            '.set_fill("#abcdef", opacity=1.0).set_stroke("#654321", width=3.0)'
+            '.set_opacity(0.4).shift([1.0, -1.0, 0])',
+            False,
+            id="freeform-closed-dimensions-fill-stroke-and-opacity",
+        ),
+    ],
+)
+def test_accepts_schema_v4_become_with_mutable_dimensions_and_paint(
+    initializer: str,
+    payload: str,
+    freeform: bool,
+) -> None:
+    validate(v4_shape_become_source(initializer, payload, freeform=freeform))
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        pytest.param(
+            V4_FREEFORM_OPEN.replace('opacity=0.0', 'opacity=1.0', 1),
+            id="open-path-visible-fill",
+        ),
+        pytest.param(
+            V4_FREEFORM_CLOSED.replace('opacity=1.0', 'opacity=0.0', 1),
+            id="closed-path-transparent-fill",
+        ),
+        pytest.param(
+            V4_FREEFORM_CLOSED.replace('width=2.0)', 'width=2.0, opacity=0.5)', 1),
+            id="closed-path-stroke-only-opacity",
+        ),
+    ],
+)
+def test_rejects_freeform_paint_outside_open_closed_capability_grammar(expression: str) -> None:
+    with pytest.raises(SourcePolicyError):
+        validate(source_with(f"        pc_shape = {expression}\n"))
+
+
+def test_accepts_compiler_safe_dashed_width_become_literal_drift() -> None:
+    initializer = (
+        'DashedLine([-1.28888887, 0.0, 0], [1.28888887, 0.0, 0], '
+        'dash_length=0.26666671, dashed_ratio=0.62068966, cap_style=CapStyleType.ROUND)'
+        '.set_stroke("#222222", width=2.0)'
+    )
+    payload = (
+        'DashedLine([-0.42962962, 0.0, 0], [0.42962962, 0.0, 0], '
+        'dash_length=0.2666668, dashed_ratio=0.62068966, cap_style=CapStyleType.ROUND)'
+        '.set_stroke("#654321", width=3.0).shift([1.0, -1.0, 0])'
+    )
+
+    validate(v4_shape_become_source(initializer, payload))
+
+
+def test_accepts_compiler_safe_dashed_width_become_ratio_drift() -> None:
+    initializer = (
+        'DashedLine([-0.22222222, 0.0, 0], [0.22222222, 0.0, 0], '
+        'dash_length=0.01111111, dashed_ratio=0.05000003, cap_style=CapStyleType.ROUND)'
+        '.set_stroke("#222222", width=2.0)'
+    )
+    payload = (
+        'DashedLine([-0.22222222, 0.0, 0], [0.22222222, 0.0, 0], '
+        'dash_length=0.01111112, dashed_ratio=0.05, cap_style=CapStyleType.ROUND)'
+        '.set_stroke("#654321", width=3.0).shift([1.0, -1.0, 0])'
+    )
+
+    validate(v4_shape_become_source(initializer, payload))
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(
+            'DashedLine([-0.42962962, 0.0, 0], [0.42962962, 0.0, 0], '
+            'dash_length=0.266668, dashed_ratio=0.62068966, cap_style=CapStyleType.ROUND)'
+            '.set_stroke("#654321", width=3.0).shift([1.0, -1.0, 0])',
+            id="dash-length-outside-compiler-drift",
+        ),
+        pytest.param(
+            'DashedLine([-0.42962962, 0.0, 0], [0.42962962, 0.0, 0], '
+            'dash_length=0.2666668, dashed_ratio=0.620691, cap_style=CapStyleType.ROUND)'
+            '.set_stroke("#654321", width=3.0).shift([1.0, -1.0, 0])',
+            id="ratio-outside-compiler-drift",
+        ),
+        pytest.param(
+            'DashedLine([-0.42962962, 0.0, 0], [0.42962962, 0.0, 0], '
+            'dash_length=0.2666668, dashed_ratio=0.62068966, cap_style=CapStyleType.SQUARE)'
+            '.set_stroke("#654321", width=3.0).shift([1.0, -1.0, 0])',
+            id="immutable-cap",
+        ),
+    ],
+)
+def test_rejects_dashed_width_become_descriptor_tampering(payload: str) -> None:
+    initializer = (
+        'DashedLine([-1.28888887, 0.0, 0], [1.28888887, 0.0, 0], '
+        'dash_length=0.26666671, dashed_ratio=0.62068966, cap_style=CapStyleType.ROUND)'
+        '.set_stroke("#222222", width=2.0)'
+    )
+
+    with pytest.raises(SourcePolicyError, match="descriptor"):
+        validate(v4_shape_become_source(initializer, payload))
+
+
+@pytest.mark.parametrize(
+    ("initializer", "payload", "freeform"),
+    [
+        pytest.param(
+            V4_POLYGON,
+            'Polygon([-0.5, 0.5, 0], [0.4, 0.5, 0], [0.0, -0.5, 0], joint_type=LineJointType.ROUND)'
+            '.stretch(2.0, 0, about_point=ORIGIN).stretch(1.0, 1, about_point=ORIGIN)'
+            '.set_fill("#111111", opacity=1.0).set_stroke("#222222", width=2.0)'
+            '.shift([1.0, -1.0, 0])',
+            False,
+            id="polygon-vertex",
+        ),
+        pytest.param(
+            V4_POLYGON,
+            V4_POLYGON.replace("LineJointType.ROUND", "LineJointType.BEVEL") + ".shift([1.0, -1.0, 0])",
+            False,
+            id="polygon-join",
+        ),
+        pytest.param(
+            V4_DASHED_LINE,
+            'DashedLine([-1.0, 0.0, 0], [1.0, 0.0, 0], dash_length=0.25, dashed_ratio=0.6, '
+            'cap_style=CapStyleType.ROUND).set_stroke("#222222", width=2.0).shift([1.0, -1.0, 0])',
+            False,
+            id="dashed-pattern",
+        ),
+        pytest.param(
+            V4_DASHED_LINE,
+            V4_DASHED_LINE.replace("dashed_ratio=0.6", "dashed_ratio=0.5") + ".shift([1.0, -1.0, 0])",
+            False,
+            id="dashed-ratio",
+        ),
+        pytest.param(
+            V4_DASHED_LINE,
+            V4_DASHED_LINE.replace("CapStyleType.ROUND", "CapStyleType.SQUARE") + ".shift([1.0, -1.0, 0])",
+            False,
+            id="dashed-cap",
+        ),
+        pytest.param(
+            V4_DOUBLE_ARROW,
+            'DoubleArrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, '
+            'max_tip_length_to_length_ratio=0.25, tip_shape_start=ArrowSquareFilledTip, '
+            'tip_shape_end=ArrowCircleFilledTip).set_cap_style(CapStyleType.ROUND)'
+            '.set_color("#222222").set_stroke("#222222", width=2.0).shift([1.0, -1.0, 0])',
+            False,
+            id="double-arrow-start-tip",
+        ),
+        pytest.param(
+            V4_DOUBLE_ARROW,
+            V4_DOUBLE_ARROW.replace("tip_shape_end=ArrowCircleFilledTip", "tip_shape_end=ArrowSquareFilledTip")
+            + ".shift([1.0, -1.0, 0])",
+            False,
+            id="double-arrow-end-tip",
+        ),
+        pytest.param(
+            V4_DOUBLE_ARROW,
+            V4_DOUBLE_ARROW.replace("max_tip_length_to_length_ratio=0.25", "max_tip_length_to_length_ratio=0.3")
+            + ".shift([1.0, -1.0, 0])",
+            False,
+            id="double-arrow-ratio",
+        ),
+        pytest.param(
+            V4_DOUBLE_ARROW,
+            V4_DOUBLE_ARROW.replace("CapStyleType.ROUND", "CapStyleType.BUTT") + ".shift([1.0, -1.0, 0])",
+            False,
+            id="double-arrow-cap",
+        ),
+        pytest.param(
+            V4_FREEFORM_OPEN,
+            'VMobject(joint_type=LineJointType.ROUND, cap_style=CapStyleType.SQUARE)'
+            '.start_new_path([-0.5, 0.25, 0])'
+            '.add_cubic_bezier_curve_to([-0.25, 0.25, 0], [-0.1, -0.25, 0], [0.0, -0.25, 0])'
+            '.add_cubic_bezier_curve_to([0.1, -0.25, 0], [0.25, 0.25, 0], [0.5, 0.25, 0])'
+            '.stretch(2.0, 0, about_point=ORIGIN).stretch(1.0, 1, about_point=ORIGIN)'
+            '.set_fill("#222222", opacity=0.0).set_stroke("#222222", width=2.0, opacity=0.4)'
+            '.shift([1.0, -1.0, 0])',
+            True,
+            id="freeform-cap",
+        ),
+        pytest.param(
+            V4_FREEFORM_OPEN,
+            V4_FREEFORM_OPEN.replace("LineJointType.ROUND", "LineJointType.BEVEL") + ".shift([1.0, -1.0, 0])",
+            True,
+            id="freeform-join",
+        ),
+        pytest.param(
+            V4_FREEFORM_OPEN,
+            V4_FREEFORM_OPEN.replace("[-0.25, 0.25, 0]", "[-0.2, 0.25, 0]", 1)
+            + ".shift([1.0, -1.0, 0])",
+            True,
+            id="freeform-control-point",
+        ),
+        pytest.param(
+            V4_FREEFORM_OPEN,
+            V4_FREEFORM_CLOSED + ".shift([1.0, -1.0, 0])",
+            True,
+            id="freeform-open-to-closed-topology",
+        ),
+        pytest.param(
+            V4_ELLIPSE,
+            V4_POLYGON + ".shift([1.0, -1.0, 0])",
+            False,
+            id="ellipse-to-polygon",
+        ),
+        pytest.param(
+            V4_FREEFORM_OPEN,
+            V4_DASHED_LINE + ".shift([1.0, -1.0, 0])",
+            True,
+            id="freeform-to-dashed-line",
+        ),
+    ],
+)
+def test_rejects_schema_v4_become_descriptor_and_kind_mutations(
+    initializer: str,
+    payload: str,
+    freeform: bool,
+) -> None:
+    with pytest.raises(SourcePolicyError):
+        validate(v4_shape_become_source(initializer, payload, freeform=freeform))
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        'Ellipse(height=1.0, width=2.0).set_fill("#111111", opacity=1.0).set_stroke("#222222", width=2.0)',
+        'Ellipse(width=2.0, height=1.0).set_stroke("#222222", width=2.0)',
+        'Polygon((-0.5, 0.5, 0), [0.5, 0.5, 0], [0.0, -0.5, 0], joint_type=LineJointType.ROUND)'
+        '.stretch(2.0, 0, about_point=ORIGIN).stretch(1.0, 1, about_point=ORIGIN)'
+        '.set_fill("#111111", opacity=1.0).set_stroke("#222222", width=2.0)',
+        'Polygon([-0.5, 0.5, 0], [0.5, 0.5, 0], [0.0, -0.5, 0], joint_type=LineJointType.ROUND)'
+        '.stretch(1.0, 1, about_point=ORIGIN).stretch(2.0, 0, about_point=ORIGIN)'
+        '.set_fill("#111111", opacity=1.0).set_stroke("#222222", width=2.0)',
+        'DashedLine([-1.0, 0.0, 0], [1.0, 0.0, 0], dashed_ratio=0.6, dash_length=0.2, '
+        'cap_style=CapStyleType.ROUND).set_stroke("#222222", width=2.0)',
+        'DashedLine([-1.0, 0.0, 0], [1.0, 0.0, 0], dash_length=0.2, dashed_ratio=0.6, '
+        'cap_style=CapStyleType.ROUND).set_cap_style(CapStyleType.ROUND).set_stroke("#222222", width=2.0)',
+        'DoubleArrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, '
+        'tip_shape_start=StealthTip, max_tip_length_to_length_ratio=0.25, '
+        'tip_shape_end=ArrowCircleFilledTip).set_cap_style(CapStyleType.ROUND)'
+        '.set_color("#222222").set_stroke("#222222", width=2.0)',
+        'DoubleArrow([-1.0, 0.0, 0], [1.0, 0.0, 0], buff=0, '
+        'max_tip_length_to_length_ratio=0.25, tip_shape_start=StealthTip(), '
+        'tip_shape_end=ArrowCircleFilledTip).set_cap_style(CapStyleType.ROUND)'
+        '.set_color("#222222").set_stroke("#222222", width=2.0)',
+        'VMobject(joint_type=LineJointType.ROUND, cap_style=CapStyleType.ROUND)'
+        '.start_new_path(ORIGIN)'
+        '.add_cubic_bezier_curve_to([-0.25, 0.25, 0], [0.25, -0.25, 0], [0.5, 0.25, 0])'
+        '.stretch(2.0, 0, about_point=ORIGIN).stretch(1.0, 1, about_point=ORIGIN)'
+        '.set_fill("#222222", opacity=0.0).set_stroke("#222222", width=2.0, opacity=1.0)',
+        'VMobject(joint_type=LineJointType.ROUND, cap_style=CapStyleType.ROUND)'
+        '.start_new_path([-0.5, 0.25, 0])'
+        '.add_cubic_bezier_curve_to([-0.25, 0.25, 0], [0.25, -0.25, 0], [0.5, 0.25, 0])'
+        '.stretch(2.0, 0, about_point=ORIGIN).stretch(1.0, 1, about_point=ORIGIN)'
+        '.set_fill("#222222", opacity=1.0).set_stroke("#222222", width=2.0, opacity=1.0)',
+        'VMobject(joint_type=LineJointType.ROUND, cap_style=CapStyleType.ROUND)'
+        '.start_new_path([-0.5, 0.25, 0])'
+        '.add_cubic_bezier_curve_to([-0.25, 0.25, 0], [0.25, -0.25, 0], [0.5, 0.25, 0])'
+        '.stretch(2.0, 0, about_point=ORIGIN).stretch(1.0, 1, about_point=ORIGIN)'
+        '.set_fill("#222222", opacity=0.0).set_stroke("#222222", opacity=1.0, width=2.0)',
+    ],
+)
+def test_rejects_schema_v4_native_aliases_reordering_and_nonliterals(expression: str) -> None:
+    with pytest.raises(SourcePolicyError):
+        validate(source_with(f"        pc_shape = {expression}\n"))
+
+
+def dashed_boundary_expression(half_width: float) -> str:
+    return (
+        f'DashedLine([-{half_width}, 0.0, 0], [{half_width}, 0.0, 0], '
+        'dash_length=0.02, dashed_ratio=0.5, cap_style=CapStyleType.BUTT)'
+        '.set_stroke("#222222", width=2.0)'
+    )
+
+
+def test_accepts_256_dashes_and_rejects_257_dashes_per_constructor() -> None:
+    validate(source_with(
+        f"        pc_shape = {dashed_boundary_expression(5.12)}\n"
+        "        pc_shape.shift([0.0, 0.0, 0])\n"
+    ))
+    with pytest.raises(SourcePolicyError, match="too many rendered dashes"):
+        validate(source_with(f"        pc_shape = {dashed_boundary_expression(5.14)}\n"))
+
+
+def dashed_work_source(count: int) -> str:
+    return source_with("".join(
+        f"        pc_shape_{index} = {dashed_boundary_expression(5.12)}\n"
+        f"        pc_shape_{index}.shift([0.0, 0.0, 0])\n"
+        for index in range(count)
+    ))
+
+
+def test_enforces_aggregate_native_geometry_work_budget() -> None:
+    validate(dashed_work_source(16))
+    with pytest.raises(SourcePolicyError, match="work budget"):
+        validate(dashed_work_source(17))
+
+
+def closed_freeform_boundary_expression(segment_count: int) -> str:
+    start = "[-0.5, 0.0, 0]"
+    segments: list[str] = []
+    for index in range(segment_count):
+        if index == segment_count - 1:
+            end = start
+        else:
+            x = -0.48 + (0.96 * (index + 1) / segment_count)
+            y = 0.2 if index % 2 == 0 else -0.2
+            end = f"[{x:.8f}, {y:.1f}, 0]"
+        segments.append(
+            ".add_cubic_bezier_curve_to([-0.25, 0.1, 0], [0.25, -0.1, 0], " + end + ")"
+        )
+    return (
+        "VMobject(joint_type=LineJointType.MITER).start_new_path(" + start + ")"
+        + "".join(segments)
+        + '.stretch(2.0, 0, about_point=ORIGIN).stretch(1.0, 1, about_point=ORIGIN)'
+        + '.set_fill("#111111", opacity=1.0).set_stroke("#222222", width=2.0)'
+    )
+
+
+def test_accepts_64_freeform_cubics_and_rejects_65() -> None:
+    validate(source_with(
+        f"        pc_shape = {closed_freeform_boundary_expression(64)}\n"
+        "        pc_shape.shift([0.0, 0.0, 0])\n"
+    ))
+    with pytest.raises(SourcePolicyError, match="methods"):
+        validate(source_with(f"        pc_shape = {closed_freeform_boundary_expression(65)}\n"))
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        pytest.param(
+            f"pc_shape_ref.copy().become({V4_FREEFORM_OPEN}.shift([1.0, -1.0, 0])).set_opacity(0.4)",
+            id="generic-opacity",
+        ),
+        pytest.param(
+            f"pc_shape_ref.copy().become({V4_FREEFORM_OPEN}.shift([1.0, -1.0, 0])).set_stroke(0.4)",
+            id="positional-stroke-opacity",
+        ),
+        pytest.param(
+            f'pc_shape_ref.copy().become({V4_FREEFORM_OPEN}.shift([1.0, -1.0, 0])).set_stroke("#ffffff", opacity=0.4)',
+            id="stroke-colour-override",
+        ),
+    ],
+)
+def test_rejects_freeform_become_without_exact_stroke_opacity_override(target: str) -> None:
+    with pytest.raises(SourcePolicyError):
+        validate(source_with(
+            f"        pc_shape = {V4_FREEFORM_OPEN}\n"
+            "        pc_shape.shift([0.0, 0.0, 0])\n"
+            "        pc_shape_ref = pc_shape.copy()\n"
+            "        self.add(pc_shape)\n"
+            f"        self.play(Transform(pc_shape, {target}, run_time=1.0, rate_func=linear))\n"
+        ))
+
+
+def test_rejects_closed_freeform_become_with_stroke_only_opacity_override() -> None:
+    target = (
+        f"pc_shape_ref.copy().become({V4_FREEFORM_CLOSED}.shift([1.0, -1.0, 0]))"
+        ".set_stroke(opacity=0.4)"
+    )
+    with pytest.raises(SourcePolicyError, match="exact compiler target"):
+        validate(source_with(
+            f"        pc_shape = {V4_FREEFORM_CLOSED}\n"
+            "        pc_shape.shift([0.0, 0.0, 0])\n"
+            "        pc_shape_ref = pc_shape.copy()\n"
+            "        self.add(pc_shape)\n"
+            f"        self.play(Transform(pc_shape, {target}, run_time=1.0, rate_func=linear))\n"
+        ))

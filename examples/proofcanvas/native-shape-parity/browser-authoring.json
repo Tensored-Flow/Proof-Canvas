@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "projectId": "project-4e4154495645534841504553",
+  "parityProjectSha256": "e6e4d9bd32031b01bbd5c559fd01a6363ed791a40560d3e7ee804b0ecb99e538",
+  "projectSchemaVersion": 4,
+  "initialObjectCount": 5,
+  "authoredObjectCount": 10,
+  "paletteCount": 16,
+  "palettePresetIds": [
+    "rectangle",
+    "rounded-rectangle",
+    "circle",
+    "ellipse",
+    "polygon",
+    "line",
+    "dashed-line",
+    "arrow",
+    "double-arrow",
+    "brace",
+    "bracket",
+    "freeform-path",
+    "highlight-box",
+    "underline",
+    "cross-out",
+    "dot-point"
+  ],
+  "insertionModes": [
+    "click",
+    "drag-and-drop"
+  ],
+  "editedNativeShapes": [
+    "ellipse",
+    "polygon",
+    "dashed-line",
+    "double-arrow",
+    "freeform-path"
+  ],
+  "controls": {
+    "ellipse": {
+      "width": 176,
+      "height": 92
+    },
+    "polygon": {
+      "lineJoin": "bevel",
+      "vertex1X": -0.42,
+      "vertexCount": 6
+    },
+    "dashedLine": {
+      "lineCap": "round",
+      "dashLength": 10.5,
+      "gapLength": 6.25,
+      "endY": 294,
+      "startXPreserved": true
+    },
+    "doubleArrow": {
+      "lineCap": "square",
+      "startTip": "circle",
+      "endTip": "square",
+      "tipSizeRatio": 0.36,
+      "endY": 332
+    },
+    "freeformPath": {
+      "lineCapBeforeClose": "square",
+      "lineJoin": "bevel",
+      "node2X": 0.12,
+      "node2IncomingHandleX": -0.08,
+      "closed": true,
+      "closureChangedPath": true
+    }
+  },
+  "history": {
+    "historyAfterEllipse": 3,
+    "undoHeight": "84",
+    "redoHeight": "92",
+    "historyAfterRedo": 3
+  },
+  "lockedMutationRefusal": {
+    "historyBeforeLock": 24,
+    "historyAfterLockedAttempt": 25,
+    "inspectorDisabled": true,
+    "transformUnchanged": true,
+    "notice": "Locked objects remain selectable, but the selection cannot be transformed until every selected object is unlocked."
+  },
+  "playbackRefusal": {
+    "historyBeforePlayback": 26,
+    "historyAfterPlaybackDrop": 26,
+    "paletteDisabled": true,
+    "inspectorDisabled": true,
+    "undoDisabled": true,
+    "stageDropEnabled": false,
+    "notice": "Pause playback before dropping a shape."
+  },
+  "portrait": {
+    "viewport": {
+      "width": 1024,
+      "height": 1366
+    },
+    "authoredFrame": {
+      "width": 540,
+      "height": 960
+    },
+    "layout": {
+      "innerWidth": 1024,
+      "innerHeight": 1366,
+      "documentWidth": 1024,
+      "documentHeight": 1366,
+      "stageWidth": 486,
+      "stageHeight": 865.546875,
+      "stageAspect": 0.5614947197400487,
+      "inspectorClientWidth": 291,
+      "inspectorScrollHeight": 1398,
+      "inspectorClientHeight": 972,
+      "libraryClientWidth": 223
+    }
+  },
+  "screenshots": {
+    "desktop": {
+      "path": "authoring-desktop-1440x900.png",
+      "sha256": "47d132374a22a99580d171eafeeb556bdac82ad435a63be473a2b7c5c5dcb64b",
+      "width": 1440,
+      "height": 900
+    },
+    "locked": {
+      "path": "authoring-locked-1440x900.png",
+      "sha256": "66671efd503e6e970acccb880e16fbb3c9359cc0c9d4002ae7e9be65d3728b5c",
+      "width": 1440,
+      "height": 900
+    },
+    "playback": {
+      "path": "authoring-playback-1440x900.png",
+      "sha256": "5fb9410998a0e0d75927ff2f7bdedc33ad4fa04310155d85a21f9c35ab167a49",
+      "width": 1440,
+      "height": 900
+    },
+    "portrait": {
+      "path": "authoring-portrait-1024x1366.png",
+      "sha256": "e06faf3007d1d3a632e7c0148c8c97269bdda56ea0b56eec8002158f8414e974",
+      "width": 1024,
+      "height": 1366
+    }
+  },
+  "errors": {
+    "consoleErrors": [],
+    "pageErrors": [],
+    "failedRequests": [],
+    "serverErrors": []
+  }
+}

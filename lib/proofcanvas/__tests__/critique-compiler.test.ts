@@ -240,11 +240,11 @@ describe("Manim compiler", () => {
     const reference = python.match(/(pc_ref_[a-f0-9_]+) = pc_the_contrast\.copy\(\)/)?.[1];
     expect(reference).toBeDefined();
     expect(python).toContain(`${reference}.copy().stretch(2.0, 0, about_point=ORIGIN).stretch(2.0, 1, about_point=ORIGIN).shift([0.0, 0.0, 0])`);
-    expect(python).toContain(`${reference}.copy().stretch(1.5, 0, about_point=ORIGIN).stretch(1.5, 1, about_point=ORIGIN).stretch(3.0, 0, about_point=ORIGIN).stretch(4.0, 1, about_point=ORIGIN).rotate(10.0 * DEGREES, about_point=ORIGIN).shift([1.77777775, 0.0, 0])`);
-    expect(python).toContain(`${reference}.copy().stretch(1.5, 0, about_point=ORIGIN).stretch(1.5, 1, about_point=ORIGIN).stretch(3.0, 0, about_point=ORIGIN).stretch(4.0, 1, about_point=ORIGIN).rotate(10.0 * DEGREES, about_point=ORIGIN).shift([2.66666662, 0.44444444, 0])`);
-    expect(python).toContain(`${reference}.copy().stretch(1.5, 0, about_point=ORIGIN).stretch(1.5, 1, about_point=ORIGIN).stretch(3.0, 0, about_point=ORIGIN).stretch(4.0, 1, about_point=ORIGIN).rotate(20.0 * DEGREES, about_point=ORIGIN).shift([2.66666662, 0.44444444, 0])`);
-    expect(python).toContain("Rectangle(width=config.frame_width / 2.0, height=config.frame_height / 2.0).move_to([0.88888888, 0.44444444, 0]).rotate(10.0 * DEGREES)");
-    expect(python).toContain("Rectangle(width=config.frame_width / 2.0, height=config.frame_height / 2.0).move_to([0.88888888, 0.44444444, 0]).rotate(20.0 * DEGREES)");
+    expect(python).toContain(`${reference}.copy().stretch(1.5, 0, about_point=ORIGIN).stretch(1.5, 1, about_point=ORIGIN).stretch(3.0, 0, about_point=ORIGIN).stretch(4.0, 1, about_point=ORIGIN).rotate(-10.0 * DEGREES, about_point=ORIGIN).shift([1.77777775, 0.0, 0])`);
+    expect(python).toContain(`${reference}.copy().stretch(1.5, 0, about_point=ORIGIN).stretch(1.5, 1, about_point=ORIGIN).stretch(3.0, 0, about_point=ORIGIN).stretch(4.0, 1, about_point=ORIGIN).rotate(-10.0 * DEGREES, about_point=ORIGIN).shift([2.66666662, 0.44444444, 0])`);
+    expect(python).toContain(`${reference}.copy().stretch(1.5, 0, about_point=ORIGIN).stretch(1.5, 1, about_point=ORIGIN).stretch(3.0, 0, about_point=ORIGIN).stretch(4.0, 1, about_point=ORIGIN).rotate(-20.0 * DEGREES, about_point=ORIGIN).shift([2.66666662, 0.44444444, 0])`);
+    expect(python).toContain("Rectangle(width=config.frame_width / 2.0, height=config.frame_height / 2.0).move_to([0.88888888, 0.44444444, 0]).rotate(-10.0 * DEGREES)");
+    expect(python).toContain("Rectangle(width=config.frame_width / 2.0, height=config.frame_height / 2.0).move_to([0.88888888, 0.44444444, 0]).rotate(-20.0 * DEGREES)");
   });
 
   test("keeps a delayed same-object target absolute when another object bridges the timeline component", () => {
@@ -691,7 +691,7 @@ describe("Manim compiler", () => {
       { id: "animation-centred-note-move", type: "move", targetIds: [annotation.id], start: 0, duration: 1, easing: "linear", properties: { x: 800 } },
     ];
     const python = compileManim(ProjectDocumentSchema.parse(project)).python;
-    expect(python).toContain("pc_style_note.rotate(12.0 * DEGREES, about_point=ORIGIN)");
+    expect(python).toContain("pc_style_note.rotate(-12.0 * DEGREES, about_point=ORIGIN)");
     expect(python).toContain("pc_style_note.shift([3.25925921, 0.0, 0])");
     expect(python).toMatch(/Transform\(pc_style_note, pc_ref_[a-f0-9_]+\.copy\(\)\.shift\(\[1\.48148146, 0\.0, 0\]\)\.set_opacity\(1\.0\), run_time=1\.0, rate_func=linear\)/);
   });
@@ -837,7 +837,7 @@ describe("Manim compiler", () => {
     const result = compileManim(valid);
     expect(result.python).toContain("Circle(radius=1.0).stretch_to_fit_width(1.18518517).stretch_to_fit_height(0.59259258)");
     expect(result.python).toContain("pc_circle_mark = Circle(radius=1.0).stretch_to_fit_width(1.18518517).stretch_to_fit_height(0.59259258).set_fill(\"#f3eedf\", opacity=1.0).set_stroke(\"#252722\", width=1.75)");
-    expect(result.python).toContain("pc_default_rectangle = RoundedRectangle(corner_radius=0.01481481, width=1.18518517, height=0.59259258).set_fill(\"#252722\", opacity=1.0).set_stroke(\"#252722\", width=1.75)");
+    expect(result.python).toContain("pc_default_rectangle = RoundedRectangle(corner_radius=min(0.01481481, 1.18518517 / 2.0, 0.59259258 / 2.0), width=1.18518517, height=0.59259258).set_fill(\"#252722\", opacity=1.0).set_stroke(\"#252722\", width=1.75)");
     expect(result.python).toContain("Line([");
     expect(result.python).toContain("Arrow([");
     expect(result.python).toContain("BraceBetweenPoints");
@@ -889,7 +889,7 @@ describe("Manim compiler", () => {
     for (const cap of ["BUTT", "ROUND", "SQUARE"]) expect(python).toContain(`CapStyleType.${cap}`);
     for (const direction of ["UP", "DOWN", "LEFT", "RIGHT"]) expect(python).toContain(`direction=${direction}`);
     expect(python).toContain("pc_tip_square.stretch(-2.0, 0, about_point=ORIGIN).stretch(0.5, 1, about_point=ORIGIN)");
-    expect(python).toContain("pc_tip_square.rotate(45.0 * DEGREES, about_point=ORIGIN)");
+    expect(python).toContain("pc_tip_square.rotate(-45.0 * DEGREES, about_point=ORIGIN)");
   });
 
   test("reconstructs current-shape dimension targets before local signed placement", () => {
@@ -921,9 +921,49 @@ describe("Manim compiler", () => {
 
     const python = compileManim(ProjectDocumentSchema.parse(project)).python;
     expect(python).toContain("pc_ref_");
-    expect(python).toContain(".copy().become(RoundedRectangle(corner_radius=0.2074074, width=2.37037033, height=1.18518517)");
-    expect(python).toContain(".stretch(-1.5, 0, about_point=ORIGIN).stretch(0.5, 1, about_point=ORIGIN).rotate(30.0 * DEGREES, about_point=ORIGIN).shift([1.77777775, 0.44444444, 0])).set_opacity(1.0)");
+    expect(python).toContain(".copy().become(RoundedRectangle(corner_radius=min(0.2074074, 2.37037033 / 2.0, 1.18518517 / 2.0), width=2.37037033, height=1.18518517)");
+    expect(python).toContain(".stretch(-1.5, 0, about_point=ORIGIN).stretch(0.5, 1, about_point=ORIGIN).rotate(-30.0 * DEGREES, about_point=ORIGIN).shift([1.77777775, 0.44444444, 0])).set_opacity(1.0)");
     expect(python).not.toMatch(/pc_ref_[a-f0-9_]+\.copy\(\)\.stretch\(2\.0, 0/);
+  });
+
+  test("reflects schema-v4 native-shape initial and semantic rotations after local Y inversion", () => {
+    const project = cloneSerializable(createCantorDemoProject());
+    const shot = project.shots[1];
+    const polygon: SceneObject = {
+      id: "object-native-rotation",
+      type: "polygon",
+      name: "Native rotation",
+      locked: false,
+      visible: true,
+      transform: { x: 480, y: 270, width: 120, height: 80, rotation: 15, scaleX: 1, scaleY: 1 },
+      style: { fill: "#abcdef", stroke: "#123456", strokeWidth: 2 },
+      properties: {
+        shape: {
+          kind: "polygon",
+          vertices: [{ x: -0.5, y: 0.5 }, { x: 0, y: -0.5 }, { x: 0.5, y: 0.5 }],
+          lineJoin: "round",
+        },
+      },
+    };
+    project.shots = [shot];
+    shot.duration = 2;
+    shot.objects = [polygon];
+    shot.propertyTracks = [];
+    shot.animations = [{
+      id: "animation-native-rotation",
+      type: "transform",
+      targetIds: [polygon.id],
+      start: 0,
+      duration: 1,
+      easing: "linear",
+      properties: { rotation: 35 },
+    }];
+
+    const python = compileManim(ProjectDocumentSchema.parse(project)).python;
+    expect(python).toContain("pc_native_rotation.rotate(-15.0 * DEGREES, about_point=ORIGIN)");
+    expect(python).toContain("Polygon([-0.5, -0.5, 0], [0.0, 0.5, 0], [0.5, -0.5, 0], joint_type=LineJointType.ROUND).stretch(1.77777775, 0, about_point=ORIGIN).stretch(1.18518517, 1, about_point=ORIGIN)");
+    expect(python).toContain(".rotate(-35.0 * DEGREES, about_point=ORIGIN).shift([0.0, 0.0, 0])).set_opacity(1.0)");
+    expect(python).not.toContain(".rotate(35.0 * DEGREES, about_point=ORIGIN)");
   });
 
   test("preserves world-space groups, safe identifiers, transforms, opacity, camera resets, and diagnostics", () => {
@@ -939,12 +979,13 @@ describe("Manim compiler", () => {
     const result = compileManim(ProjectDocumentSchema.parse(project));
     expect(result.python).toContain("pc_self = Group(pc_math, pc_class)");
     expect(result.python).not.toContain("pc_self.move_to(");
-    expect(result.python).toContain("pc_math.rotate(15.0 * DEGREES, about_point=ORIGIN)");
+    expect(result.python).toContain("pc_math.rotate(-15.0 * DEGREES, about_point=ORIGIN)");
     expect(result.python).toContain(".set_opacity(0.45)");
     expect(result.python).toContain("pc_math.stretch(1.2, 0, about_point=ORIGIN).stretch(0.8, 1, about_point=ORIGIN)");
     expect(result.python).toContain("stretch_to_fit_width(");
     expect(result.python).toContain("stretch_to_fit_height(");
-    expect(result.python).toContain(".rotate(30.0 * DEGREES, about_point=ORIGIN).shift(");
+    expect(result.python).toContain(".rotate(-30.0 * DEGREES, about_point=ORIGIN).shift(");
+    expect(result.python).toContain("self.camera.frame.become(Rectangle(width=config.frame_width / 1.25, height=config.frame_height / 1.25).move_to([0.29629629, -0.14814815, 0]).rotate(-7.0 * DEGREES))");
     expect(result.python.match(/self\.camera\.frame\.become/g)).toHaveLength(2);
     expect(result.diagnostics.map(({ code }) => code)).toEqual(expect.arrayContaining(["GROUP_ANIMATION_FALLBACK"]));
     const parsed = spawnSync("python3", ["-c", "import ast,sys; ast.parse(sys.stdin.read())"], { input: result.python, encoding: "utf8" });

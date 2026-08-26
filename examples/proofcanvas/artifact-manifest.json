@@ -1,7 +1,7 @@
 {
   "artifactVersion": 1,
   "projectId": "project-uncountable-zero-length",
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "compilerDeterministic": true,
   "pythonAstParsed": true,
   "durationSeconds": 28,
@@ -16,15 +16,15 @@
   "files": {
     "uncountable-yet-zero-length.proofcanvas.json": {
       "bytes": 31142,
-      "sha256": "5c31f8c3237b24a5cedeef86a4c92c4c9e8c8bc8c15d48666a2582af1a2ee96e"
+      "sha256": "8800d5510fcc6ef2e1de6c1797773e8e69afbc4e52defb7613f8369f22e40ce2"
     },
     "uncountable-yet-zero-length.py": {
-      "bytes": 18763,
-      "sha256": "6bea3141b732eec1299ec4c514343ea3aa4530d2db62fdc72fdee858815746f2"
+      "bytes": 19861,
+      "sha256": "014eae0e47ed5c1dd0dfa936ac2358ff111daf9366849a7ba8a187484bbbca57"
     },
     "ai-command-results.json": {
       "bytes": 14246,
-      "sha256": "798ea74dc0481b74f892a223ca2af0e1650c7775c55d4e9d84b83d454651e1da"
+      "sha256": "a11b5e781d85a9859031172fcc27409070230eabaa0bcb6a28ec836305e7d2c1"
     },
     "uncountable-yet-zero-length.mp4": {
       "bytes": 445731,
@@ -32,7 +32,7 @@
     },
     "render-metadata.json": {
       "bytes": 617,
-      "sha256": "049d684ee72221f52a9a1ab70a72af65526905b9c3406b2380fa3a2d131288b3"
+      "sha256": "206e8e7d821261a2487c4fe4c5e3c20e67902b9c2cd2040c4ce50c32788fdbdf"
     },
     "evidence/browser-summary.json": {
       "bytes": 1033,

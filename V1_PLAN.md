@@ -74,6 +74,23 @@ Acceptance criteria: AC-05, AC-06, remaining AC-07 and AC-08, AC-11, AC-16.
 - Keep legacy render-unsupported easing combinations loadable, but reject them at every new
   authoring/copy/provider ingress. Permit unrelated edits, deletion, or the exact easing-only repair.
 
+### Milestone 3.7 — exact native shape authoring
+
+- Preserve the five published V3 primitives, then advance ready documents to schema V4 for native
+  ellipse, polygon, dashed-line, double-arrow, and cubic freeform-path object types. Canonicalize
+  animation target sets with stable first-occurrence ordering: repeated V1-V3 IDs were redundant in
+  preview semantics, and their repeated compiler expansion was a defect rather than authored meaning.
+- Keep all 16 requested shape cards clickable and draggable. Rounded rectangle, highlight, dot,
+  underline, and cross-out remain honest editable compositions over the native vocabulary; bracket
+  is one open freeform contour.
+- Share exact bounded geometry across SVG preview and pinned Manim compilation: normalized vertices,
+  cubic nodes/handles, explicit caps/joins/tips, Manim-equivalent dash spacing, and endpoint editing.
+- Bound each generated dashed line to 256 children and all compiler-occurrence-weighted native
+  geometry to 4,096 points or dashes. Renderer policy independently revalidates the generated-source
+  grammar and immutable shape descriptors.
+- This milestone is engineering evidence for native geometry and does not by itself qualify the
+  remaining semantic-component library, complete V1 workflow, human visual taste, or deployment.
+
 ## Milestone 4 — assets, packages, audio, and captions
 
 Acceptance criteria: AC-09 and AC-10.

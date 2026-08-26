@@ -46,7 +46,7 @@ export interface ShotTimelineProps {
   onNotice(message: string): void
 }
 
-/** Layered property timeline backed directly by the active schema-v3 shot. */
+/** Layered property timeline backed directly by the active schema-v4 shot. */
 export default function ShotTimeline({ project, shot, projectRevision, playhead, selection, disabled = false, onSeek, onSelect, onCommit, onNotice }: ShotTimelineProps) {
   const [pixelsPerSecond, setPixelsPerSecond] = useState<(typeof ZOOM_OPTIONS)[number]>(110)
   const [snapEnabled, setSnapEnabled] = useState(true)

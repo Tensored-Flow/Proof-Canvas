@@ -11,14 +11,19 @@ export const SHAPE_PRESET_IDS = [
   "rectangle",
   "rounded-rectangle",
   "circle",
-  "dot-point",
+  "ellipse",
+  "polygon",
   "line",
+  "dashed-line",
   "arrow",
+  "double-arrow",
   "brace",
   "bracket",
+  "freeform-path",
   "highlight-box",
   "underline",
   "cross-out",
+  "dot-point",
 ] as const;
 
 export type ShapePresetId = (typeof SHAPE_PRESET_IDS)[number];
@@ -50,15 +55,22 @@ const DEFINITIONS = [
   {
     id: "circle",
     name: "Circle",
-    description: "An editable circular primitive that can also be resized into an ellipse.",
-    keywords: ["ellipse", "oval", "ring", "disk"],
+    description: "An editable circular primitive with exact fill and stroke.",
+    keywords: ["round", "ring", "disk"],
     composition: "single",
   },
   {
-    id: "dot-point",
-    name: "Dot / point",
-    description: "A compact point that inherits the active ink colour.",
-    keywords: ["dot", "point", "vertex", "marker", "node"],
+    id: "ellipse",
+    name: "Ellipse",
+    description: "A native oval with independently editable width and height.",
+    keywords: ["oval", "conic", "ring"],
+    composition: "single",
+  },
+  {
+    id: "polygon",
+    name: "Polygon",
+    description: "A native editable polygon with exact normalized vertices and joins.",
+    keywords: ["vertices", "pentagon", "triangle", "closed path"],
     composition: "single",
   },
   {
@@ -69,10 +81,24 @@ const DEFINITIONS = [
     composition: "single",
   },
   {
+    id: "dashed-line",
+    name: "Dashed line",
+    description: "A bounded dashed segment with editable dash, gap, cap, and endpoints.",
+    keywords: ["dash", "dotted", "segment", "connector"],
+    composition: "single",
+  },
+  {
     id: "arrow",
     name: "Arrow",
     description: "A straight editable arrow with a bounded triangular tip.",
     keywords: ["vector", "connector", "direction", "pointer", "tip"],
+    composition: "single",
+  },
+  {
+    id: "double-arrow",
+    name: "Double arrow",
+    description: "A two-ended arrow with independent start and end tip shapes.",
+    keywords: ["bidirectional", "equivalence", "vector", "connector", "tips"],
     composition: "single",
   },
   {
@@ -85,9 +111,16 @@ const DEFINITIONS = [
   {
     id: "bracket",
     name: "Bracket",
-    description: "A square bracket assembled from three independently editable lines.",
+    description: "A single open freeform path with an exact square join.",
     keywords: ["square bracket", "delimiter", "grouping", "annotation"],
-    composition: "compound",
+    composition: "single",
+  },
+  {
+    id: "freeform-path",
+    name: "Freeform path",
+    description: "An editable cubic path with normalized nodes and optional handles.",
+    keywords: ["bezier", "curve", "pen", "path", "nodes", "handles"],
+    composition: "single",
   },
   {
     id: "highlight-box",
@@ -109,6 +142,13 @@ const DEFINITIONS = [
     description: "Two editable diagonal lines grouped into a cross-out mark.",
     keywords: ["cross", "strike", "strikethrough", "cancel", "delete", "x"],
     composition: "compound",
+  },
+  {
+    id: "dot-point",
+    name: "Dot / point",
+    description: "A compact point that inherits the active ink colour.",
+    keywords: ["dot", "point", "vertex", "marker", "node"],
+    composition: "single",
   },
 ] as const satisfies readonly ShapePresetDefinition[];
 
@@ -137,14 +177,19 @@ const PRESET_FOOTPRINTS: Readonly<Record<ShapePresetId, Footprint>> = Object.fre
   rectangle: Object.freeze({ width: 160, height: 90 }),
   "rounded-rectangle": Object.freeze({ width: 160, height: 90 }),
   circle: Object.freeze({ width: 96, height: 96 }),
-  "dot-point": Object.freeze({ width: 20, height: 20 }),
+  ellipse: Object.freeze({ width: 140, height: 84 }),
+  polygon: Object.freeze({ width: 130, height: 120 }),
   line: Object.freeze({ width: 180, height: 16 }),
+  "dashed-line": Object.freeze({ width: 180, height: 16 }),
   arrow: Object.freeze({ width: 180, height: 28 }),
+  "double-arrow": Object.freeze({ width: 180, height: 28 }),
   brace: Object.freeze({ width: 240, height: 150 }),
   bracket: Object.freeze({ width: 48, height: 120 }),
+  "freeform-path": Object.freeze({ width: 200, height: 100 }),
   "highlight-box": Object.freeze({ width: 220, height: 100 }),
   underline: Object.freeze({ width: 180, height: 16 }),
   "cross-out": Object.freeze({ width: 184, height: 54 }),
+  "dot-point": Object.freeze({ width: 20, height: 20 }),
 });
 
 const PLACEMENT_MARGIN = 12;
@@ -302,11 +347,23 @@ function buildPresetObjects(
         { shape: { kind: "circle" } },
         { semanticRole: "shape-circle" },
       ));
-    case "dot-point":
+    case "ellipse":
       return single(editableObject(
-        id(""), "circle", "Dot / point", origin, 10, 10,
-        { shape: { kind: "circle" } },
-        { semanticRole: "point", style: { strokeWidth: 10 } },
+        id(""), "ellipse", "Ellipse", origin, 140, 84,
+        { shape: { kind: "ellipse" } },
+        { semanticRole: "shape-ellipse" },
+      ));
+    case "polygon":
+      return single(editableObject(
+        id(""), "polygon", "Polygon", origin, 130, 120,
+        { shape: { kind: "polygon", lineJoin: "miter", vertices: [
+          { x: 0, y: -0.5 },
+          { x: 0.4755, y: -0.1545 },
+          { x: 0.2939, y: 0.4045 },
+          { x: -0.2939, y: 0.4045 },
+          { x: -0.4755, y: -0.1545 },
+        ] } },
+        { semanticRole: "shape-polygon" },
       ));
     case "line":
       return single(editableObject(
@@ -314,11 +371,23 @@ function buildPresetObjects(
         { shape: { kind: "line", lineCap: "butt" } },
         { semanticRole: "shape-line" },
       ));
+    case "dashed-line":
+      return single(editableObject(
+        id(""), "dashed-line", "Dashed line", origin, 180, 2,
+        { shape: { kind: "dashed-line", lineCap: "butt", dashLength: 14, gapLength: 9 } },
+        { semanticRole: "shape-dashed-line" },
+      ));
     case "arrow":
       return single(editableObject(
         id(""), "arrow", "Arrow", origin, 180, 18,
         { shape: { kind: "arrow", lineCap: "butt", tipShape: "triangle", tipSizeRatio: 0.25 } },
         { semanticRole: "shape-arrow" },
+      ));
+    case "double-arrow":
+      return single(editableObject(
+        id(""), "double-arrow", "Double arrow", origin, 180, 18,
+        { shape: { kind: "double-arrow", lineCap: "butt", startTipShape: "triangle", endTipShape: "triangle", tipSizeRatio: 0.25 } },
+        { semanticRole: "shape-double-arrow" },
       ));
     case "brace":
       return single(editableObject(
@@ -330,23 +399,27 @@ function buildPresetObjects(
         { semanticRole: "annotation-brace" },
       ));
     case "bracket": {
-      const groupId = id("", "group");
-      const lineShape = { kind: "line", lineCap: "square" } as const;
-      return exactCompoundGroup(groupId, "Bracket", "annotation-bracket", [
-        editableObject(
-          id("stem"), "line", "Bracket stem", { x: origin.x - 16, y: origin.y }, 96, 2,
-          { shape: lineShape }, { parentId: groupId, rotation: 90, semanticRole: "bracket-stem" },
-        ),
-        editableObject(
-          id("top"), "line", "Bracket top", { x: origin.x, y: origin.y - 48 }, 32, 2,
-          { shape: lineShape }, { parentId: groupId, semanticRole: "bracket-cap" },
-        ),
-        editableObject(
-          id("bottom"), "line", "Bracket bottom", { x: origin.x, y: origin.y + 48 }, 32, 2,
-          { shape: lineShape }, { parentId: groupId, semanticRole: "bracket-cap" },
-        ),
-      ]);
+      return single(editableObject(
+        id(""), "freeform-path", "Bracket", origin, 48, 120,
+        { shape: { kind: "freeform-path", closed: false, lineCap: "square", lineJoin: "miter", nodes: [
+          { point: { x: 0.5, y: -0.5 } },
+          { point: { x: -0.5, y: -0.5 } },
+          { point: { x: -0.5, y: 0.5 } },
+          { point: { x: 0.5, y: 0.5 } },
+        ] } },
+        { semanticRole: "annotation-bracket" },
+      ));
     }
+    case "freeform-path":
+      return single(editableObject(
+        id(""), "freeform-path", "Freeform path", origin, 200, 100,
+        { shape: { kind: "freeform-path", closed: false, lineCap: "round", lineJoin: "round", nodes: [
+          { point: { x: -0.5, y: 0.2 }, outHandle: { x: -0.32, y: -0.42 } },
+          { point: { x: 0, y: -0.08 }, inHandle: { x: -0.2, y: 0.24 }, outHandle: { x: 0.22, y: -0.38 } },
+          { point: { x: 0.5, y: 0.18 }, inHandle: { x: 0.3, y: 0.42 } },
+        ] } },
+        { semanticRole: "shape-freeform-path" },
+      ));
     case "highlight-box":
       return single(editableObject(
         id(""), "rectangle", "Highlight box", origin, 220, 100,
@@ -373,6 +446,12 @@ function buildPresetObjects(
         ),
       ]);
     }
+    case "dot-point":
+      return single(editableObject(
+        id(""), "circle", "Dot / point", origin, 10, 10,
+        { shape: { kind: "circle" } },
+        { semanticRole: "point", style: { strokeWidth: 10 } },
+      ));
   }
 }
 

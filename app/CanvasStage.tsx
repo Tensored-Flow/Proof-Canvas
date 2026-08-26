@@ -7,8 +7,8 @@ import { addTimelineTimes, compareTimelineTimes, logicalFrameFor, type LogicalFr
 import { analyzeMathProperties, texContentSegments, type MathMode } from '@/lib/proofcanvas/latex'
 import { applyOperations, effectiveLockOwner } from '@/lib/proofcanvas/operations'
 import { analyzeGraphExpression } from '@/lib/proofcanvas/graphExpression'
-import { objectTypeSupportsStyleProperty, type ProjectDocument, type SceneObject, type Shot, type StylePack } from '@/lib/proofcanvas/schema'
-import { resolveArrowPreviewGeometry, resolveShapeDimensions, resolveShapeGeometry, resolveShapePaint } from '@/lib/proofcanvas/shapeGeometry'
+import { objectTypeSupportsStyleProperty, resolveDashedLinePattern, type ProjectDocument, type SceneObject, type Shot, type StylePack } from '@/lib/proofcanvas/schema'
+import { freeformCubicSegments, isLinearShapeType, resolveArrowPreviewGeometry, resolveShapeDimensions, resolveShapeGeometry, resolveShapePaint } from '@/lib/proofcanvas/shapeGeometry'
 import { PROOFCANVAS_SHAPE_PRESET_MIME, shapePresetById, type ShapePresetId } from '@/lib/proofcanvas/shapePresets'
 import { resolvedGraphStroke, styledDisplayTransform, styledTransform } from '@/lib/proofcanvas/styles'
 
@@ -281,8 +281,8 @@ export function resolveCanvasKeyboardTransformIntent(
     return { notice: 'This playhead shows animated geometry. Edit the timeline block, or scrub before the spatial animation begins, to change the base pose.' }
   }
   if (intent.kind === 'rotate' && (source.type === 'circle' || (intent.key !== 'ArrowLeft' && intent.key !== 'ArrowRight'))) return null
-  if (intent.kind === 'resize' && (intent.key === 'ArrowUp' || intent.key === 'ArrowDown') && (source.type === 'line' || source.type === 'arrow')) {
-    return { notice: 'Lines and arrows resize horizontally; use Left or Right Arrow on the handle.' }
+  if (intent.kind === 'resize' && (intent.key === 'ArrowUp' || intent.key === 'ArrowDown') && isLinearShapeType(source.type)) {
+    return { notice: 'Linear shapes resize horizontally; use Left or Right Arrow on the handle.' }
   }
 
   const preview = previewShotAtTime(shot, playhead)
@@ -359,22 +359,35 @@ function RenderObject({ object, style, selected, effectivelyLocked, temporallyTr
       style: { cursor: effectivelyLocked || temporallyTransformed ? 'not-allowed' : 'move' },
     } : { 'aria-hidden': true, pointerEvents: 'none' as const }),
   }
-  const fill = paint ? paint.fill ?? 'none' : objectTypeSupportsStyleProperty(object.type, 'fill') ? object.style.fill ?? 'none' : 'none'
-  const stroke = paint ? paint.stroke : objectTypeSupportsStyleProperty(object.type, 'stroke') ? object.style.stroke ?? style.colors.ink : 'none'
-  const strokeWidth = paint ? paint.strokeWidth : objectTypeSupportsStyleProperty(object.type, 'strokeWidth') ? object.style.strokeWidth ?? style.strokes.regular : 0
+  const fill = paint ? paint.fill ?? 'none' : objectTypeSupportsStyleProperty(object, 'fill') ? object.style.fill ?? 'none' : 'none'
+  const stroke = paint ? paint.stroke : objectTypeSupportsStyleProperty(object, 'stroke') ? object.style.stroke ?? style.colors.ink : 'none'
+  const strokeWidth = paint ? paint.strokeWidth : objectTypeSupportsStyleProperty(object, 'strokeWidth') ? object.style.strokeWidth ?? style.strokes.regular : 0
   switch (object.type) {
     case 'text':
     case 'math':
       return (
         <foreignObject {...common} x={-width / 2} y={-height / 2} width={width} height={height}>
-          <div className={`pc-canvas-text pc-${object.type}`} style={{ color: objectTypeSupportsStyleProperty(object.type, 'fill') ? object.style.fill ?? object.style.color ?? style.colors.ink : object.style.color ?? style.colors.ink, fontSize: object.style.fontSize ?? 22, fontWeight: object.style.fontWeight, textAlign: object.style.textAlign ?? 'left', fontFamily: object.type === 'math' ? style.typography.math : style.typography.statement }}>
+          <div className={`pc-canvas-text pc-${object.type}`} style={{ color: objectTypeSupportsStyleProperty(object, 'fill') ? object.style.fill ?? object.style.color ?? style.colors.ink : object.style.color ?? style.colors.ink, fontSize: object.style.fontSize ?? 22, fontWeight: object.style.fontWeight, textAlign: object.style.textAlign ?? 'left', fontFamily: object.type === 'math' ? style.typography.math : style.typography.statement }}>
             {object.type === 'math' ? <MathHtml content={object.properties.content} renderer={object.properties.renderer} mode={object.properties.mode} /> : String(object.properties.content ?? '')}
           </div>
         </foreignObject>
       )
     case 'circle': return <ellipse {...common} rx={width / 2} ry={height / 2} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
     case 'rectangle': return <rect {...common} x={-width / 2} y={-height / 2} width={width} height={height} rx={geometry?.kind === 'rectangle' ? geometry.cornerRadius : 0} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+    case 'ellipse': return <ellipse {...common} rx={width / 2} ry={height / 2} fill={fill} stroke={stroke} strokeWidth={strokeWidth} />
+    case 'polygon': {
+      const polygon = geometry?.kind === 'polygon' ? geometry : null
+      const points = (polygon?.vertices ?? []).map(({ x, y }) => `${x * width},${y * height}`).join(' ')
+      return <polygon {...common} points={points} fill={fill} stroke={stroke} strokeWidth={strokeWidth} strokeLinejoin={polygon?.lineJoin ?? 'miter'}/>
+    }
     case 'line': return <g {...common}><line x1={-width / 2} x2={width / 2} y1={0} y2={0} stroke={stroke} strokeWidth={strokeWidth} strokeLinecap={geometry?.kind === 'line' ? geometry.lineCap : 'butt'} pointerEvents="none"/><line x1={-width / 2} x2={width / 2} y1={0} y2={0} stroke="transparent" strokeWidth={Math.max(16, strokeWidth)} pointerEvents="stroke"/></g>
+    case 'dashed-line': {
+      const dashed = geometry?.kind === 'dashed-line' ? geometry : null
+      const pattern = resolveDashedLinePattern(width, dashed?.dashLength ?? 12, dashed?.gapLength ?? 8)
+      const dashArray = pattern ? `${pattern.renderedDashLength} ${pattern.renderedGapLength}` : '0 1'
+      const cap = dashed?.lineCap ?? 'butt'
+      return <g {...common} data-dash-count={pattern?.count ?? 0} data-dash-length={dashed?.dashLength ?? 12} data-gap-length={dashed?.gapLength ?? 8}><line x1={-width / 2} x2={width / 2} y1={0} y2={0} stroke={stroke} strokeWidth={strokeWidth} strokeLinecap={cap} strokeDasharray={dashArray} pointerEvents="none"/><line x1={-width / 2} x2={width / 2} y1={0} y2={0} stroke="transparent" strokeWidth={Math.max(16, strokeWidth)} pointerEvents={interactive ? 'stroke' : 'none'}/></g>
+    }
     case 'arrow': {
       const arrow = geometry?.kind === 'arrow' ? geometry : null
       const tipGeometry = resolveArrowPreviewGeometry(
@@ -387,6 +400,27 @@ function RenderObject({ object, style, selected, effectivelyLocked, temporallyTr
         ? <circle data-arrow-tip-shape="circle" cx={tipGeometry.centerX} cy={0} r={tipGeometry.radius} fill={stroke} stroke={stroke} strokeWidth={strokeWidth}/>
         : <polygon data-arrow-tip-shape={tipGeometry.kind} points={tipGeometry.points.map(({ x, y }) => `${x},${y}`).join(' ')} fill={stroke} stroke={stroke} strokeWidth={strokeWidth}/>
       return <g {...common} data-arrow-tip-length={tipGeometry.tipLength} data-arrow-shaft-end={tipGeometry.shaftEndX}><line x1={-width / 2} x2={tipGeometry.shaftEndX} y1={0} y2={0} stroke={stroke} strokeWidth={strokeWidth} strokeLinecap={arrow?.lineCap ?? 'butt'} pointerEvents="none"/>{tip}<line x1={-width / 2} x2={tipGeometry.tipX} y1={0} y2={0} stroke="transparent" strokeWidth={Math.max(16, strokeWidth)} pointerEvents={interactive ? 'stroke' : 'none'}/></g>
+    }
+    case 'double-arrow': {
+      const arrow = geometry?.kind === 'double-arrow' ? geometry : null
+      const end = resolveArrowPreviewGeometry(width, arrow?.endTipShape ?? 'triangle', arrow?.tipSizeRatio ?? 0.25, tipLengthLimit)
+      const startSource = resolveArrowPreviewGeometry(width, arrow?.startTipShape ?? 'triangle', arrow?.tipSizeRatio ?? 0.25, tipLengthLimit)
+      const startShaft = -startSource.shaftEndX
+      const renderTip = (tip: typeof end, side: 'start' | 'end') => {
+        const sign = side === 'start' ? -1 : 1
+        if (tip.kind === 'circle') return <circle data-arrow-tip-side={side} data-arrow-tip-shape="circle" cx={sign * tip.centerX} cy={0} r={tip.radius} fill={stroke} stroke={stroke} strokeWidth={strokeWidth}/>
+        return <polygon data-arrow-tip-side={side} data-arrow-tip-shape={tip.kind} points={tip.points.map(({ x, y }) => `${sign * x},${y}`).join(' ')} fill={stroke} stroke={stroke} strokeWidth={strokeWidth}/>
+      }
+      return <g {...common} data-start-arrow-tip-length={startSource.tipLength} data-end-arrow-tip-length={end.tipLength}><line x1={startShaft} x2={end.shaftEndX} y1={0} y2={0} stroke={stroke} strokeWidth={strokeWidth} strokeLinecap={arrow?.lineCap ?? 'butt'} pointerEvents="none"/>{renderTip(startSource, 'start')}{renderTip(end, 'end')}<line x1={-width / 2} x2={width / 2} y1={0} y2={0} stroke="transparent" strokeWidth={Math.max(16, strokeWidth)} pointerEvents={interactive ? 'stroke' : 'none'}/></g>
+    }
+    case 'freeform-path': {
+      const path = geometry?.kind === 'freeform-path' ? geometry : null
+      if (!path) return null
+      const point = ({ x, y }: { x: number; y: number }) => `${x * width} ${y * height}`
+      const segments = freeformCubicSegments(path)
+      const d = [`M ${point(path.nodes[0].point)}`, ...segments.map(({ control1, control2, end }) => `C ${point(control1)}, ${point(control2)}, ${point(end)}`), ...(path.closed ? ['Z'] : [])].join(' ')
+      const visible = <path d={d} fill={path.closed ? fill : 'none'} stroke={stroke} strokeWidth={strokeWidth} strokeLinecap={path.closed ? undefined : path.lineCap} strokeLinejoin={path.lineJoin} pointerEvents="none"/>
+      return <g {...common} data-freeform-closed={path.closed ? 'true' : 'false'}>{visible}<path d={d} fill="none" stroke="transparent" strokeWidth={Math.max(16, strokeWidth)} pointerEvents={interactive ? 'stroke' : 'none'}/></g>
     }
     case 'brace': {
       const brace = geometry?.kind === 'brace' ? geometry : { kind: 'brace' as const, direction: 'below' as const, spacing: 12 }
@@ -631,7 +665,7 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, pro
       let transform = {
         ...primaryOriginal,
         width: Math.max(1, (primaryOriginal.width ?? 60) * nextDisplayWidth / Math.max(1, displayWidth)),
-        height: source.type === 'line' || source.type === 'arrow'
+        height: isLinearShapeType(source.type)
           ? primaryOriginal.height
           : Math.max(1, (primaryOriginal.height ?? 30) * nextDisplayHeight / Math.max(1, displayHeight)),
       }
@@ -711,8 +745,8 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, pro
     if (kind === 'rotate') {
       if (source.type === 'circle') return
       if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
-    } else if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && (source.type === 'line' || source.type === 'arrow')) {
-      onNotice('Lines and arrows resize horizontally; use Left or Right Arrow on the handle.')
+    } else if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && isLinearShapeType(source.type)) {
+      onNotice('Linear shapes resize horizontally; use Left or Right Arrow on the handle.')
       return
     }
     onCommitKeyboardTransform({

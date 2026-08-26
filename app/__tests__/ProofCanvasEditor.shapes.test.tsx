@@ -10,7 +10,8 @@ function blankProject(): ProjectDocument {
 
 function shapeObject(
   id: string,
-  type: 'circle' | 'rectangle' | 'line' | 'arrow' | 'brace',
+  type: 'circle' | 'rectangle' | 'line' | 'arrow' | 'brace'
+    | 'ellipse' | 'polygon' | 'dashed-line' | 'double-arrow' | 'freeform-path',
   properties: SceneObject['properties'],
   transform: Partial<SceneObject['transform']> = {},
 ): SceneObject {
@@ -21,7 +22,7 @@ function shapeObject(
     locked: false,
     visible: true,
     transform: { x: 100, y: 100, width: 100, height: type === 'brace' ? 34 : 50, rotation: 0, scaleX: 1, scaleY: 1, ...transform },
-    style: type === 'arrow' ? { stroke: '#315866', strokeWidth: 3 } : {},
+    style: type === 'arrow' || type === 'double-arrow' ? { stroke: '#315866', strokeWidth: 3 } : {},
     properties,
   }
 }
@@ -45,7 +46,7 @@ describe('shape preset and inspector authoring', () => {
   test('searches all immutable presets and inserts each click as one root-selected history step', () => {
     const { container } = render(<ProofCanvasEditor initialProject={blankProject()}/>)
     fireEvent.click(screen.getByRole('tab', { name: 'Shapes' }))
-    expect(container.querySelectorAll('[data-shape-preset-id]')).toHaveLength(11)
+    expect(container.querySelectorAll('[data-shape-preset-id]')).toHaveLength(16)
 
     const search = screen.getByRole('searchbox', { name: 'Search library' })
     fireEvent.change(search, { target: { value: 'strike' } })
@@ -78,6 +79,13 @@ describe('shape preset and inspector authoring', () => {
     expect(editor()).toHaveAttribute('data-history-past-count', '0')
     expect(screen.queryByRole('treeitem', { name: /^Rounded rectangle;/ })).not.toBeInTheDocument()
 
+    fireEvent.click(screen.getByRole('button', { name: 'Insert Polygon' }))
+    expect(editor()).toHaveAttribute('data-history-past-count', '1')
+    expect(screen.getByRole('treeitem', { name: /^Polygon;/ })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('combobox', { name: 'Polygon line join' })).toHaveValue('miter')
+    expect(container.querySelector('[data-object-type="polygon"]')).toHaveAttribute('points')
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+
     fireEvent.click(screen.getByRole('button', { name: 'Insert Cross-out' }))
     expect(editor()).toHaveAttribute('data-history-past-count', '1')
     expect(screen.getByRole('treeitem', { name: /^Cross-out;/ })).toHaveAttribute('aria-selected', 'true')
@@ -102,7 +110,7 @@ describe('shape preset and inspector authoring', () => {
       effectAllowed: 'copy',
       dropEffect: 'copy',
       setData: jest.fn(),
-      getData: jest.fn((type: string) => type === PROOFCANVAS_SHAPE_PRESET_MIME ? 'arrow' : ''),
+      getData: jest.fn((type: string) => type === PROOFCANVAS_SHAPE_PRESET_MIME ? 'bracket' : ''),
     }
 
     const drop = new Event('drop', { bubbles: true, cancelable: true })
@@ -112,10 +120,11 @@ describe('shape preset and inspector authoring', () => {
       dataTransfer: { configurable: true, value: dataTransfer },
     })
     fireEvent(canvas, drop)
-    expect(screen.getByLabelText('Editor status')).toHaveTextContent('Insert Arrow')
+    expect(screen.getByLabelText('Editor status')).toHaveTextContent('Insert Bracket')
     expect(editor()).toHaveAttribute('data-history-past-count', '1')
-    expect(screen.getByRole('treeitem', { name: /^Arrow;/ })).toHaveAttribute('aria-selected', 'true')
-    expect(container.querySelector('[data-object-type="arrow"]')).toHaveAttribute('transform', expect.stringContaining('translate(600 200)'))
+    expect(screen.getByRole('treeitem', { name: /^Bracket;/ })).toHaveAttribute('aria-selected', 'true')
+    expect(container.querySelector('[data-object-type="freeform-path"]')).toHaveAttribute('transform', expect.stringContaining('translate(600 200)'))
+    expect(container.querySelector('[data-object-type="freeform-path"]')).toHaveAttribute('data-freeform-closed', 'false')
   })
 
   test('edits complete bounded shape records and preserves sibling controls across commits', () => {
@@ -150,6 +159,159 @@ describe('shape preset and inspector authoring', () => {
     expect(screen.getByRole('spinbutton', { name: 'Height' })).toHaveValue(220)
     expect(screen.getByRole('spinbutton', { name: 'Brace spacing' })).toHaveValue(12)
     expect(editor()).toHaveAttribute('data-history-past-count', '5')
+  })
+
+  test('authors polygon, dash, double-tip, and freeform controls as complete undoable records', () => {
+    const polygon = shapeObject('object-native-polygon', 'polygon', { shape: {
+      kind: 'polygon', lineJoin: 'miter', vertices: [
+        { x: -0.5, y: 0.5 }, { x: 0, y: -0.5 }, { x: 0.5, y: 0.5 },
+      ],
+    } }, { width: 100, height: 100 })
+    const dashed = shapeObject('object-native-dashed', 'dashed-line', { shape: {
+      kind: 'dashed-line', lineCap: 'butt', dashLength: 12, gapLength: 8,
+    } }, { width: 180, height: 2 })
+    const doubleArrow = shapeObject('object-native-double', 'double-arrow', { shape: {
+      kind: 'double-arrow', lineCap: 'butt', startTipShape: 'triangle', endTipShape: 'triangle', tipSizeRatio: 0.25,
+    } }, { width: 180, height: 18 })
+    const freeform = shapeObject('object-native-freeform', 'freeform-path', { shape: {
+      kind: 'freeform-path', closed: false, lineCap: 'round', lineJoin: 'round', nodes: [
+        { point: { x: -0.5, y: 0.2 } },
+        { point: { x: 0, y: -0.2 } },
+        { point: { x: 0.5, y: 0.2 } },
+      ],
+    } }, { width: 200, height: 100 })
+    const { container } = render(<ProofCanvasEditor initialProject={projectWith([polygon, dashed, doubleArrow, freeform])}/>)
+
+    selectLayer('native polygon')
+    fireEvent.change(screen.getByRole('combobox', { name: 'Polygon line join' }), { target: { value: 'bevel' } })
+    const vertexX = screen.getByRole('spinbutton', { name: 'Vertex 1 X' })
+    fireEvent.change(vertexX, { target: { value: '-0.4' } })
+    fireEvent.blur(vertexX)
+    expect(container.querySelector('[data-object-id="object-native-polygon"]')).toHaveAttribute('points', '-40,50 0,-50 50,50')
+
+    selectLayer('native dashed')
+    fireEvent.change(screen.getByRole('combobox', { name: 'Dashed line cap' }), { target: { value: 'round' } })
+    const dashLength = screen.getByRole('spinbutton', { name: 'Dash length' })
+    fireEvent.change(dashLength, { target: { value: '10' } })
+    fireEvent.blur(dashLength)
+    expect(screen.getByRole('spinbutton', { name: 'Gap length' })).toHaveValue(8)
+    expect(container.querySelector('[data-object-id="object-native-dashed"]')).toHaveAttribute('data-dash-length', '10')
+
+    selectLayer('native double')
+    fireEvent.change(screen.getByRole('combobox', { name: 'Start arrow tip' }), { target: { value: 'circle' } })
+    fireEvent.change(screen.getByRole('combobox', { name: 'End arrow tip' }), { target: { value: 'square' } })
+    const doubleTipSize = screen.getByRole('spinbutton', { name: 'Double arrow tip size' })
+    fireEvent.change(doubleTipSize, { target: { value: '0.4' } })
+    fireEvent.blur(doubleTipSize)
+    expect(container.querySelector('[data-object-id="object-native-double"] [data-arrow-tip-side="start"]')).toHaveAttribute('data-arrow-tip-shape', 'circle')
+    expect(container.querySelector('[data-object-id="object-native-double"] [data-arrow-tip-side="end"]')).toHaveAttribute('data-arrow-tip-shape', 'square')
+
+    selectLayer('native freeform')
+    fireEvent.change(screen.getByRole('combobox', { name: 'Freeform line join' }), { target: { value: 'bevel' } })
+    fireEvent.click(screen.getAllByRole('button', { name: 'Add incoming handle' })[0])
+    expect(screen.getByRole('spinbutton', { name: 'Node 2 incoming handle X' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Closed freeform path' }))
+    expect(container.querySelector('[data-object-id="object-native-freeform"]')).toHaveAttribute('data-freeform-closed', 'true')
+    expect(screen.queryByRole('combobox', { name: 'Freeform line cap' })).not.toBeInTheDocument()
+    expect(editor()).toHaveAttribute('data-history-past-count', '10')
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+    expect(container.querySelector('[data-object-id="object-native-freeform"]')).toHaveAttribute('data-freeform-closed', 'false')
+    expect(screen.getByRole('combobox', { name: 'Freeform line cap' })).toHaveValue('round')
+  })
+
+  test('exposes keyframeable fill only while a freeform is closed and atomically clears it when reopened', () => {
+    const freeform = shapeObject('object-conditional-fill', 'freeform-path', { shape: {
+      kind: 'freeform-path', closed: false, lineCap: 'round', lineJoin: 'round', nodes: [
+        { point: { x: -0.5, y: 0.25 } },
+        { point: { x: 0, y: -0.5 } },
+        { point: { x: 0.5, y: 0.25 } },
+      ],
+    } }, { width: 180, height: 100 })
+    freeform.style = { stroke: '#654321', strokeWidth: 4 }
+    const project = projectWith([freeform])
+    const background = project.styles.find(({ id }) => id === project.activeStyleId)!.colors.background
+    const { container } = render(<ProofCanvasEditor initialProject={project}/>)
+    selectLayer('conditional fill')
+    expect(screen.queryByLabelText('Fill')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add Fill keyframe at 0 seconds' })).not.toBeInTheDocument()
+    expect(container.querySelector('[data-object-id="object-conditional-fill"] path:not([stroke="transparent"])')).toHaveAttribute('fill', 'none')
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Closed freeform path' }))
+    expect(screen.getByLabelText('Fill')).toHaveValue(background)
+    expect(container.querySelector('[data-object-id="object-conditional-fill"] path:not([stroke="transparent"])')).toHaveAttribute('fill', background)
+    const fill = screen.getByLabelText('Fill')
+    fireEvent.change(fill, { target: { value: '#123456' } })
+    fireEvent.blur(fill)
+    expect(screen.getByLabelText('Fill')).toHaveValue('#123456')
+    expect(container.querySelector('[data-object-id="object-conditional-fill"] path:not([stroke="transparent"])')).toHaveAttribute('fill', '#123456')
+    fireEvent.click(screen.getByRole('button', { name: 'Add Fill keyframe at 0 seconds' }))
+    expect(screen.getByRole('button', { name: 'fill keyframe at 0 seconds' })).toBeInTheDocument()
+    expect(editor()).toHaveAttribute('data-history-past-count', '3')
+
+    selectLayer('conditional fill')
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Closed freeform path' }))
+    expect(editor()).toHaveAttribute('data-history-past-count', '4')
+    expect(screen.queryByLabelText('Fill')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'fill keyframe at 0 seconds' })).not.toBeInTheDocument()
+    expect(container.querySelector('[data-object-id="object-conditional-fill"]')).toHaveAttribute('data-freeform-closed', 'false')
+    expect(container.querySelector('[data-object-id="object-conditional-fill"] path:not([stroke="transparent"])')).toHaveAttribute('fill', 'none')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+    expect(container.querySelector('[data-object-id="object-conditional-fill"]')).toHaveAttribute('data-freeform-closed', 'true')
+    expect(screen.getByLabelText('Fill')).toHaveValue('#123456')
+    expect(screen.getByRole('button', { name: 'fill keyframe at 0 seconds' })).toBeInTheDocument()
+  })
+
+  test('atomically rejects a polygon crossing with a precise nested status and input reset', () => {
+    const polygon = shapeObject('object-crossing-status', 'polygon', { shape: {
+      kind: 'polygon', lineJoin: 'miter', vertices: [
+        { x: -0.5, y: -0.5 },
+        { x: -0.5, y: -0.25 },
+        { x: -0.5, y: 0 },
+        { x: -0.25, y: -0.5 },
+      ],
+    } }, { width: 100, height: 100 })
+    const { container } = render(<ProofCanvasEditor initialProject={projectWith([polygon])}/>)
+    selectLayer('crossing status')
+    const input = screen.getByRole('spinbutton', { name: 'Vertex 1 X' })
+    const points = container.querySelector('[data-object-id="object-crossing-status"]')?.getAttribute('points')
+    fireEvent.change(input, { target: { value: '0' } })
+    fireEvent.blur(input)
+    expect(input).toHaveValue(-0.5)
+    expect(editor()).toHaveAttribute('data-history-past-count', '0')
+    expect(container.querySelector('[data-object-id="object-crossing-status"]')).toHaveAttribute('points', points)
+    expect(screen.getByLabelText('Editor status')).toHaveTextContent('Shape settings at vertices[2]: Polygon edges must not intersect outside adjacent vertices. The edit was not applied.')
+  })
+
+  test('atomically rejects quantized freeform endpoint collapse with a precise nested status and input reset', () => {
+    const freeform = shapeObject('object-quantized-status', 'freeform-path', { shape: {
+      kind: 'freeform-path', closed: false, lineCap: 'round', lineJoin: 'round', nodes: [
+        { point: { x: 0, y: 0 } },
+        { point: { x: 3e-8, y: 0 } },
+      ],
+    } }, { width: 180, height: 100 })
+    render(<ProofCanvasEditor initialProject={projectWith([freeform])}/>)
+    selectLayer('quantized status')
+    const input = screen.getByRole('spinbutton', { name: 'Node 2 X' })
+    fireEvent.change(input, { target: { value: '0.000000001' } })
+    fireEvent.blur(input)
+    expect(input).toHaveValue(3e-8)
+    expect(editor()).toHaveAttribute('data-history-past-count', '0')
+    expect(screen.getByLabelText('Editor status')).toHaveTextContent('Shape settings at nodes[1].point: Adjacent shape points must remain distinct after eight-decimal compiler quantization. The edit was not applied.')
+  })
+
+  test('atomically rejects an unsafe dash ratio with a precise nested status and input reset', () => {
+    const dashed = shapeObject('object-dash-ratio-status', 'dashed-line', { shape: {
+      kind: 'dashed-line', lineCap: 'butt', dashLength: 12, gapLength: 8,
+    } }, { width: 180, height: 2 })
+    render(<ProofCanvasEditor initialProject={projectWith([dashed])}/>)
+    selectLayer('dash ratio status')
+    const input = screen.getByRole('spinbutton', { name: 'Gap length' })
+    fireEvent.change(input, { target: { value: '4096' } })
+    fireEvent.blur(input)
+    expect(input).toHaveValue(8)
+    expect(editor()).toHaveAttribute('data-history-past-count', '0')
+    expect(screen.getByLabelText('Editor status')).toHaveTextContent('Shape settings at gapLength: Dashed-line dash ratio must be between 0.05 and 0.95. The edit was not applied.')
   })
 
   test('round-trips authored endpoints atomically and disables them under dependent track authority', () => {
@@ -188,6 +350,50 @@ describe('shape preset and inspector authoring', () => {
     expect(screen.getByRole('spinbutton', { name: 'Start X' })).toBeDisabled()
     expect(screen.getByRole('spinbutton', { name: 'End Y' })).toBeDisabled()
     expect(screen.getByText(/Endpoint editing is unavailable/)).toBeInTheDocument()
+  })
+
+  test.each([
+    ['dashed-line', { shape: { kind: 'dashed-line', lineCap: 'butt', dashLength: 12, gapLength: 8 } }],
+    ['double-arrow', { shape: { kind: 'double-arrow', lineCap: 'butt', startTipShape: 'triangle', endTipShape: 'square', tipSizeRatio: 0.25 } }],
+  ] as const)('applies endpoint authority to the native %s primitive', (type, properties) => {
+    const object = shapeObject(`object-authority-${type}`, type, properties, { x: 100, y: 100, width: 100, height: 2 })
+    const widthTrack: PropertyTrack = {
+      id: `track-authority-${type}`,
+      target: { kind: 'object', objectId: object.id },
+      property: 'width',
+      keyframes: [{ id: `key-authority-${type}`, time: 0, value: 100, interpolation: { kind: 'linear' } }],
+    }
+    render(<ProofCanvasEditor initialProject={projectWith([object], [widthTrack])}/>)
+    selectLayer(`authority ${type.replaceAll('-', ' ')}`)
+    expect(screen.getByRole('spinbutton', { name: 'Start X' })).toBeDisabled()
+    expect(screen.getByRole('spinbutton', { name: 'End Y' })).toBeDisabled()
+    expect(screen.getByText(/Endpoint editing is unavailable/)).toBeInTheDocument()
+  })
+
+  test('disables native shape controls under object lock and sequence playback', () => {
+    const polygon = shapeObject('object-lock-polygon', 'polygon', { shape: {
+      kind: 'polygon', lineJoin: 'miter', vertices: [
+        { x: -0.5, y: 0.5 }, { x: 0, y: -0.5 }, { x: 0.5, y: 0.5 },
+      ],
+    } })
+    render(<ProofCanvasEditor initialProject={projectWith([polygon])}/>)
+    selectLayer('lock polygon')
+    const join = () => screen.getByRole('combobox', { name: 'Polygon line join' })
+    expect(join()).toBeEnabled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Lock' }))
+    expect(join()).toBeDisabled()
+    expect(editor()).toHaveAttribute('data-history-past-count', '1')
+    fireEvent.click(screen.getByRole('button', { name: 'Unlock' }))
+    expect(join()).toBeEnabled()
+    expect(editor()).toHaveAttribute('data-history-past-count', '2')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Play sequence' }))
+    expect(join()).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Pause sequence' })).toBeInTheDocument()
+    expect(editor()).toHaveAttribute('data-history-past-count', '2')
+    fireEvent.click(screen.getByRole('button', { name: 'Pause sequence' }))
+    expect(join()).toBeEnabled()
   })
 
   test('shows the same inherited and compatibility-safe shape paint used by preview and compilation', () => {

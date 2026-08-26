@@ -26,8 +26,8 @@ import { beginEditorShotSequencePlayback, buildEditorShotSequence, commitEditorS
 import { allocateId, collectProjectIds } from '@/lib/proofcanvas/ids'
 import { applyOperations, duplicateObjects, effectiveLockOwner, effectiveVisibilityOwner, inspectOperations, type ManualSceneOperation } from '@/lib/proofcanvas/operations'
 import { previewShotAtTime } from '@/lib/proofcanvas/preview'
-import { PROOFCANVAS_BRACE_LABEL_MAX_CHARS, PROOFCANVAS_PROJECT_MAX_BYTES, PROOFCANVAS_SCHEMA_LIMITS, PROOFCANVAS_TEXT_MAX_CHARS, ProjectDocumentSchema, SceneOperationSchema, animationAuthoringCompatibilityIssue, canonicalProjectJson, cloneSerializable, mathPropertiesFor, objectTypeSupportsStyleProperty, parseProjectDocument, type AnimationType, type CurrentShapeProperties, type Easing, type MathProperties, type ProjectDocument, type PropertyKeyframe, type PropertyTrack, type SceneAnimation, type SceneObject, type SceneOperation, type Shot } from '@/lib/proofcanvas/schema'
-import { ARROW_TIP_SHAPES, BRACE_DIRECTIONS, MAX_ARROW_TIP_SIZE_RATIO, MIN_ARROW_TIP_SIZE_RATIO, SHAPE_LINE_CAPS, isCurrentShapeType, lineEndpointsForTransform, resolveShapeDimensions, resolveShapeGeometry, resolveShapePaint, shapeAuthoringIssue, transformFromLineEndpoints, type ArrowTipShape, type BraceDirection, type ShapeLineCap } from '@/lib/proofcanvas/shapeGeometry'
+import { PROOFCANVAS_BRACE_LABEL_MAX_CHARS, PROOFCANVAS_PROJECT_MAX_BYTES, PROOFCANVAS_SCHEMA_LIMITS, PROOFCANVAS_TEXT_MAX_CHARS, ProjectDocumentSchema, SceneOperationSchema, animationAuthoringCompatibilityIssue, canonicalProjectJson, cloneSerializable, currentShapePropertiesIssue, formatShapePropertiesIssue, mathPropertiesFor, objectTypeSupportsStyleProperty, parseProjectDocument, type AnimationType, type CurrentShapeProperties, type Easing, type MathProperties, type ProjectDocument, type PropertyKeyframe, type PropertyTrack, type SceneAnimation, type SceneObject, type SceneOperation, type Shot } from '@/lib/proofcanvas/schema'
+import { ARROW_TIP_SHAPES, BRACE_DIRECTIONS, MAX_ARROW_TIP_SIZE_RATIO, MIN_ARROW_TIP_SIZE_RATIO, SHAPE_LINE_CAPS, SHAPE_LINE_JOINS, isCurrentShapeType, isLinearShapeType, lineEndpointsForTransform, resolveShapeDimensions, resolveShapeGeometry, resolveShapePaint, shapeAuthoringIssue, transformFromLineEndpoints, type ArrowTipShape, type BraceDirection, type FreeformShapeNode, type NormalizedShapePoint, type ShapeLineCap, type ShapeLineJoin } from '@/lib/proofcanvas/shapeGeometry'
 import { PROOFCANVAS_SHAPE_PRESET_MIME, SHAPE_PRESETS, insertShapePreset, searchShapePresets, shapePresetById, type ShapePresetId } from '@/lib/proofcanvas/shapePresets'
 import { EDITORIAL_INK_STYLE_ID, RAW_MANIM_STYLE_ID, resolvedGraphStroke, styleById } from '@/lib/proofcanvas/styles'
 import { propertyTrackKey } from '@/lib/proofcanvas/timeline'
@@ -51,14 +51,19 @@ const SHAPE_PRESET_ICONS: Readonly<Record<ShapePresetId, string>> = {
   rectangle: '□',
   'rounded-rectangle': '▢',
   circle: '○',
-  'dot-point': '•',
+  ellipse: '⬭',
+  polygon: '⬠',
   line: '—',
+  'dashed-line': '┄',
   arrow: '→',
+  'double-arrow': '↔',
   brace: '⏟',
   bracket: '[',
+  'freeform-path': '⌁',
   'highlight-box': '▧',
   underline: '_',
   'cross-out': '×',
+  'dot-point': '•',
 }
 const ENDPOINT_AUTHORITY_PROPERTIES: ReadonlySet<PropertyTrack['property']> = new Set(['x', 'y', 'width', 'rotation', 'scale', 'scaleX'])
 const ENDPOINT_ANCESTOR_AUTHORITY_PROPERTIES: ReadonlySet<PropertyTrack['property']> = new Set(['x', 'y', 'width', 'height', 'rotation', 'scale', 'scaleX', 'scaleY'])
@@ -400,6 +405,11 @@ function newObject(type: Exclude<SceneObject['type'], 'group'>, id: string, inde
     case 'line': return { ...base, transform: { ...base.transform, width: 180, height: 2 }, style: { stroke: '#655f55', strokeWidth: 1 }, properties: {} }
     case 'arrow': return { ...base, transform: { ...base.transform, width: 160, height: 18 }, style: { stroke: '#71402d', strokeWidth: 2 }, properties: {} }
     case 'brace': return { ...base, transform: { ...base.transform, width: 220, height: 34 }, style: { stroke: '#71402d', fontSize: 18 }, properties: { label: 'n pieces', shape: { kind: 'brace', direction: 'below', spacing: 12 } } }
+    case 'ellipse': return { ...base, transform: { ...base.transform, width: 140, height: 84 }, style: { stroke: '#315866', strokeWidth: 2 }, properties: { shape: { kind: 'ellipse' } } }
+    case 'polygon': return { ...base, transform: { ...base.transform, width: 130, height: 120 }, style: { stroke: '#315866', strokeWidth: 2 }, properties: { shape: { kind: 'polygon', lineJoin: 'miter', vertices: [{ x: 0, y: -0.5 }, { x: 0.5, y: 0.5 }, { x: -0.5, y: 0.5 }] } } }
+    case 'dashed-line': return { ...base, transform: { ...base.transform, width: 180, height: 2 }, style: { stroke: '#655f55', strokeWidth: 1 }, properties: { shape: { kind: 'dashed-line', lineCap: 'butt', dashLength: 14, gapLength: 9 } } }
+    case 'double-arrow': return { ...base, transform: { ...base.transform, width: 180, height: 18 }, style: { stroke: '#71402d', strokeWidth: 2 }, properties: { shape: { kind: 'double-arrow', lineCap: 'butt', startTipShape: 'triangle', endTipShape: 'triangle', tipSizeRatio: 0.25 } } }
+    case 'freeform-path': return { ...base, transform: { ...base.transform, width: 180, height: 90 }, style: { stroke: '#315866', strokeWidth: 2 }, properties: { shape: { kind: 'freeform-path', closed: false, lineCap: 'round', lineJoin: 'round', nodes: [{ point: { x: -0.5, y: 0.2 } }, { point: { x: 0, y: -0.2 } }, { point: { x: 0.5, y: 0.2 } }] } } }
     case 'axes': return { ...base, transform: { ...base.transform, width: 240, height: 150 }, properties: { xMin: -3, xMax: 3, yMin: -2, yMax: 4 } }
     case 'graph': return { ...base, transform: { ...base.transform, width: 240, height: 150 }, style: { stroke: '#315866', strokeWidth: 2 }, properties: { expression: { kind: 'power', base: { kind: 'variable' }, exponent: 2 }, xMin: -3, xMax: 3 } }
     case 'image': return { ...base, name: 'Image asset', properties: { source: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' } }
@@ -1534,20 +1544,33 @@ export default function ProofCanvasEditor({
       setStatus('The selected shape is no longer available.')
       return false
     }
+    const shapeIssue = currentShapePropertiesIssue(shape)
+    if (shapeIssue) {
+      setStatus(`${formatShapePropertiesIssue(shapeIssue)}. The edit was not applied.`)
+      return false
+    }
     if (effectiveLockOwner(latestShot, latestObject)) {
       setStatus('Unlock the shape and its ancestors before editing its geometry.')
       return false
     }
-    return commitOps([{
+    const openingFreeform = shape.kind === 'freeform-path' && !shape.closed
+    const operations: SceneOperation[] = [{
       type: 'update-object',
       objectId,
       patch: {
         ...(transform ? { transform } : {}),
+        ...(openingFreeform && latestObject.style.fill !== undefined ? { style: { fill: undefined } } : {}),
         // Operations merge the outer properties envelope shallowly. Replace
         // the complete strict shape record so sibling shape controls survive.
         properties: { shape },
       },
-    }], label)
+    }]
+    if (openingFreeform) operations.push(...latestShot.propertyTracks.filter((track) => (
+      track.target.kind === 'object'
+      && track.target.objectId === objectId
+      && track.property === 'fill'
+    )).map((track) => ({ type: 'delete-property-track' as const, trackId: track.id })))
+    return commitOps(operations, label)
   }, [commitOps])
 
   const commitLineEndpoint = useCallback((
@@ -1568,12 +1591,12 @@ export default function ProofCanvasEditor({
     const latestProject = current.history.present
     const latestShot = latestProject.shots.find(({ id }) => id === current.workspace.activeShotId) ?? latestProject.shots[0]
     const latestObject = latestShot.objects.find(({ id }) => id === objectId)
-    if (!latestObject || (latestObject.type !== 'line' && latestObject.type !== 'arrow')) {
-      setStatus('The selected line is no longer available.')
+    if (!latestObject || !isLinearShapeType(latestObject.type)) {
+      setStatus('The selected linear shape is no longer available.')
       return false
     }
     if (effectiveLockOwner(latestShot, latestObject)) {
-      setStatus('Unlock the line and its ancestors before editing its endpoints.')
+      setStatus('Unlock the linear shape and its ancestors before editing its endpoints.')
       return false
     }
     if (objectFamilyHasPropertyAuthority(latestShot, latestObject, ENDPOINT_AUTHORITY_PROPERTIES, ENDPOINT_ANCESTOR_AUTHORITY_PROPERTIES)) {
@@ -2671,12 +2694,12 @@ export default function ProofCanvasEditor({
   const primaryShapeGeometry = primary ? resolveShapeGeometry(primary, previewStyle) : null
   const primaryShapeAuthoringIssue = primary ? shapeAuthoringIssue(primary) : undefined
   const primaryShapeDimensions = primary && primaryShapeGeometry ? resolveShapeDimensions(primary) : null
-  const primaryLineEndpoints = primary && (primary.type === 'line' || primary.type === 'arrow')
+  const primaryLineEndpoints = primary && isLinearShapeType(primary.type)
     ? lineEndpointsForTransform(primary.transform)
     : null
   const primaryEndpointAuthority = Boolean(
     primary
-    && (primary.type === 'line' || primary.type === 'arrow')
+    && isLinearShapeType(primary.type)
     && objectFamilyHasPropertyAuthority(shot, primary, ENDPOINT_AUTHORITY_PROPERTIES, ENDPOINT_ANCESTOR_AUTHORITY_PROPERTIES),
   )
   const primaryBraceAxisAuthority = Boolean(
@@ -2738,7 +2761,44 @@ export default function ProofCanvasEditor({
           max: Math.min(PROOFCANVAS_SCHEMA_LIMITS.cornerRadiusMax, primaryShapeDimensions.width / 2, primaryShapeDimensions.height / 2),
         }, primaryShapeGeometry.cornerRadius, (cornerRadius) => commitShapeSettings(primary.id, { kind: 'rectangle', cornerRadius }, 'Set corner radius'))}
       /></label>}
+      {primaryShapeGeometry.kind === 'polygon' && <>
+        <label className="pc-wide">Line join<select aria-label="Polygon line join" value={primaryShapeGeometry.lineJoin} onChange={(event) => commitShapeSettings(primary.id, { kind: 'polygon', vertices: primaryShapeGeometry.vertices.map((vertex) => ({ ...vertex })), lineJoin: event.target.value as ShapeLineJoin }, 'Set polygon line join')}>{SHAPE_LINE_JOINS.map((join) => <option key={join} value={join}>{join}</option>)}</select></label>
+        <div className="pc-wide pc-shape-point-list">
+          <h3>Vertices</h3>
+          <p className="pc-inspector-note">Coordinates are normalized to the object box from −0.5 to 0.5.</p>
+          {primaryShapeGeometry.vertices.map((vertex, index) => <div className="pc-shape-point" key={`${primary.id}-vertex-${index}`}>
+            {(['x', 'y'] as const).map((axis) => {
+              const label = `Vertex ${index + 1} ${axis.toUpperCase()}`
+              return <label key={axis}>{label}<input key={`${primary.id}-vertex-${index}-${axis}-${vertex[axis]}`} type="number" min={-PROOFCANVAS_SCHEMA_LIMITS.normalizedShapeCoordinateMagnitude} max={PROOFCANVAS_SCHEMA_LIMITS.normalizedShapeCoordinateMagnitude} step="0.01" aria-label={label} defaultValue={vertex[axis]} onBlur={(event) => commitNumericInput(event, { key: axis, label, fallback: vertex[axis], min: -PROOFCANVAS_SCHEMA_LIMITS.normalizedShapeCoordinateMagnitude, max: PROOFCANVAS_SCHEMA_LIMITS.normalizedShapeCoordinateMagnitude }, vertex[axis], (value) => {
+                const vertices = primaryShapeGeometry.vertices.map((candidate) => ({ ...candidate }))
+                vertices[index][axis] = value
+                return commitShapeSettings(primary.id, { kind: 'polygon', vertices, lineJoin: primaryShapeGeometry.lineJoin }, `Set vertex ${index + 1} ${axis.toUpperCase()}`)
+              })}/></label>
+            })}
+            <button type="button" disabled={primaryShapeGeometry.vertices.length >= PROOFCANVAS_SCHEMA_LIMITS.shapePointsMax} onClick={() => {
+              const vertices = primaryShapeGeometry.vertices.map((candidate) => ({ ...candidate }))
+              const next = vertices[(index + 1) % vertices.length]
+              vertices.splice(index + 1, 0, { x: (vertex.x + next.x) / 2, y: (vertex.y + next.y) / 2 })
+              commitShapeSettings(primary.id, { kind: 'polygon', vertices, lineJoin: primaryShapeGeometry.lineJoin }, `Add vertex after ${index + 1}`)
+            }}>Add after</button>
+            <button type="button" disabled={primaryShapeGeometry.vertices.length <= 3} onClick={() => {
+              if (primaryShapeGeometry.vertices.length <= 3) return setStatus('A polygon requires at least three vertices.')
+              const vertices = primaryShapeGeometry.vertices.filter((_, candidateIndex) => candidateIndex !== index).map((candidate) => ({ ...candidate }))
+              commitShapeSettings(primary.id, { kind: 'polygon', vertices, lineJoin: primaryShapeGeometry.lineJoin }, `Remove vertex ${index + 1}`)
+            }}>Remove</button>
+          </div>)}
+        </div>
+      </>}
       {primaryShapeGeometry.kind === 'line' && <label className="pc-wide">Line cap<select aria-label="Line cap" value={primaryShapeGeometry.lineCap} onChange={(event) => commitShapeSettings(primary.id, { kind: 'line', lineCap: event.target.value as ShapeLineCap }, 'Set line cap')}>{SHAPE_LINE_CAPS.map((cap) => <option key={cap} value={cap}>{cap}</option>)}</select></label>}
+      {primaryShapeGeometry.kind === 'dashed-line' && <>
+        <label className="pc-wide">Line cap<select aria-label="Dashed line cap" value={primaryShapeGeometry.lineCap} onChange={(event) => commitShapeSettings(primary.id, { kind: 'dashed-line', lineCap: event.target.value as ShapeLineCap, dashLength: primaryShapeGeometry.dashLength, gapLength: primaryShapeGeometry.gapLength }, 'Set dashed line cap')}>{SHAPE_LINE_CAPS.map((cap) => <option key={cap} value={cap}>{cap}</option>)}</select></label>
+        {(['dashLength', 'gapLength'] as const).map((key) => {
+          const label = key === 'dashLength' ? 'Dash length' : 'Gap length'
+          const value = primaryShapeGeometry[key]
+          return <label key={key}>{label}<input key={`${primary.id}-${key}-${value}`} type="number" min={PROOFCANVAS_SCHEMA_LIMITS.dashPatternLengthMin} max={PROOFCANVAS_SCHEMA_LIMITS.animationDimensionMax} step="0.1" aria-label={label} defaultValue={value} onBlur={(event) => commitNumericInput(event, { key, label, fallback: value, min: PROOFCANVAS_SCHEMA_LIMITS.dashPatternLengthMin, max: PROOFCANVAS_SCHEMA_LIMITS.animationDimensionMax }, value, (next) => commitShapeSettings(primary.id, { kind: 'dashed-line', lineCap: primaryShapeGeometry.lineCap, dashLength: key === 'dashLength' ? next : primaryShapeGeometry.dashLength, gapLength: key === 'gapLength' ? next : primaryShapeGeometry.gapLength }, `Set ${label.toLowerCase()}`))}/></label>
+        })}
+        <p className="pc-wide pc-inspector-note">Dash and gap stay bounded to at most 256 generated Manim dash objects.</p>
+      </>}
       {primaryShapeGeometry.kind === 'arrow' && <>
         <label>Line cap<select aria-label="Line cap" value={primaryShapeGeometry.lineCap} onChange={(event) => commitShapeSettings(primary.id, { kind: 'arrow', lineCap: event.target.value as ShapeLineCap, tipShape: primaryShapeGeometry.tipShape, tipSizeRatio: primaryShapeGeometry.tipSizeRatio }, 'Set arrow line cap')}>{SHAPE_LINE_CAPS.map((cap) => <option key={cap} value={cap}>{cap}</option>)}</select></label>
         <label>Arrow tip<select aria-label="Arrow tip" value={primaryShapeGeometry.tipShape} onChange={(event) => commitShapeSettings(primary.id, { kind: 'arrow', lineCap: primaryShapeGeometry.lineCap, tipShape: event.target.value as ArrowTipShape, tipSizeRatio: primaryShapeGeometry.tipSizeRatio }, 'Set arrow tip')}>{ARROW_TIP_SHAPES.map((tip) => <option key={tip} value={tip}>{tip}</option>)}</select></label>
@@ -2752,6 +2812,12 @@ export default function ProofCanvasEditor({
           defaultValue={primaryShapeGeometry.tipSizeRatio}
           onBlur={(event) => commitNumericInput(event, { key: 'tipSizeRatio', label: 'Arrow tip size', fallback: primaryShapeGeometry.tipSizeRatio, min: MIN_ARROW_TIP_SIZE_RATIO, max: MAX_ARROW_TIP_SIZE_RATIO }, primaryShapeGeometry.tipSizeRatio, (tipSizeRatio) => commitShapeSettings(primary.id, { kind: 'arrow', lineCap: primaryShapeGeometry.lineCap, tipShape: primaryShapeGeometry.tipShape, tipSizeRatio }, 'Set arrow tip size'))}
         /></label>
+      </>}
+      {primaryShapeGeometry.kind === 'double-arrow' && <>
+        <label>Line cap<select aria-label="Double arrow line cap" value={primaryShapeGeometry.lineCap} onChange={(event) => commitShapeSettings(primary.id, { kind: 'double-arrow', lineCap: event.target.value as ShapeLineCap, startTipShape: primaryShapeGeometry.startTipShape, endTipShape: primaryShapeGeometry.endTipShape, tipSizeRatio: primaryShapeGeometry.tipSizeRatio }, 'Set double arrow line cap')}>{SHAPE_LINE_CAPS.map((cap) => <option key={cap} value={cap}>{cap}</option>)}</select></label>
+        <label>Start arrow tip<select aria-label="Start arrow tip" value={primaryShapeGeometry.startTipShape} onChange={(event) => commitShapeSettings(primary.id, { kind: 'double-arrow', lineCap: primaryShapeGeometry.lineCap, startTipShape: event.target.value as ArrowTipShape, endTipShape: primaryShapeGeometry.endTipShape, tipSizeRatio: primaryShapeGeometry.tipSizeRatio }, 'Set start arrow tip')}>{ARROW_TIP_SHAPES.map((tip) => <option key={tip} value={tip}>{tip}</option>)}</select></label>
+        <label>End arrow tip<select aria-label="End arrow tip" value={primaryShapeGeometry.endTipShape} onChange={(event) => commitShapeSettings(primary.id, { kind: 'double-arrow', lineCap: primaryShapeGeometry.lineCap, startTipShape: primaryShapeGeometry.startTipShape, endTipShape: event.target.value as ArrowTipShape, tipSizeRatio: primaryShapeGeometry.tipSizeRatio }, 'Set end arrow tip')}>{ARROW_TIP_SHAPES.map((tip) => <option key={tip} value={tip}>{tip}</option>)}</select></label>
+        <label>Arrow tip size<input key={`${primary.id}-double-tip-size-${primaryShapeGeometry.tipSizeRatio}`} type="number" min={MIN_ARROW_TIP_SIZE_RATIO} max={MAX_ARROW_TIP_SIZE_RATIO} step="0.01" aria-label="Double arrow tip size" defaultValue={primaryShapeGeometry.tipSizeRatio} onBlur={(event) => commitNumericInput(event, { key: 'tipSizeRatio', label: 'Double arrow tip size', fallback: primaryShapeGeometry.tipSizeRatio, min: MIN_ARROW_TIP_SIZE_RATIO, max: MAX_ARROW_TIP_SIZE_RATIO }, primaryShapeGeometry.tipSizeRatio, (tipSizeRatio) => commitShapeSettings(primary.id, { kind: 'double-arrow', lineCap: primaryShapeGeometry.lineCap, startTipShape: primaryShapeGeometry.startTipShape, endTipShape: primaryShapeGeometry.endTipShape, tipSizeRatio }, 'Set double arrow tip size'))}/></label>
       </>}
       {primaryShapeGeometry.kind === 'brace' && <>
         <label>Brace direction<select aria-label="Brace direction" value={primaryShapeGeometry.direction} onChange={(event) => commitBraceDirection(event.target.value as BraceDirection)}>{BRACE_DIRECTIONS.map((direction) => <option key={direction} value={direction}>{direction}</option>)}</select></label>
@@ -2767,7 +2833,76 @@ export default function ProofCanvasEditor({
         /></label>
         {primaryBraceAxisAuthority && <p className="pc-wide pc-inspector-note" role="status">Brace axis changes are unavailable while an object or ancestor dimension, rotation, or scale track owns this geometry.</p>}
       </>}
-      {(primaryShapeGeometry.kind === 'line' || primaryShapeGeometry.kind === 'arrow') && primaryLineEndpoints && <>
+      {primaryShapeGeometry.kind === 'freeform-path' && <>
+        <label className="pc-check pc-wide"><input type="checkbox" aria-label="Closed freeform path" checked={primaryShapeGeometry.closed} onChange={(event) => {
+          if (event.target.checked && primaryShapeGeometry.nodes.length < 3) return setStatus('A closed freeform path requires at least three nodes.')
+          const nodes = primaryShapeGeometry.nodes.map((node) => ({ ...node, point: { ...node.point }, ...(node.inHandle ? { inHandle: { ...node.inHandle } } : {}), ...(node.outHandle ? { outHandle: { ...node.outHandle } } : {}) }))
+          if (event.target.checked) return commitShapeSettings(primary.id, { kind: 'freeform-path', closed: true, nodes, lineJoin: primaryShapeGeometry.lineJoin }, 'Close freeform path')
+          if (nodes[0]?.inHandle) delete nodes[0].inHandle
+          if (nodes.at(-1)?.outHandle) delete nodes.at(-1)!.outHandle
+          return commitShapeSettings(primary.id, { kind: 'freeform-path', closed: false, nodes, lineCap: 'butt', lineJoin: primaryShapeGeometry.lineJoin }, 'Open freeform path')
+        }}/>Closed path</label>
+        {!primaryShapeGeometry.closed && <label>Line cap<select aria-label="Freeform line cap" value={primaryShapeGeometry.lineCap} onChange={(event) => commitShapeSettings(primary.id, { kind: 'freeform-path', closed: false, nodes: primaryShapeGeometry.nodes.map((node) => ({ ...node })), lineCap: event.target.value as ShapeLineCap, lineJoin: primaryShapeGeometry.lineJoin }, 'Set freeform line cap')}>{SHAPE_LINE_CAPS.map((cap) => <option key={cap} value={cap}>{cap}</option>)}</select></label>}
+        <label>Line join<select aria-label="Freeform line join" value={primaryShapeGeometry.lineJoin} onChange={(event) => {
+          const nodes = primaryShapeGeometry.nodes.map((node) => ({ ...node }))
+          const lineJoin = event.target.value as ShapeLineJoin
+          return primaryShapeGeometry.closed
+            ? commitShapeSettings(primary.id, { kind: 'freeform-path', closed: true, nodes, lineJoin }, 'Set freeform line join')
+            : commitShapeSettings(primary.id, { kind: 'freeform-path', closed: false, nodes, lineCap: primaryShapeGeometry.lineCap, lineJoin }, 'Set freeform line join')
+        }}>{SHAPE_LINE_JOINS.map((join) => <option key={join} value={join}>{join}</option>)}</select></label>
+        <div className="pc-wide pc-shape-point-list">
+          <h3>Nodes and cubic handles</h3>
+          <p className="pc-inspector-note">Nodes and handles use exact normalized coordinates from −0.5 to 0.5.</p>
+          {primaryShapeGeometry.nodes.map((node, index) => {
+            const commitNodes = (nodes: FreeformShapeNode[], label: string) => primaryShapeGeometry.closed
+              ? commitShapeSettings(primary.id, { kind: 'freeform-path', closed: true, nodes, lineJoin: primaryShapeGeometry.lineJoin }, label)
+              : commitShapeSettings(primary.id, { kind: 'freeform-path', closed: false, nodes, lineCap: primaryShapeGeometry.lineCap, lineJoin: primaryShapeGeometry.lineJoin }, label)
+            const coordinateInput = (kind: 'point' | 'inHandle' | 'outHandle', axis: 'x' | 'y', value: number, label: string) => <label key={`${kind}-${axis}`}>{label}<input key={`${primary.id}-node-${index}-${kind}-${axis}-${value}`} type="number" min={-PROOFCANVAS_SCHEMA_LIMITS.normalizedShapeCoordinateMagnitude} max={PROOFCANVAS_SCHEMA_LIMITS.normalizedShapeCoordinateMagnitude} step="0.01" aria-label={label} defaultValue={value} onBlur={(event) => commitNumericInput(event, { key: axis, label, fallback: value, min: -PROOFCANVAS_SCHEMA_LIMITS.normalizedShapeCoordinateMagnitude, max: PROOFCANVAS_SCHEMA_LIMITS.normalizedShapeCoordinateMagnitude }, value, (next) => {
+              const nodes = primaryShapeGeometry.nodes.map((candidate) => ({ ...candidate, point: { ...candidate.point }, ...(candidate.inHandle ? { inHandle: { ...candidate.inHandle } } : {}), ...(candidate.outHandle ? { outHandle: { ...candidate.outHandle } } : {}) }))
+              if (kind === 'point') nodes[index].point[axis] = next
+              else (nodes[index][kind] as NormalizedShapePoint)[axis] = next
+              return commitNodes(nodes, `Set node ${index + 1} ${label}`)
+            })}/></label>
+            const canIncoming = primaryShapeGeometry.closed || index > 0
+            const canOutgoing = primaryShapeGeometry.closed || index < primaryShapeGeometry.nodes.length - 1
+            return <div className="pc-shape-point" key={`${primary.id}-node-${index}`}>
+              <strong>Node {index + 1}</strong>
+              {(['x', 'y'] as const).map((axis) => coordinateInput('point', axis, node.point[axis], `Node ${index + 1} ${axis.toUpperCase()}`))}
+              {node.inHandle && canIncoming ? (['x', 'y'] as const).map((axis) => coordinateInput('inHandle', axis, node.inHandle![axis], `Node ${index + 1} incoming handle ${axis.toUpperCase()}`)) : canIncoming && <button type="button" onClick={() => {
+                const nodes = primaryShapeGeometry.nodes.map((candidate) => ({ ...candidate }))
+                const previous = nodes[(index - 1 + nodes.length) % nodes.length].point
+                nodes[index] = { ...nodes[index], inHandle: { x: node.point.x + (previous.x - node.point.x) / 3, y: node.point.y + (previous.y - node.point.y) / 3 } }
+                commitNodes(nodes, `Add incoming handle to node ${index + 1}`)
+              }}>Add incoming handle</button>}
+              {node.inHandle && canIncoming && <button type="button" onClick={() => { const nodes = primaryShapeGeometry.nodes.map((candidate) => ({ ...candidate })); delete nodes[index].inHandle; commitNodes(nodes, `Remove incoming handle from node ${index + 1}`) }}>Remove incoming handle</button>}
+              {node.outHandle && canOutgoing ? (['x', 'y'] as const).map((axis) => coordinateInput('outHandle', axis, node.outHandle![axis], `Node ${index + 1} outgoing handle ${axis.toUpperCase()}`)) : canOutgoing && <button type="button" onClick={() => {
+                const nodes = primaryShapeGeometry.nodes.map((candidate) => ({ ...candidate }))
+                const next = nodes[(index + 1) % nodes.length].point
+                nodes[index] = { ...nodes[index], outHandle: { x: node.point.x + (next.x - node.point.x) / 3, y: node.point.y + (next.y - node.point.y) / 3 } }
+                commitNodes(nodes, `Add outgoing handle to node ${index + 1}`)
+              }}>Add outgoing handle</button>}
+              {node.outHandle && canOutgoing && <button type="button" onClick={() => { const nodes = primaryShapeGeometry.nodes.map((candidate) => ({ ...candidate })); delete nodes[index].outHandle; commitNodes(nodes, `Remove outgoing handle from node ${index + 1}`) }}>Remove outgoing handle</button>}
+              <button type="button" disabled={primaryShapeGeometry.nodes.length >= PROOFCANVAS_SCHEMA_LIMITS.shapePointsMax} onClick={() => {
+                const nodes = primaryShapeGeometry.nodes.map((candidate) => ({ ...candidate }))
+                const next = nodes[(index + 1) % nodes.length].point
+                nodes.splice(index + 1, 0, { point: { x: (node.point.x + next.x) / 2, y: (node.point.y + next.y) / 2 } })
+                commitNodes(nodes, `Add node after ${index + 1}`)
+              }}>Add node after</button>
+              <button type="button" disabled={primaryShapeGeometry.nodes.length <= (primaryShapeGeometry.closed ? 3 : 2)} onClick={() => {
+                const minimum = primaryShapeGeometry.closed ? 3 : 2
+                if (primaryShapeGeometry.nodes.length <= minimum) return setStatus(`${primaryShapeGeometry.closed ? 'A closed' : 'An open'} freeform path requires at least ${minimum} nodes.`)
+                const nodes = primaryShapeGeometry.nodes.filter((_, candidateIndex) => candidateIndex !== index).map((candidate) => ({ ...candidate }))
+                if (!primaryShapeGeometry.closed) {
+                  if (nodes[0]?.inHandle) delete nodes[0].inHandle
+                  if (nodes.at(-1)?.outHandle) delete nodes.at(-1)!.outHandle
+                }
+                commitNodes(nodes, `Remove node ${index + 1}`)
+              }}>Remove node</button>
+            </div>
+          })}
+        </div>
+      </>}
+      {isLinearShapeType(primaryShapeGeometry.kind) && primaryLineEndpoints && <>
         <h3 className="pc-wide">Authored endpoints</h3>
         {(['start', 'end'] as const).flatMap((endpoint) => (['x', 'y'] as const).map((axis) => {
           const value = primaryLineEndpoints[endpoint][axis]
@@ -2882,10 +3017,10 @@ export default function ProofCanvasEditor({
             </div>
             <p>Effective range {primaryEffectiveLifetime?.start.toFixed(4)}s–{primaryEffectiveLifetime?.end.toFixed(4)}s.{primary.parentId ? ` Inherited bounds are ${primaryInheritedLifetime?.start.toFixed(4)}s–${primaryInheritedLifetime?.end.toFixed(4)}s and remain read-only.` : ' Entire shot follows the shot duration.'}</p>
           </fieldset>
-          <div className="pc-field-grid"><p className="pc-wide pc-inspector-note">Diamonds author schema-v3 property keys. Once a track exists, field edits upsert at the playhead instead of changing the base pose.</p>
+          <div className="pc-field-grid"><p className="pc-wide pc-inspector-note">Diamonds author schema-v4 property keys. Once a track exists, field edits upsert at the playhead instead of changing the base pose.</p>
             {primary.type === 'group' && primaryFamilyLocked && !primaryEffectivelyLocked && <p className="pc-wide pc-inspector-note" role="status">This group contains a locked descendant. Geometry and visibility controls are disabled until the family is unlocked.</p>}
             <label className="pc-wide">Name<input aria-label="Name" defaultValue={primary.name} key={`${primary.id}-name-${primary.name}`} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => commitTextInput(event, primary.name, 'Object name', (value) => commitPatch({ name: value }, 'Rename object'), { trim: true, required: true })}/></label>
-            {TRANSFORM_NUMERIC_FIELDS.filter((definition) => (primary.type !== 'circle' || definition.key !== 'rotation') && (!['line', 'arrow'].includes(primary.type) || definition.key !== 'height')).map((definition) => renderObjectPropertyField(definition.key as PropertyTrack['property'], definition.label, { min: definition.min, max: definition.max, step: 0.1, familyLock: true }))}
+            {TRANSFORM_NUMERIC_FIELDS.filter((definition) => (primary.type !== 'circle' || definition.key !== 'rotation') && (!isLinearShapeType(primary.type) || definition.key !== 'height')).map((definition) => renderObjectPropertyField(definition.key as PropertyTrack['property'], definition.label, { min: definition.min, max: definition.max, step: 0.1, familyLock: true }))}
             {renderObjectPropertyField('scale', 'Scale', { ...signedScaleBounds, step: 0.05, familyLock: true })}
             {renderObjectPropertyField('scaleX', 'Scale X', { ...signedScaleBounds, step: 0.05, familyLock: true })}
             {renderObjectPropertyField('scaleY', 'Scale Y', { ...signedScaleBounds, step: 0.05, familyLock: true })}
@@ -2908,9 +3043,9 @@ export default function ProofCanvasEditor({
             {primary.type === 'axes' && (['xMin', 'xMax'] as const).map((key) => { const label = key === 'xMin' ? 'X minimum' : 'X maximum'; const value = Number(primary.properties[key]); const field = { key, label, fallback: value, min: -PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude, max: PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude }; return <label key={key}>{label}<input key={`${primary.id}-${key}-${String(primary.properties[key])}`} type="number" min={field.min} max={field.max} aria-label={label} defaultValue={value} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => commitNumericInput(event, field, value, (next) => commitPatch({ properties: { [key]: next } }, `Set ${key}`))}/></label> })}
             {primary.type === 'axes' && (['yMin', 'yMax'] as const).map((key) => { const label = key === 'yMin' ? 'Y minimum' : 'Y maximum'; const value = Number(primary.properties[key]); const field = { key, label, fallback: value, min: -PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude, max: PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude }; return <label key={key}>{label}<input key={`${primary.id}-${key}-${String(primary.properties[key])}`} type="number" min={field.min} max={field.max} aria-label={label} defaultValue={value} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => commitNumericInput(event, field, value, (next) => commitPatch({ properties: { [key]: next } }, `Set ${key}`))}/></label> })}
             {primary.type === 'axes' && <p className="pc-wide pc-inspector-note">Coordinate-axis ticks remain a bounded browser guide; axis ranges are authoritative in Manim export and render.</p>}
-            {objectTypeSupportsStyleProperty(primary.type, 'fill') && renderObjectPropertyField('fill', ['text', 'math'].includes(primary.type) ? 'Glyph fill' : 'Fill', { inputType: 'color' })}
-            {objectTypeSupportsStyleProperty(primary.type, 'stroke') && renderObjectPropertyField('stroke', 'Stroke', { inputType: 'color' })}
-            {objectTypeSupportsStyleProperty(primary.type, 'strokeWidth') && renderObjectPropertyField('strokeWidth', 'Stroke width', { min: 0, max: PROOFCANVAS_SCHEMA_LIMITS.strokeWidthMax, step: 0.1 })}
+            {objectTypeSupportsStyleProperty(primary, 'fill') && renderObjectPropertyField('fill', ['text', 'math'].includes(primary.type) ? 'Glyph fill' : 'Fill', { inputType: 'color' })}
+            {objectTypeSupportsStyleProperty(primary, 'stroke') && renderObjectPropertyField('stroke', 'Stroke', { inputType: 'color' })}
+            {objectTypeSupportsStyleProperty(primary, 'strokeWidth') && renderObjectPropertyField('strokeWidth', 'Stroke width', { min: 0, max: PROOFCANVAS_SCHEMA_LIMITS.strokeWidthMax, step: 0.1 })}
             <label className="pc-check"><input type="checkbox" aria-label={primaryInheritedHidden ? `Visible locally; hidden by ${primaryVisibilityOwner?.name}` : 'Visible'} checked={primary.visible} disabled={isPlaying || primaryFamilyLocked} onChange={(event) => commitPatch({ visible: event.target.checked }, 'Toggle visibility')}/>{primaryInheritedHidden ? `Visible locally — hidden by ${primaryVisibilityOwner?.name}` : 'Visible'}</label>
             <label className="pc-check"><input type="checkbox" aria-label="Locked" checked={primary.locked} disabled={isPlaying || primaryInheritedLocked} onChange={toggleLock}/>Locked</label>
           </div>

@@ -55,7 +55,7 @@ test("bounded LaTeX analysis accepts nested math and ordinary Tex but diagnoses 
   });
 });
 
-test("schema-v3 legacy math normalization is deterministic without a version bump", () => {
+test("legacy math normalization is deterministic without another version bump", () => {
   const legacyShape = cloneSerializable(createCantorDemoProject());
   for (const shot of legacyShape.shots) for (const object of shot.objects) {
     if (object.type !== "math") continue;

@@ -45,6 +45,42 @@ function track(
 }
 
 describe("chronological compiler schedule", () => {
+  test("reflects object and camera rotation tracks exactly into Manim's +Y-up plane", () => {
+    const project = scheduleProject();
+    const shot = project.shots[0];
+    shot.objects[0].transform.rotation = 10;
+    shot.camera.rotation = 5;
+    shot.propertyTracks = [
+      {
+        id: "track-schedule-object-rotation",
+        target: { kind: "object", objectId: "object-schedule" },
+        property: "rotation",
+        keyframes: [
+          { id: "keyframe-object-rotation-start", time: 0, value: 10, interpolation: { kind: "linear" } },
+          { id: "keyframe-object-rotation-end", time: 1, value: 30, interpolation: { kind: "linear" } },
+        ],
+      },
+      {
+        id: "track-schedule-camera-rotation",
+        target: { kind: "camera" },
+        property: "rotation",
+        keyframes: [
+          { id: "keyframe-camera-rotation-start", time: 0, value: 5, interpolation: { kind: "linear" } },
+          { id: "keyframe-camera-rotation-end", time: 1, value: 25, interpolation: { kind: "linear" } },
+        ],
+      },
+    ];
+
+    const python = compileManim(ProjectDocumentSchema.parse(project)).python;
+    expect(python).toContain("pc_schedule_object.rotate(-10.0 * DEGREES, about_point=ORIGIN)");
+    expect(python).toContain("self.camera.frame.become(Rectangle(width=config.frame_width / 1.0, height=config.frame_height / 1.0).move_to([0.0, 0.0, 0]).rotate(-5.0 * DEGREES))");
+    expect(python).toContain(".copy().shift([5.33333325, -1.03703702, 0]).rotate(10.0 * DEGREES, about_point=ORIGIN).rotate(-30.0 * DEGREES, about_point=ORIGIN).shift([-5.33333325, 1.03703702, 0])");
+    expect(python).toContain(".rotate(-30.0 * DEGREES, about_point=ORIGIN)");
+    expect(python).toContain("Rectangle(width=config.frame_width / 1.0, height=config.frame_height / 1.0).move_to([0.0, 0.0, 0]).rotate(-25.0 * DEGREES)");
+    expect(python).not.toContain(".rotate(30.0 * DEGREES, about_point=ORIGIN)");
+    expect(python).not.toContain(".rotate(25.0 * DEGREES)");
+  });
+
   test("chains delayed first assignment and following tween in one same-mobject Succession", () => {
     const project = scheduleProject();
     project.shots[0].propertyTracks = [track({ kind: "linear" }, [1, 2], [200, 300])];

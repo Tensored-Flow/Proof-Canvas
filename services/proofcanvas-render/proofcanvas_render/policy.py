@@ -74,6 +74,7 @@ class ValidatedSource:
 
 
 CAP_STYLE_MEMBERS = frozenset({"BUTT", "ROUND", "SQUARE"})
+LINE_JOINT_MEMBERS = frozenset({"MITER", "ROUND", "BEVEL"})
 ARROW_TIP_SHAPE_NAMES = frozenset(
     {"ArrowTriangleFilledTip", "StealthTip", "ArrowCircleFilledTip", "ArrowSquareFilledTip"}
 )
@@ -88,12 +89,16 @@ ALLOWED_CONSTRUCTORS = frozenset(
         "BraceBetweenPoints",
         "Circle",
         "Create",
+        "DashedLine",
+        "DoubleArrow",
+        "Ellipse",
         "FadeIn",
         "FadeOut",
         "Group",
         "Indicate",
         "Line",
         "MathTex",
+        "Polygon",
         "Tex",
         "max",
         "min",
@@ -117,6 +122,7 @@ ALLOWED_CONSTANT_NAMES = frozenset(
         "RIGHT",
         "ORIGIN",
         "CapStyleType",
+        "LineJointType",
         *ARROW_TIP_SHAPE_NAMES,
         "linear",
         "rush_into",
@@ -127,6 +133,7 @@ ALLOWED_CONSTANT_NAMES = frozenset(
 ALLOWED_ATTRIBUTES = frozenset(
     {
         "add",
+        "add_cubic_bezier_curve_to",
         "animate",
         "background_color",
         "become",
@@ -144,6 +151,8 @@ ALLOWED_ATTRIBUTES = frozenset(
         "play",
         "rotate",
         "BUTT",
+        "BEVEL",
+        "MITER",
         "ROUND",
         "SQUARE",
         "scale",
@@ -159,6 +168,7 @@ ALLOWED_ATTRIBUTES = frozenset(
         "stretch",
         "stretch_to_fit_height",
         "stretch_to_fit_width",
+        "start_new_path",
         "there_and_back",
         "wait",
         "width",
@@ -209,6 +219,17 @@ MIN_DIRECT_MANIM_DIMENSION = 0.01111111
 MAX_DIRECT_MANIM_CORNER_RADIUS = MAX_DIRECT_MANIM_DIMENSION / 8
 MIN_ARROW_TIP_LENGTH_RATIO = 0.02
 MAX_ARROW_TIP_LENGTH_RATIO = 0.45
+MIN_DASHED_RATIO = 0.05
+MAX_DASHED_RATIO = 0.95
+# Mirrored from lib/proofcanvas/shapeGeometry.ts. The compiler may nudge these
+# two Manim constructor literals only far enough to keep a width-dependent
+# dash count on the browser-authoritative side of an eight-decimal ceil bin.
+MAX_COMPILER_DASHED_RATIO_DRIFT = 0.000_000_645_000_001
+MAX_COMPILER_DASH_LENGTH_RELATIVE_DRIFT = 0.000_002
+MAX_NATIVE_SHAPE_POINTS = 64
+MAX_DASH_SEGMENTS = MAX_NATIVE_SHAPE_POINTS * 4
+MAX_NATIVE_GEOMETRY_WORK = 4_096
+MAX_NORMALIZED_SHAPE_COORDINATE = 0.5
 MAX_BRACE_LABEL_SHIFT = MAX_DIRECT_MANIM_DIMENSION * 2
 MAX_EMITTED_DECIMAL_ROUNDING = 0.00000001
 MIN_COPY_DIMENSION_RATIO = 0.00024414
@@ -231,9 +252,13 @@ MOBJECT_CONSTRUCTORS = frozenset(
         "Axes",
         "BraceBetweenPoints",
         "Circle",
+        "DashedLine",
+        "DoubleArrow",
+        "Ellipse",
         "Group",
         "Line",
         "MathTex",
+        "Polygon",
         "Rectangle",
         "RoundedRectangle",
         "Tex",
@@ -245,6 +270,7 @@ MOBJECT_CONSTRUCTORS = frozenset(
 SENSITIVE_METHOD_ATTRIBUTES = frozenset(
     {
         "add",
+        "add_cubic_bezier_curve_to",
         "become",
         "clear",
         "copy",
@@ -265,6 +291,7 @@ SENSITIVE_METHOD_ATTRIBUTES = frozenset(
         "stretch",
         "stretch_to_fit_height",
         "stretch_to_fit_width",
+        "start_new_path",
         "wait",
     }
 )
@@ -717,6 +744,7 @@ def _validate_nodes(tree: ast.Module) -> None:
     approved_animation_call_ids: set[int] = set()
     approved_mobject_constructor_call_ids: set[int] = set()
     approved_utility_call_ids: set[int] = set()
+    native_geometry_work = 0
     if any(isinstance(node, ast.Starred) for node in ast.walk(construct)):
         raise SourcePolicyError("Generated source contains forbidden syntax: Starred")
 
@@ -1017,6 +1045,141 @@ def _validate_nodes(tree: ast.Module) -> None:
         else:  # pragma: no cover - callers use the fixed compiler style set
             raise SourcePolicyError("Generated source contains an unsupported style method")
 
+    def consume_native_geometry_work(work: int) -> None:
+        nonlocal native_geometry_work
+        native_geometry_work += work
+        if native_geometry_work > MAX_NATIVE_GEOMETRY_WORK:
+            raise SourcePolicyError("Native shape geometry exceeds the compiler work budget")
+
+    def validate_enum_attribute(
+        node: ast.expr,
+        owner: str,
+        members: frozenset[str],
+        message: str,
+    ) -> str:
+        if (
+            not isinstance(node, ast.Attribute)
+            or _attribute_parts(node) != [owner, node.attr]
+            or node.attr not in members
+        ):
+            raise SourcePolicyError(message)
+        return node.attr
+
+    def validate_normalized_shape_point(node: ast.expr, message: str) -> tuple[float, float, float]:
+        point = validate_vector(node, MAX_NORMALIZED_SHAPE_COORDINATE, message)
+        return point
+
+    def shape_point_orientation(
+        left: tuple[float, float, float],
+        middle: tuple[float, float, float],
+        right: tuple[float, float, float],
+    ) -> float:
+        return (middle[0] - left[0]) * (right[1] - left[1]) - (middle[1] - left[1]) * (right[0] - left[0])
+
+    def shape_point_on_segment(
+        left: tuple[float, float, float],
+        point: tuple[float, float, float],
+        right: tuple[float, float, float],
+    ) -> bool:
+        epsilon = 1e-9
+        return (
+            abs(shape_point_orientation(left, point, right)) <= epsilon
+            and point[0] >= min(left[0], right[0]) - epsilon
+            and point[0] <= max(left[0], right[0]) + epsilon
+            and point[1] >= min(left[1], right[1]) - epsilon
+            and point[1] <= max(left[1], right[1]) + epsilon
+        )
+
+    def shape_segments_intersect(
+        left_start: tuple[float, float, float],
+        left_end: tuple[float, float, float],
+        right_start: tuple[float, float, float],
+        right_end: tuple[float, float, float],
+    ) -> bool:
+        epsilon = 1e-9
+        first = shape_point_orientation(left_start, left_end, right_start)
+        second = shape_point_orientation(left_start, left_end, right_end)
+        third = shape_point_orientation(right_start, right_end, left_start)
+        fourth = shape_point_orientation(right_start, right_end, left_end)
+        if (
+            ((first > epsilon and second < -epsilon) or (first < -epsilon and second > epsilon))
+            and ((third > epsilon and fourth < -epsilon) or (third < -epsilon and fourth > epsilon))
+        ):
+            return True
+        return (
+            abs(first) <= epsilon and shape_point_on_segment(left_start, right_start, left_end)
+            or abs(second) <= epsilon and shape_point_on_segment(left_start, right_end, left_end)
+            or abs(third) <= epsilon and shape_point_on_segment(right_start, left_start, right_end)
+            or abs(fourth) <= epsilon and shape_point_on_segment(right_start, left_end, right_end)
+        )
+
+    def validate_intrinsic_dimension_stretch(call: ast.Call, axis: int, message: str) -> float:
+        if (
+            len(call.args) != 2
+            or direct_number(call.args[1]) != axis
+            or not has_exact_origin_keyword(call)
+        ):
+            raise SourcePolicyError(message)
+        value = bounded_number(
+            call.args[0],
+            MIN_DIRECT_MANIM_DIMENSION,
+            MAX_DIRECT_MANIM_DIMENSION,
+            message,
+        )
+        approved_sensitive_call_ids.add(id(call))
+        return value
+
+    def validate_freeform_fill(call: ast.Call) -> str:
+        if (
+            len(call.args) != 1
+            or direct_hex(call.args[0]) is None
+            or [keyword.arg for keyword in call.keywords] != ["opacity"]
+            or direct_number(call.keywords[0].value) != 0
+        ):
+            raise SourcePolicyError("Freeform fill requires the exact transparent compiler paint")
+        approved_sensitive_call_ids.add(id(call))
+        color = direct_hex(call.args[0])
+        assert color is not None
+        return color
+
+    def validate_freeform_stroke(call: ast.Call) -> str:
+        if (
+            len(call.args) != 1
+            or direct_hex(call.args[0]) is None
+            or [keyword.arg for keyword in call.keywords] != ["width", "opacity"]
+        ):
+            raise SourcePolicyError("Freeform stroke requires the exact compiler paint")
+        bounded_number(
+            call.keywords[0].value,
+            0,
+            MAX_LITERAL_GRAPH_STROKE_WIDTH,
+            "Freeform stroke width is outside the schema bounds",
+        )
+        bounded_number(
+            call.keywords[1].value,
+            0,
+            1,
+            "Freeform stroke opacity is outside the schema bounds",
+        )
+        approved_sensitive_call_ids.add(id(call))
+        color = direct_hex(call.args[0])
+        assert color is not None
+        return color
+
+    def validate_freeform_opacity_override(call: ast.Call) -> None:
+        if (
+            call.args
+            or [keyword.arg for keyword in call.keywords] != ["opacity"]
+        ):
+            raise SourcePolicyError("Freeform become opacity requires the exact stroke-only compiler override")
+        bounded_number(
+            call.keywords[0].value,
+            0,
+            1,
+            "Freeform become opacity is outside the schema bounds",
+        )
+        approved_sensitive_call_ids.add(id(call))
+
     def validate_text_constructor(call: ast.Call, maximum_chars: int = MAX_TEXT_CONTENT_CHARS) -> None:
         if (
             len(call.args) != 1
@@ -1109,6 +1272,247 @@ def _validate_nodes(tree: ast.Module) -> None:
             raise SourcePolicyError("Line cap is outside the exact compiler dialect")
         approved_sensitive_call_ids.add(id(call))
 
+    def validate_filled_native_paint(methods: list[tuple[str, ast.Call]], start: int) -> int:
+        names = [name for name, _ in methods[start:]]
+        if names not in (["set_fill", "set_stroke"], ["set_fill", "set_stroke", "set_opacity"]):
+            raise SourcePolicyError("Filled native shape requires the exact compiler paint chain")
+        for name, call in methods[start:]:
+            validate_style_method(name, call)
+            approved_sensitive_call_ids.add(id(call))
+        return len(methods)
+
+    def validate_stroked_native_paint(methods: list[tuple[str, ast.Call]], start: int) -> int:
+        names = [name for name, _ in methods[start:]]
+        if names not in (["set_stroke"], ["set_stroke", "set_opacity"]):
+            raise SourcePolicyError("Stroked native shape requires the exact compiler paint chain")
+        for name, call in methods[start:]:
+            validate_style_method(name, call)
+            approved_sensitive_call_ids.add(id(call))
+        return len(methods)
+
+    def validate_arrow_native_paint(methods: list[tuple[str, ast.Call]], start: int) -> int:
+        names = [name for name, _ in methods[start:]]
+        if names not in (["set_color", "set_stroke"], ["set_color", "set_stroke", "set_opacity"]):
+            raise SourcePolicyError("Arrow native shape requires the exact compiler paint chain")
+        for name, call in methods[start:]:
+            validate_style_method(name, call)
+            approved_sensitive_call_ids.add(id(call))
+        color = direct_hex(methods[start][1].args[0])
+        stroke = direct_hex(methods[start + 1][1].args[0])
+        if color is None or color != stroke:
+            raise SourcePolicyError("Arrow tip and stroke colours must match the compiler paint")
+        return len(methods)
+
+    def validate_ellipse_constructor(call: ast.Call, methods: list[tuple[str, ast.Call]]) -> int:
+        if call.args or [keyword.arg for keyword in call.keywords] != ["width", "height"]:
+            raise SourcePolicyError("Ellipse arguments are outside the exact compiler dialect")
+        for keyword in call.keywords:
+            bounded_number(
+                keyword.value,
+                MIN_DIRECT_MANIM_DIMENSION,
+                MAX_DIRECT_MANIM_DIMENSION,
+                "Ellipse dimensions are outside the compiler bounds",
+            )
+        consume_native_geometry_work(1)
+        return validate_filled_native_paint(methods, 0)
+
+    def validate_polygon_constructor(call: ast.Call, methods: list[tuple[str, ast.Call]]) -> int:
+        if (
+            not 3 <= len(call.args) <= MAX_NATIVE_SHAPE_POINTS
+            or [keyword.arg for keyword in call.keywords] != ["joint_type"]
+        ):
+            raise SourcePolicyError("Polygon arguments are outside the exact compiler dialect")
+        validate_enum_attribute(
+            call.keywords[0].value,
+            "LineJointType",
+            LINE_JOINT_MEMBERS,
+            "Polygon line join is outside the exact compiler dialect",
+        )
+        vertices = [
+            validate_normalized_shape_point(vertex, "Polygon vertices are outside the normalized compiler bounds")
+            for vertex in call.args
+        ]
+        if any(left == right for left, right in zip(vertices, vertices[1:], strict=False)) or vertices[0] == vertices[-1]:
+            raise SourcePolicyError("Polygon vertices are outside the exact compiler topology")
+        origin = vertices[0]
+        axis = next((point for point in vertices if point != origin), None)
+        if axis is None or not any(
+            abs((axis[0] - origin[0]) * (point[1] - origin[1]) - (axis[1] - origin[1]) * (point[0] - origin[0]))
+            >= 0.000_001
+            for point in vertices
+        ):
+            raise SourcePolicyError("Polygon vertices must not all be collinear")
+        for left_index in range(len(vertices)):
+            left_next = (left_index + 1) % len(vertices)
+            for right_index in range(left_index + 1, len(vertices)):
+                right_next = (right_index + 1) % len(vertices)
+                if left_index == right_index or left_next == right_index or right_next == left_index:
+                    continue
+                if shape_segments_intersect(
+                    vertices[left_index],
+                    vertices[left_next],
+                    vertices[right_index],
+                    vertices[right_next],
+                ):
+                    raise SourcePolicyError("Polygon edges must not intersect outside adjacent vertices")
+        if len(methods) < 2 or [name for name, _ in methods[:2]] != ["stretch", "stretch"]:
+            raise SourcePolicyError("Polygon dimensions require the exact compiler stretch chain")
+        validate_intrinsic_dimension_stretch(methods[0][1], 0, "Polygon width is outside the exact compiler dialect")
+        validate_intrinsic_dimension_stretch(methods[1][1], 1, "Polygon height is outside the exact compiler dialect")
+        consume_native_geometry_work(len(vertices))
+        return validate_filled_native_paint(methods, 2)
+
+    def validate_dashed_line_constructor(call: ast.Call, methods: list[tuple[str, ast.Call]]) -> int:
+        if [keyword.arg for keyword in call.keywords] != ["dash_length", "dashed_ratio", "cap_style"]:
+            raise SourcePolicyError("DashedLine arguments are outside the exact compiler dialect")
+        validate_symmetric_linear_endpoints(call, "horizontal")
+        dash_length = bounded_number(
+            call.keywords[0].value,
+            MIN_DIRECT_MANIM_DIMENSION,
+            MAX_DIRECT_MANIM_DIMENSION,
+            "DashedLine dash length is outside the compiler bounds",
+        )
+        dashed_ratio = bounded_number(
+            call.keywords[1].value,
+            MIN_DASHED_RATIO,
+            MAX_DASHED_RATIO,
+            "DashedLine ratio is outside the schema bounds",
+        )
+        validate_enum_attribute(
+            call.keywords[2].value,
+            "CapStyleType",
+            CAP_STYLE_MEMBERS,
+            "DashedLine cap is outside the exact compiler dialect",
+        )
+        end = call.args[1]
+        assert isinstance(end, ast.List)
+        half_width = direct_number(end.elts[0])
+        assert half_width is not None
+        dash_count = max(2, math.ceil(((2 * half_width) / dash_length) * dashed_ratio))
+        if dash_count > MAX_DASH_SEGMENTS:
+            raise SourcePolicyError("DashedLine creates too many rendered dashes")
+        consume_native_geometry_work(dash_count)
+        return validate_stroked_native_paint(methods, 0)
+
+    def validate_double_arrow_constructor(call: ast.Call, methods: list[tuple[str, ast.Call]]) -> int:
+        if [keyword.arg for keyword in call.keywords] != [
+            "buff",
+            "max_tip_length_to_length_ratio",
+            "tip_shape_start",
+            "tip_shape_end",
+        ]:
+            raise SourcePolicyError("DoubleArrow arguments are outside the exact compiler dialect")
+        validate_symmetric_linear_endpoints(call, "horizontal")
+        if direct_number(call.keywords[0].value) != 0:
+            raise SourcePolicyError("DoubleArrow buff is outside the exact compiler dialect")
+        bounded_number(
+            call.keywords[1].value,
+            MIN_ARROW_TIP_LENGTH_RATIO,
+            MAX_ARROW_TIP_LENGTH_RATIO,
+            "DoubleArrow tip ratio is outside the schema bounds",
+        )
+        for keyword in call.keywords[2:]:
+            if not isinstance(keyword.value, ast.Name) or keyword.value.id not in ARROW_TIP_SHAPE_NAMES:
+                raise SourcePolicyError("DoubleArrow tip shape is outside the exact compiler dialect")
+        if not methods or methods[0][0] != "set_cap_style":
+            raise SourcePolicyError("DoubleArrow requires the exact compiler cap")
+        validate_cap_style_method(methods[0][1])
+        consume_native_geometry_work(1)
+        return validate_arrow_native_paint(methods, 1)
+
+    def validate_freeform_constructor(call: ast.Call, methods: list[tuple[str, ast.Call]]) -> int:
+        keyword_names = [keyword.arg for keyword in call.keywords]
+        open_path = keyword_names == ["joint_type", "cap_style"]
+        if call.args or keyword_names not in (["joint_type"], ["joint_type", "cap_style"]):
+            raise SourcePolicyError("Freeform VMobject arguments are outside the exact compiler dialect")
+        validate_enum_attribute(
+            call.keywords[0].value,
+            "LineJointType",
+            LINE_JOINT_MEMBERS,
+            "Freeform line join is outside the exact compiler dialect",
+        )
+        if open_path:
+            validate_enum_attribute(
+                call.keywords[1].value,
+                "CapStyleType",
+                CAP_STYLE_MEMBERS,
+                "Freeform line cap is outside the exact compiler dialect",
+            )
+
+        names = [name for name, _ in methods]
+        try:
+            first_stretch = names.index("stretch")
+        except ValueError as error:
+            raise SourcePolicyError("Freeform dimensions require the exact compiler stretch chain") from error
+        segment_count = first_stretch - 1
+        geometry_names = [
+            "start_new_path",
+            *(["add_cubic_bezier_curve_to"] * segment_count),
+            "stretch",
+            "stretch",
+        ]
+        paint_names = names[len(geometry_names):]
+        if (
+            not 1 <= segment_count <= MAX_NATIVE_SHAPE_POINTS
+            or names[:len(geometry_names)] != geometry_names
+            or (open_path and paint_names != ["set_fill", "set_stroke"])
+            or (not open_path and paint_names not in (
+                ["set_fill", "set_stroke"],
+                ["set_fill", "set_stroke", "set_opacity"],
+            ))
+        ):
+            raise SourcePolicyError("Freeform methods are outside the exact compiler dialect")
+        start_call = methods[0][1]
+        if start_call.keywords or len(start_call.args) != 1:
+            raise SourcePolicyError("Freeform start point is outside the exact compiler dialect")
+        start = validate_normalized_shape_point(
+            start_call.args[0],
+            "Freeform start point is outside the normalized compiler bounds",
+        )
+        approved_sensitive_call_ids.add(id(start_call))
+        previous_end = start
+        for _, curve_call in methods[1:first_stretch]:
+            if curve_call.keywords or len(curve_call.args) != 3:
+                raise SourcePolicyError("Freeform cubic segment is outside the exact compiler dialect")
+            points = [
+                validate_normalized_shape_point(
+                    point,
+                    "Freeform cubic point is outside the normalized compiler bounds",
+                )
+                for point in curve_call.args
+            ]
+            if points[2] == previous_end:
+                raise SourcePolicyError("Freeform segment endpoints must be distinct")
+            previous_end = points[2]
+            approved_sensitive_call_ids.add(id(curve_call))
+        if open_path:
+            if segment_count > MAX_NATIVE_SHAPE_POINTS - 1:
+                raise SourcePolicyError("Open freeform path contains too many compiler segments")
+        elif segment_count < 3 or previous_end != start:
+            raise SourcePolicyError("Closed freeform path requires the exact implicit closing segment")
+        validate_intrinsic_dimension_stretch(
+            methods[first_stretch][1],
+            0,
+            "Freeform width is outside the exact compiler dialect",
+        )
+        validate_intrinsic_dimension_stretch(
+            methods[first_stretch + 1][1],
+            1,
+            "Freeform height is outside the exact compiler dialect",
+        )
+        if open_path:
+            fill_color = validate_freeform_fill(methods[first_stretch + 2][1])
+            stroke_color = validate_freeform_stroke(methods[first_stretch + 3][1])
+            if fill_color != stroke_color:
+                raise SourcePolicyError("Freeform transparent fill and stroke colours must match the compiler paint")
+        else:
+            # Closed paths are filled native shapes. Their fill and stroke may
+            # be authored independently, and one aggregate opacity controls
+            # both paints. The generic validator keeps this exact and bounded.
+            validate_filled_native_paint(methods, first_stretch + 2)
+        consume_native_geometry_work(1 + 3 * segment_count)
+        return len(methods)
+
     def validate_directional_shift(call: ast.Call, direction: str, *, legacy: bool = False) -> None:
         if call.keywords or len(call.args) != 1:
             raise SourcePolicyError("Brace label shift is outside the exact compiler dialect")
@@ -1140,6 +1544,51 @@ def _validate_nodes(tree: ast.Module) -> None:
         if minimum >= maximum or direct_number(node.elts[2]) != 1:
             raise SourcePolicyError(f"Axes {name} is outside the exact compiler dialect")
 
+    def rounded_rectangle_corner_descriptor(
+        root: ast.Call,
+        width: float,
+        height: float,
+    ) -> tuple[str, float]:
+        corner_node = root.keywords[0].value
+        direct_corner = direct_number(corner_node)
+        if direct_corner is not None:
+            corner_radius = bounded_number(
+                corner_node,
+                0,
+                MAX_DIRECT_MANIM_CORNER_RADIUS,
+                "RoundedRectangle corner radius is outside the compiler bounds",
+            )
+            if corner_radius - min(width, height) / 2 > MAX_EMITTED_DECIMAL_ROUNDING:
+                raise SourcePolicyError("RoundedRectangle corner radius exceeds its exact compiler dimensions")
+            return ("literal", corner_radius)
+
+        if not (
+            isinstance(corner_node, ast.Call)
+            and isinstance(corner_node.func, ast.Name)
+            and corner_node.func.id == "min"
+            and not corner_node.keywords
+            and len(corner_node.args) == 3
+        ):
+            raise SourcePolicyError("RoundedRectangle corner radius is outside the exact compiler descriptor protocol")
+        authored_radius = bounded_number(
+            corner_node.args[0],
+            0,
+            MAX_DIRECT_MANIM_CORNER_RADIUS,
+            "RoundedRectangle authored corner radius is outside the compiler bounds",
+        )
+        if authored_radius <= 0:
+            raise SourcePolicyError("RoundedRectangle derived corner radius requires a positive authored origin")
+        for expression, dimension in zip(corner_node.args[1:], (width, height), strict=True):
+            if not (
+                isinstance(expression, ast.BinOp)
+                and isinstance(expression.op, ast.Div)
+                and direct_number(expression.left) == dimension
+                and direct_number(expression.right) == 2
+            ):
+                raise SourcePolicyError("RoundedRectangle derived corner radius must repeat its exact compiler dimensions")
+        approved_utility_call_ids.add(id(corner_node))
+        return ("authored", authored_radius)
+
     def validate_object_constructor(root: ast.Call, methods: list[tuple[str, ast.Call]], known_objects: set[str]) -> tuple[str, int]:
         assert isinstance(root.func, ast.Name)
         constructor = root.func.id
@@ -1170,12 +1619,6 @@ def _validate_nodes(tree: ast.Module) -> None:
         elif constructor == "RoundedRectangle":
             if root.args or [keyword.arg for keyword in root.keywords] != ["corner_radius", "width", "height"]:
                 raise SourcePolicyError("RoundedRectangle arguments are outside the exact compiler dialect")
-            corner_radius = bounded_number(
-                root.keywords[0].value,
-                0,
-                MAX_DIRECT_MANIM_CORNER_RADIUS,
-                "RoundedRectangle corner radius is outside the compiler bounds",
-            )
             width = bounded_number(
                 root.keywords[1].value,
                 MIN_DIRECT_MANIM_DIMENSION,
@@ -1188,8 +1631,7 @@ def _validate_nodes(tree: ast.Module) -> None:
                 MAX_DIRECT_MANIM_DIMENSION,
                 "RoundedRectangle height is outside the compiler bounds",
             )
-            if corner_radius - min(width, height) / 2 > MAX_EMITTED_DECIMAL_ROUNDING:
-                raise SourcePolicyError("RoundedRectangle corner radius exceeds its exact compiler dimensions")
+            rounded_rectangle_corner_descriptor(root, width, height)
         elif constructor == "Circle":
             if root.args or [keyword.arg for keyword in root.keywords] != ["radius"] or direct_number(root.keywords[0].value) != 1:
                 raise SourcePolicyError("Circle arguments are outside the exact compiler dialect")
@@ -1206,6 +1648,10 @@ def _validate_nodes(tree: ast.Module) -> None:
                 )
                 approved_sensitive_call_ids.add(id(call))
             return "leaf", 2
+        elif constructor == "Ellipse":
+            return "leaf", validate_ellipse_constructor(root, methods)
+        elif constructor == "Polygon":
+            return "leaf", validate_polygon_constructor(root, methods)
         elif constructor == "Line":
             validate_linear_constructor(root)
             if methods and methods[0][0] == "set_cap_style":
@@ -1226,6 +1672,10 @@ def _validate_nodes(tree: ast.Module) -> None:
                 return "leaf", 1
             if any(name == "set_cap_style" for name, _ in methods):
                 raise SourcePolicyError("Legacy Arrow cannot contain a current-dialect cap setter")
+        elif constructor == "DashedLine":
+            return "leaf", validate_dashed_line_constructor(root, methods)
+        elif constructor == "DoubleArrow":
+            return "leaf", validate_double_arrow_constructor(root, methods)
         elif constructor == "Axes":
             if root.args or [keyword.arg for keyword in root.keywords] != ["x_range", "y_range", "x_length", "y_length", "tips"]:
                 raise SourcePolicyError("Axes arguments are outside the exact compiler dialect")
@@ -1244,7 +1694,9 @@ def _validate_nodes(tree: ast.Module) -> None:
                 raise SourcePolicyError("Compiler group bindings cannot contain post-construction decorators")
             return "group", 0
         elif constructor == "VMobject":
-            if root.args or root.keywords:
+            if root.keywords:
+                return "leaf", validate_freeform_constructor(root, methods)
+            if root.args:
                 raise SourcePolicyError("VMobject arguments are outside the exact compiler dialect")
         else:
             raise SourcePolicyError("Generated source contains an unsupported object constructor")
@@ -1357,9 +1809,18 @@ def _validate_nodes(tree: ast.Module) -> None:
         elif constructor == "Circle" and method_names[:2] == ["stretch_to_fit_width", "stretch_to_fit_height"]:
             shape_kind = "circle"
             style_names = method_names[2:]
+        elif constructor == "Ellipse":
+            shape_kind = "ellipse"
+            style_names = method_names
+        elif constructor == "Polygon" and method_names[:2] == ["stretch", "stretch"]:
+            shape_kind = "polygon"
+            style_names = method_names[2:]
         elif constructor == "Line" and method_names[:1] == ["set_cap_style"]:
             shape_kind = "line"
             style_names = method_names[1:]
+        elif constructor == "DashedLine":
+            shape_kind = "dashed-line"
+            style_names = method_names
         elif (
             constructor == "Arrow"
             and [keyword.arg for keyword in root.keywords]
@@ -1368,6 +1829,23 @@ def _validate_nodes(tree: ast.Module) -> None:
         ):
             shape_kind = "arrow"
             style_names = method_names[1:]
+        elif (
+            constructor == "DoubleArrow"
+            and [keyword.arg for keyword in root.keywords]
+            == ["buff", "max_tip_length_to_length_ratio", "tip_shape_start", "tip_shape_end"]
+            and method_names[:1] == ["set_cap_style"]
+        ):
+            shape_kind = "double-arrow"
+            style_names = method_names[1:]
+        elif (
+            constructor == "VMobject"
+            and [keyword.arg for keyword in root.keywords]
+            in (["joint_type"], ["joint_type", "cap_style"])
+            and method_names[:1] == ["start_new_path"]
+        ):
+            shape_kind = "freeform-path"
+            first_style = method_names.index("set_fill") if "set_fill" in method_names else len(method_names)
+            style_names = method_names[first_style:]
         elif constructor == "VGroup" and len(root.args) == 2:
             brace_root, _ = method_chain(root.args[0])
             if (
@@ -1387,8 +1865,13 @@ def _validate_nodes(tree: ast.Module) -> None:
         exact_paint_names = {
             "rectangle": (["set_fill", "set_stroke"],),
             "circle": (["set_fill", "set_stroke"],),
+            "ellipse": (["set_fill", "set_stroke"],),
+            "polygon": (["set_fill", "set_stroke"],),
             "line": (["set_stroke"],),
+            "dashed-line": (["set_stroke"],),
             "arrow": (["set_color", "set_stroke"],),
+            "double-arrow": (["set_color", "set_stroke"],),
+            "freeform-path": (["set_fill", "set_stroke"],),
         }
         return shape_kind if paint_names in exact_paint_names[shape_kind] else None
 
@@ -1399,10 +1882,27 @@ def _validate_nodes(tree: ast.Module) -> None:
     ) -> tuple[object, ...]:
         assert isinstance(root, ast.Call) and isinstance(root.func, ast.Name)
         if shape_kind == "rectangle":
-            corner_radius = direct_number(root.keywords[0].value) if root.func.id == "RoundedRectangle" else None
-            return (shape_kind, root.func.id, corner_radius)
+            if root.func.id == "RoundedRectangle":
+                width = direct_number(root.keywords[1].value)
+                height = direct_number(root.keywords[2].value)
+                assert width is not None and height is not None
+                corner_descriptor = rounded_rectangle_corner_descriptor(root, width, height)
+            else:
+                corner_descriptor = None
+            return (shape_kind, root.func.id, corner_descriptor)
         if shape_kind == "circle":
             return (shape_kind, "Circle")
+        if shape_kind == "ellipse":
+            return (shape_kind, "Ellipse")
+        if shape_kind == "polygon":
+            joint = root.keywords[0].value
+            assert isinstance(joint, ast.Attribute)
+            vertices = tuple(
+                tuple(direct_number(coordinate) for coordinate in vertex.elts)
+                for vertex in root.args
+                if isinstance(vertex, ast.List)
+            )
+            return (shape_kind, joint.attr, vertices)
         if shape_kind == "line":
             cap = methods[0][1].args[0]
             assert isinstance(cap, ast.Attribute)
@@ -1417,6 +1917,51 @@ def _validate_nodes(tree: ast.Module) -> None:
                 direct_number(root.keywords[1].value),
                 tip_shape.id,
             )
+        if shape_kind == "dashed-line":
+            cap = root.keywords[2].value
+            assert isinstance(cap, ast.Attribute)
+            return (
+                shape_kind,
+                cap.attr,
+                direct_number(root.keywords[0].value),
+                direct_number(root.keywords[1].value),
+            )
+        if shape_kind == "double-arrow":
+            cap = methods[0][1].args[0]
+            start_tip = root.keywords[2].value
+            end_tip = root.keywords[3].value
+            assert isinstance(cap, ast.Attribute) and isinstance(start_tip, ast.Name) and isinstance(end_tip, ast.Name)
+            return (
+                shape_kind,
+                cap.attr,
+                direct_number(root.keywords[1].value),
+                start_tip.id,
+                end_tip.id,
+            )
+        if shape_kind == "freeform-path":
+            joint = root.keywords[0].value
+            assert isinstance(joint, ast.Attribute)
+            cap = root.keywords[1].value if len(root.keywords) == 2 else None
+            assert cap is None or isinstance(cap, ast.Attribute)
+            start_call = methods[0][1]
+            start = start_call.args[0]
+            assert isinstance(start, ast.List)
+            curves = tuple(
+                tuple(
+                    tuple(direct_number(coordinate) for coordinate in point.elts)
+                    for point in curve_call.args
+                    if isinstance(point, ast.List)
+                )
+                for name, curve_call in methods
+                if name == "add_cubic_bezier_curve_to"
+            )
+            return (
+                shape_kind,
+                joint.attr,
+                cap.attr if isinstance(cap, ast.Attribute) else None,
+                tuple(direct_number(coordinate) for coordinate in start.elts),
+                curves,
+            )
         assert shape_kind == "brace"
         brace_root, brace_methods = method_chain(root.args[0])
         label_root, label_methods = method_chain(root.args[1])
@@ -1430,6 +1975,58 @@ def _validate_nodes(tree: ast.Module) -> None:
             direct_number(brace_root.keywords[1].value),
             label_root.args[0].value,
             direct_number(label_root.keywords[0].value),
+        )
+
+    def current_shape_descriptors_match(
+        expected: tuple[object, ...],
+        actual: tuple[object, ...],
+    ) -> bool:
+        if expected[:1] != ("dashed-line",) or actual[:1] != ("dashed-line",):
+            return actual == expected
+        if len(expected) != 4 or len(actual) != 4 or actual[1] != expected[1]:
+            return False
+
+        expected_dash, expected_ratio = expected[2:]
+        actual_dash, actual_ratio = actual[2:]
+        if not all(isinstance(value, float) for value in (
+            expected_dash,
+            expected_ratio,
+            actual_dash,
+            actual_ratio,
+        )):
+            return False
+
+        # dashLength/gapLength are immutable authored data. DashedLine's
+        # emitted dash_length is nevertheless width-derived: the compiler may
+        # move it inside a safe Manim ceil bin. Require the two literals'
+        # possible rounded-authored origins to overlap, rather than accepting
+        # an unbounded descriptor change.
+        expected_dash_origin = (
+            expected_dash / (1 + MAX_COMPILER_DASH_LENGTH_RELATIVE_DRIFT),
+            expected_dash / (1 - MAX_COMPILER_DASH_LENGTH_RELATIVE_DRIFT),
+        )
+        actual_dash_origin = (
+            actual_dash / (1 + MAX_COMPILER_DASH_LENGTH_RELATIVE_DRIFT),
+            actual_dash / (1 - MAX_COMPILER_DASH_LENGTH_RELATIVE_DRIFT),
+        )
+        if max(expected_dash_origin[0], actual_dash_origin[0]) > min(
+            expected_dash_origin[1], actual_dash_origin[1]
+        ):
+            return False
+
+        # dashed_ratio is the emitted representation of dash/(dash+gap).
+        # Overlapping compiler-drift intervals therefore prove a single
+        # bounded authored ratio; a cap change remains exactly forbidden.
+        expected_ratio_origin = (
+            expected_ratio - MAX_COMPILER_DASHED_RATIO_DRIFT,
+            expected_ratio + MAX_COMPILER_DASHED_RATIO_DRIFT,
+        )
+        actual_ratio_origin = (
+            actual_ratio - MAX_COMPILER_DASHED_RATIO_DRIFT,
+            actual_ratio + MAX_COMPILER_DASHED_RATIO_DRIFT,
+        )
+        return max(expected_ratio_origin[0], actual_ratio_origin[0]) <= min(
+            expected_ratio_origin[1], actual_ratio_origin[1]
         )
 
     def validate_camera_dimension(node: ast.expr, attribute_name: str) -> float:
@@ -1782,7 +2379,10 @@ def _validate_nodes(tree: ast.Module) -> None:
         actual_kind = exact_current_shape_kind(prefix_root, prefix_methods)
         if actual_kind != expected_kind:
             raise SourcePolicyError("Current shape target kind does not match its proven compiler owner")
-        if current_shape_descriptor(prefix_root, prefix_methods, actual_kind) != expected_descriptor:
+        if not current_shape_descriptors_match(
+            expected_descriptor,
+            current_shape_descriptor(prefix_root, prefix_methods, actual_kind),
+        ):
             raise SourcePolicyError("Current shape target descriptor does not match its proven compiler owner")
         approved_sensitive_call_ids.update(id(call) for _, call in payload_methods[placement_start:])
 
@@ -1799,7 +2399,14 @@ def _validate_nodes(tree: ast.Module) -> None:
         current_shape_kind = object_shape_kinds.get(owner)
         method_names = [name for name, _ in methods]
         if current_shape_kind is not None and "become" in method_names:
-            if method_names != ["copy", "become", "set_opacity"]:
+            current_shape_descriptor_value = object_shape_descriptors[owner]
+            open_freeform = (
+                current_shape_kind == "freeform-path"
+                and len(current_shape_descriptor_value) > 2
+                and current_shape_descriptor_value[2] is not None
+            )
+            final_method = "set_stroke" if open_freeform else "set_opacity"
+            if method_names != ["copy", "become", final_method]:
                 raise SourcePolicyError("Current shape become copies require the exact compiler target")
             become_call = methods[1][1]
             if become_call.keywords or len(become_call.args) != 1:
@@ -1809,8 +2416,12 @@ def _validate_nodes(tree: ast.Module) -> None:
                 current_shape_kind,
                 object_shape_descriptors[owner],
             )
-            validate_style_method("set_opacity", methods[2][1])
-            approved_sensitive_call_ids.update({id(become_call), id(methods[2][1])})
+            if open_freeform:
+                validate_freeform_opacity_override(methods[2][1])
+            else:
+                validate_style_method("set_opacity", methods[2][1])
+                approved_sensitive_call_ids.add(id(methods[2][1]))
+            approved_sensitive_call_ids.add(id(become_call))
             return owner
 
         style_names = {"set_color", "set_fill", "set_stroke", "set_opacity"}

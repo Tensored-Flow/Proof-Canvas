@@ -219,7 +219,7 @@ function projectShapeAuthorityFingerprint(project: ProjectDocument): string {
   )));
 }
 
-/** Present-but-invalid V3 shape records that new authoring may repair but never create or mutate. */
+/** Present-but-invalid legacy shape records that new authoring may repair but never create or mutate. */
 export function projectShapeAuthoringIssues(project: ProjectDocument): ShapeAuthoringIssueSignature[] {
   const issues: ShapeAuthoringIssueSignature[] = [];
   for (const shot of project.shots) {

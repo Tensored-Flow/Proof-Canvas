@@ -1,0 +1,366 @@
+{
+  "activeStyleId": "style-editorial-ink",
+  "assets": [],
+  "customEasings": [],
+  "metadata": {
+    "createdAt": "2026-08-25T12:00:00.000Z",
+    "id": "project-4e4154495645534841504553",
+    "title": "Native shape parity",
+    "updatedAt": "2026-08-25T12:00:00.000Z"
+  },
+  "schemaVersion": 4,
+  "settings": {
+    "aspectRatio": "16:9",
+    "frameRate": 15,
+    "previewQuality": "standard",
+    "renderPreset": "draft",
+    "resolution": {
+      "height": 480,
+      "width": 854
+    }
+  },
+  "shots": [
+    {
+      "animations": [],
+      "audioClips": [],
+      "camera": {
+        "rotation": 0,
+        "x": 480,
+        "y": 270,
+        "zoom": 1
+      },
+      "captionClips": [],
+      "duration": 8,
+      "id": "shot-native-shape-parity",
+      "markers": [],
+      "name": "Native shape parity",
+      "objects": [
+        {
+          "id": "object-parity-ellipse",
+          "locked": false,
+          "name": "ellipse parity probe",
+          "properties": {
+            "shape": {
+              "kind": "ellipse"
+            }
+          },
+          "semanticRole": "native-shape-parity-ellipse",
+          "style": {
+            "fill": "#ff0000",
+            "opacity": 1,
+            "stroke": "#ff0000",
+            "strokeWidth": 4
+          },
+          "transform": {
+            "height": 90,
+            "rotation": 17,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 150,
+            "x": 120,
+            "y": 140
+          },
+          "type": "ellipse",
+          "visible": true
+        },
+        {
+          "id": "object-parity-polygon",
+          "locked": false,
+          "name": "polygon parity probe",
+          "properties": {
+            "shape": {
+              "kind": "polygon",
+              "lineJoin": "bevel",
+              "vertices": [
+                {
+                  "x": -0.48,
+                  "y": 0.3
+                },
+                {
+                  "x": -0.18,
+                  "y": -0.48
+                },
+                {
+                  "x": 0.46,
+                  "y": -0.24
+                },
+                {
+                  "x": 0.34,
+                  "y": 0.42
+                },
+                {
+                  "x": -0.12,
+                  "y": 0.48
+                }
+              ]
+            }
+          },
+          "semanticRole": "native-shape-parity-polygon",
+          "style": {
+            "fill": "#00ff00",
+            "opacity": 1,
+            "stroke": "#00ff00",
+            "strokeWidth": 5
+          },
+          "transform": {
+            "height": 118,
+            "rotation": -12,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 154,
+            "x": 330,
+            "y": 140
+          },
+          "type": "polygon",
+          "visible": true
+        },
+        {
+          "id": "object-parity-dashed-line",
+          "locked": false,
+          "name": "dashed-line parity probe",
+          "properties": {
+            "shape": {
+              "dashLength": 18,
+              "gapLength": 11,
+              "kind": "dashed-line",
+              "lineCap": "round"
+            }
+          },
+          "semanticRole": "native-shape-parity-dashed-line",
+          "style": {
+            "opacity": 1,
+            "stroke": "#0000ff",
+            "strokeWidth": 8
+          },
+          "transform": {
+            "height": 16,
+            "rotation": 7,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 174,
+            "x": 550,
+            "y": 140
+          },
+          "type": "dashed-line",
+          "visible": true
+        },
+        {
+          "id": "object-parity-double-arrow",
+          "locked": false,
+          "name": "double-arrow parity probe",
+          "properties": {
+            "shape": {
+              "endTipShape": "circle",
+              "kind": "double-arrow",
+              "lineCap": "square",
+              "startTipShape": "stealth",
+              "tipSizeRatio": 0.22
+            }
+          },
+          "semanticRole": "native-shape-parity-double-arrow",
+          "style": {
+            "opacity": 1,
+            "stroke": "#ff00ff",
+            "strokeWidth": 5
+          },
+          "transform": {
+            "height": 30,
+            "rotation": -8,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 174,
+            "x": 790,
+            "y": 140
+          },
+          "type": "double-arrow",
+          "visible": true
+        },
+        {
+          "id": "object-parity-freeform-path",
+          "locked": false,
+          "name": "freeform-path parity probe",
+          "properties": {
+            "shape": {
+              "closed": false,
+              "kind": "freeform-path",
+              "lineCap": "round",
+              "lineJoin": "round",
+              "nodes": [
+                {
+                  "outHandle": {
+                    "x": -0.4,
+                    "y": -0.42
+                  },
+                  "point": {
+                    "x": -0.5,
+                    "y": 0.24
+                  }
+                },
+                {
+                  "inHandle": {
+                    "x": -0.28,
+                    "y": -0.34
+                  },
+                  "outHandle": {
+                    "x": 0.1,
+                    "y": -0.26
+                  },
+                  "point": {
+                    "x": -0.08,
+                    "y": -0.3
+                  }
+                },
+                {
+                  "inHandle": {
+                    "x": 0.34,
+                    "y": -0.46
+                  },
+                  "point": {
+                    "x": 0.5,
+                    "y": 0.2
+                  }
+                }
+              ]
+            }
+          },
+          "semanticRole": "native-shape-parity-freeform-path",
+          "style": {
+            "opacity": 1,
+            "stroke": "#00ffff",
+            "strokeWidth": 7
+          },
+          "transform": {
+            "height": 138,
+            "rotation": 4,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 310,
+            "x": 480,
+            "y": 382
+          },
+          "type": "freeform-path",
+          "visible": true
+        }
+      ],
+      "propertyTracks": []
+    }
+  ],
+  "styles": [
+    {
+      "annotation": {
+        "offset": 14,
+        "roughness": 0.32,
+        "treatment": "marginal-hand"
+      },
+      "colors": {
+        "background": "#ffffff",
+        "coolAccent": "#315866",
+        "ink": "#101010",
+        "mutedInk": "#4f534c",
+        "rule": "#655f55",
+        "warmAccent": "#71402d"
+      },
+      "corners": {
+        "object": 1,
+        "panel": 2
+      },
+      "graph": {
+        "axisWeight": 1.15,
+        "curveWeight": 2.25,
+        "gridOpacity": 0.12
+      },
+      "id": "style-editorial-ink",
+      "layout": {
+        "hierarchyContrast": 1.5,
+        "tendency": "editorial-asymmetric",
+        "titleAnchor": "upper-left"
+      },
+      "motion": {
+        "cameraMaxPan": 140,
+        "cameraMaxZoom": 1.35,
+        "defaultDuration": 0.8,
+        "easing": "editorial",
+        "emphasis": "emphasise",
+        "entrance": "write",
+        "exit": "fade-out"
+      },
+      "name": "Editorial Ink",
+      "origin": "preset",
+      "spacing": {
+        "margin": 48,
+        "objectGap": 18,
+        "unit": 8
+      },
+      "strokes": {
+        "emphasis": 3,
+        "fine": 1,
+        "regular": 1.75
+      },
+      "typography": {
+        "bodyScale": 1,
+        "controls": "Geist, Arial, sans-serif",
+        "math": "STIX Two Math, Times New Roman, serif",
+        "statement": "Cormorant Garamond, Georgia, serif",
+        "titleScale": 1.28
+      }
+    },
+    {
+      "annotation": {
+        "offset": 8,
+        "roughness": 0,
+        "treatment": "plain"
+      },
+      "colors": {
+        "background": "#ffffff",
+        "coolAccent": "#176b80",
+        "ink": "#000000",
+        "mutedInk": "#555555",
+        "rule": "#656565",
+        "warmAccent": "#b3261e"
+      },
+      "corners": {
+        "object": 0,
+        "panel": 0
+      },
+      "graph": {
+        "axisWeight": 1,
+        "curveWeight": 2,
+        "gridOpacity": 0.2
+      },
+      "id": "style-raw-manim",
+      "layout": {
+        "hierarchyContrast": 1,
+        "tendency": "centred",
+        "titleAnchor": "center"
+      },
+      "motion": {
+        "cameraMaxPan": 80,
+        "cameraMaxZoom": 1.2,
+        "defaultDuration": 1,
+        "easing": "linear",
+        "emphasis": "scale",
+        "entrance": "appear",
+        "exit": "fade-out"
+      },
+      "name": "Raw Manim",
+      "origin": "preset",
+      "spacing": {
+        "margin": 24,
+        "objectGap": 12,
+        "unit": 8
+      },
+      "strokes": {
+        "emphasis": 3,
+        "fine": 1,
+        "regular": 2
+      },
+      "typography": {
+        "bodyScale": 1,
+        "controls": "Arial, sans-serif",
+        "math": "Computer Modern, serif",
+        "statement": "Arial, sans-serif",
+        "titleScale": 1
+      }
+    }
+  ]
+}

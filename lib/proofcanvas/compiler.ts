@@ -36,7 +36,11 @@ import {
 } from "./compilerSchedule";
 import { analyzeGraphExpression } from "./graphExpression";
 import {
+  compilerDecimalNumber,
+  freeformCubicSegments,
   isCurrentShapeType,
+  resolveCompilerSafeDashedLinePattern,
+  resolveRectangleCornerRadiusRequest,
   resolveShapeDimensions,
   resolveShapeGeometry,
   resolveShapePaint,
@@ -44,6 +48,7 @@ import {
   type ArrowTipShape,
   type BraceDirection,
   type ShapeLineCap,
+  type ShapeLineJoin,
 } from "./shapeGeometry";
 
 export interface CompilerDiagnostic {
@@ -121,7 +126,7 @@ function finite(value: unknown, fallback: number): number {
 
 function pyNumber(value: number): string {
   if (Object.is(value, -0)) return "0.0";
-  return Number.isInteger(value) ? `${value}.0` : Number(value.toFixed(8)).toString();
+  return Number.isInteger(value) ? `${value}.0` : compilerDecimalNumber(value).toString();
 }
 
 function emittedPositiveDuration(value: number): number {
@@ -272,11 +277,16 @@ function transformCoordinate(transform: SceneObject["transform"], project: Proje
   return vectorLiteral(x, y);
 }
 
+/** Reflect authored +Y-down clockwise rotation into Manim's +Y-up plane. */
+function manimRotationDegrees(authoredRotation: number): number {
+  return -authoredRotation;
+}
+
 function placementChain(transform: SceneObject["transform"], project: ProjectDocument): string {
   const parts: string[] = [];
   if (transform.scaleX !== 1) parts.push(`.stretch(${pyNumber(transform.scaleX)}, 0, about_point=ORIGIN)`);
   if (transform.scaleY !== 1) parts.push(`.stretch(${pyNumber(transform.scaleY)}, 1, about_point=ORIGIN)`);
-  if (transform.rotation) parts.push(`.rotate(${pyNumber(transform.rotation)} * DEGREES, about_point=ORIGIN)`);
+  if (transform.rotation) parts.push(`.rotate(${pyNumber(manimRotationDegrees(transform.rotation))} * DEGREES, about_point=ORIGIN)`);
   parts.push(`.shift(${transformCoordinate(transform, project)})`);
   return parts.join("");
 }
@@ -314,6 +324,12 @@ const MANIM_ARROW_TIP: Readonly<Record<ArrowTipShape, string>> = {
   square: "ArrowSquareFilledTip",
 };
 
+const MANIM_LINE_JOIN: Readonly<Record<ShapeLineJoin, string>> = {
+  miter: "MITER",
+  round: "ROUND",
+  bevel: "BEVEL",
+};
+
 const MANIM_BRACE_DIRECTION: Readonly<Record<BraceDirection, string>> = {
   above: "UP",
   below: "DOWN",
@@ -326,7 +342,19 @@ function styleChain(object: SceneObject, style: StylePack): string {
     const paint = resolveShapePaint(object, style);
     if (!paint) return "";
     const parts: string[] = [];
-    if (object.type === "arrow") parts.push(`.set_color(${pyString(paint.stroke)})`);
+    if (object.type === "arrow" || object.type === "double-arrow") parts.push(`.set_color(${pyString(paint.stroke)})`);
+    if (object.type === "freeform-path") {
+      const geometry = resolveShapeGeometry(object, style);
+      if (geometry?.kind === "freeform-path" && geometry.closed) {
+        parts.push(`.set_fill(${pyString(paint.fill ?? paint.stroke)}, opacity=1.0)`);
+        parts.push(`.set_stroke(${pyString(paint.stroke)}, width=${pyNumber(paint.strokeWidth)})`);
+        if (paint.opacity !== 1) parts.push(`.set_opacity(${pyNumber(paint.opacity)})`);
+      } else {
+        parts.push(`.set_fill(${pyString(paint.stroke)}, opacity=0.0)`);
+        parts.push(`.set_stroke(${pyString(paint.stroke)}, width=${pyNumber(paint.strokeWidth)}, opacity=${pyNumber(paint.opacity)})`);
+      }
+      return parts.join("");
+    }
     if (paint.fill !== null) parts.push(`.set_fill(${pyString(paint.fill)}, opacity=1.0)`);
     // Brace children own distinct body/label colours inside the aggregate.
     if (object.type !== "brace") parts.push(`.set_stroke(${pyString(paint.stroke)}, width=${pyNumber(paint.strokeWidth)})`);
@@ -339,23 +367,23 @@ function styleChain(object: SceneObject, style: StylePack): string {
   const stroke = graphStroke?.stroke ?? object.style.stroke ?? color;
   const strokeWidth = graphStroke?.strokeWidth ?? object.style.strokeWidth ?? style.strokes.regular;
   const parts: string[] = [];
-  if (objectTypeSupportsStyleProperty(object.type, "color")) parts.push(`.set_color(${pyString(color)})`);
-  if (fill && objectTypeSupportsStyleProperty(object.type, "fill")) parts.push(`.set_fill(${pyString(fill)}, opacity=1.0)`);
-  if (objectTypeSupportsStyleProperty(object.type, "stroke")) parts.push(`.set_stroke(${pyString(stroke)}, width=${pyNumber(strokeWidth)})`);
-  if (object.style.opacity !== undefined && objectTypeSupportsStyleProperty(object.type, "opacity")) parts.push(`.set_opacity(${pyNumber(object.style.opacity)})`);
+  if (objectTypeSupportsStyleProperty(object, "color")) parts.push(`.set_color(${pyString(color)})`);
+  if (fill && objectTypeSupportsStyleProperty(object, "fill")) parts.push(`.set_fill(${pyString(fill)}, opacity=1.0)`);
+  if (objectTypeSupportsStyleProperty(object, "stroke")) parts.push(`.set_stroke(${pyString(stroke)}, width=${pyNumber(strokeWidth)})`);
+  if (object.style.opacity !== undefined && objectTypeSupportsStyleProperty(object, "opacity")) parts.push(`.set_opacity(${pyNumber(object.style.opacity)})`);
   return parts.join("");
 }
 
 function visualTargetChain(object: SceneObject & { preview?: { opacity: number } }, style: StylePack): string {
   const parts: string[] = [];
-  if (object.style.fill && objectTypeSupportsStyleProperty(object.type, "fill")) parts.push(`.set_fill(${pyString(object.style.fill)}, opacity=1.0)`);
-  if ((object.type === "graph" || object.style.stroke || object.style.strokeWidth !== undefined) && objectTypeSupportsStyleProperty(object.type, "stroke")) {
+  if (object.style.fill && objectTypeSupportsStyleProperty(object, "fill")) parts.push(`.set_fill(${pyString(object.style.fill)}, opacity=1.0)`);
+  if ((object.type === "graph" || object.style.stroke || object.style.strokeWidth !== undefined) && objectTypeSupportsStyleProperty(object, "stroke")) {
     const graphStroke = object.type === "graph" ? resolvedGraphStroke(object, style) : null;
     const stroke = graphStroke?.stroke ?? object.style.stroke ?? style.colors.ink;
-    if (object.type === "arrow") parts.push(`.set_color(${pyString(stroke)})`);
+    if (object.type === "arrow" || object.type === "double-arrow") parts.push(`.set_color(${pyString(stroke)})`);
     parts.push(`.set_stroke(${pyString(stroke)}, width=${pyNumber(graphStroke?.strokeWidth ?? object.style.strokeWidth ?? style.strokes.regular)})`);
   }
-  if (objectTypeSupportsStyleProperty(object.type, "opacity")) parts.push(`.set_opacity(${pyNumber(object.preview?.opacity ?? object.style.opacity ?? 1)})`);
+  if (objectTypeSupportsStyleProperty(object, "opacity")) parts.push(`.set_opacity(${pyNumber(object.preview?.opacity ?? object.style.opacity ?? 1)})`);
   return parts.join("");
 }
 
@@ -406,10 +434,12 @@ function primitiveExpression(
     case "circle":
       return `Circle(radius=1.0).stretch_to_fit_width(${pyNumber(width)}).stretch_to_fit_height(${pyNumber(height)})`;
     case "rectangle": {
-      const geometry = resolveShapeGeometry(object, style);
-      const radius = geometry?.kind === "rectangle" ? shapeOffset(geometry.cornerRadius, project) : 0;
-      return radius > 0
-        ? `RoundedRectangle(corner_radius=${pyNumber(radius)}, width=${pyNumber(width)}, height=${pyNumber(height)})`
+      const authoredRadius = shapeOffset(resolveRectangleCornerRadiusRequest(object, style) ?? 0, project);
+      const authoredRadiusLiteral = pyNumber(authoredRadius);
+      const widthLiteral = pyNumber(width);
+      const heightLiteral = pyNumber(height);
+      return Number(authoredRadiusLiteral) > 0
+        ? `RoundedRectangle(corner_radius=min(${authoredRadiusLiteral}, ${widthLiteral} / 2.0, ${heightLiteral} / 2.0), width=${widthLiteral}, height=${heightLiteral})`
         : `Rectangle(width=${pyNumber(width)}, height=${pyNumber(height)})`;
     }
     case "line": {
@@ -438,6 +468,59 @@ function primitiveExpression(
       const labelShift = shapeOffset((vertical ? shapeDimensions.width : shapeDimensions.height) + brace.spacing, project);
       const label = typeof object.properties.label === "string" ? object.properties.label : "";
       return `VGroup(BraceBetweenPoints(${endpoints}, direction=${direction}, buff=${pyNumber(spacing)}).set_color(${pyString(paint.stroke)}).set_stroke(${pyString(paint.stroke)}, width=${pyNumber(paint.strokeWidth)}), Text(${pyString(label)}, font_size=${pyNumber(object.style.fontSize ?? 22)}).set_color(${pyString(paint.labelColor)}).shift(${direction} * ${pyNumber(labelShift)}))`;
+    }
+    case "ellipse":
+      return `Ellipse(width=${pyNumber(width)}, height=${pyNumber(height)})`;
+    case "polygon": {
+      const geometry = resolveShapeGeometry(object, style);
+      const polygon = geometry?.kind === "polygon" ? geometry : null;
+      const vertices = polygon?.vertices ?? [
+        { x: 0, y: -0.5 }, { x: 0.5, y: 0.5 }, { x: -0.5, y: 0.5 },
+      ];
+      const points = vertices.map(({ x, y }) => `[${pyNumber(x)}, ${pyNumber(-y)}, 0]`).join(", ");
+      return `Polygon(${points}, joint_type=LineJointType.${MANIM_LINE_JOIN[polygon?.lineJoin ?? "miter"]}).stretch(${pyNumber(width)}, 0, about_point=ORIGIN).stretch(${pyNumber(height)}, 1, about_point=ORIGIN)`;
+    }
+    case "dashed-line": {
+      const geometry = resolveShapeGeometry(object, style);
+      const dashed = geometry?.kind === "dashed-line" ? geometry : null;
+      const pattern = resolveCompilerSafeDashedLinePattern(
+        project.settings.aspectRatio,
+        shapeDimensions.width,
+        dashed?.dashLength ?? 12,
+        dashed?.gapLength ?? 8,
+      );
+      if (!pattern) throw new Error("Dashed-line compiler pattern is outside the admitted schema bounds");
+      const cap = dashed?.lineCap ?? "butt";
+      return `DashedLine([-${pyNumber(pattern.halfWidth)}, 0, 0], [${pyNumber(pattern.halfWidth)}, 0, 0], dash_length=${pyNumber(pattern.dashLength)}, dashed_ratio=${pyNumber(pattern.dashedRatio)}, cap_style=CapStyleType.${MANIM_CAP_STYLE[cap]})`;
+    }
+    case "double-arrow": {
+      const geometry = resolveShapeGeometry(object, style);
+      const arrow = geometry?.kind === "double-arrow" ? geometry : null;
+      const cap = arrow?.lineCap ?? "butt";
+      const startTip = arrow?.startTipShape ?? "triangle";
+      const endTip = arrow?.endTipShape ?? "triangle";
+      const ratio = arrow?.tipSizeRatio ?? 0.25;
+      return `DoubleArrow([-${pyNumber(width / 2)}, 0, 0], [${pyNumber(width / 2)}, 0, 0], buff=0, max_tip_length_to_length_ratio=${pyNumber(ratio)}, tip_shape_start=${MANIM_ARROW_TIP[startTip]}, tip_shape_end=${MANIM_ARROW_TIP[endTip]}).set_cap_style(CapStyleType.${MANIM_CAP_STYLE[cap]})`;
+    }
+    case "freeform-path": {
+      const geometry = resolveShapeGeometry(object, style);
+      const path = geometry?.kind === "freeform-path" ? geometry : null;
+      const fallback = resolveShapeGeometry({
+        ...object,
+        type: "freeform-path",
+        properties: { shape: { kind: "freeform-path", closed: false, nodes: [
+          { point: { x: -0.5, y: 0.25 } }, { point: { x: 0, y: -0.25 } }, { point: { x: 0.5, y: 0.25 } },
+        ] } },
+      }, style);
+      const exact = path ?? (fallback?.kind === "freeform-path" ? fallback : null);
+      if (!exact) return "VMobject()";
+      const pointLiteral = ({ x, y }: { x: number; y: number }) => `[${pyNumber(x)}, ${pyNumber(-y)}, 0]`;
+      const segments = freeformCubicSegments(exact);
+      const start = pointLiteral(exact.nodes[0].point);
+      const curves = segments.map(({ control1, control2, end }) => `.add_cubic_bezier_curve_to(${pointLiteral(control1)}, ${pointLiteral(control2)}, ${pointLiteral(end)})`).join("");
+      const join = MANIM_LINE_JOIN[path?.lineJoin ?? "miter"];
+      const cap = exact.closed ? "" : `, cap_style=CapStyleType.${MANIM_CAP_STYLE[exact.lineCap]}`;
+      return `VMobject(joint_type=LineJointType.${join}${cap}).start_new_path(${start})${curves}.stretch(${pyNumber(width)}, 0, about_point=ORIGIN).stretch(${pyNumber(height)}, 1, about_point=ORIGIN)`;
     }
     case "axes": {
       const xMin = finite(object.properties.xMin, -5);
@@ -577,7 +660,10 @@ function currentShapeTransformTarget(
   const exactTarget: SceneObject = { ...targetObject, transform: targetTransform };
   const primitive = `${primitiveExpression(exactTarget, project, style, diagnostics)}${styleChain(exactTarget, style)}${placementChain(targetTransform, project)}`;
   const opacity = targetObject.preview?.opacity ?? targetObject.style.opacity ?? 1;
-  return `${referenceVariable}.copy().become(${primitive}).set_opacity(${pyNumber(opacity)})`;
+  const geometry = targetObject.type === "freeform-path" ? resolveShapeGeometry(exactTarget, style) : null;
+  return geometry?.kind === "freeform-path" && !geometry.closed
+    ? `${referenceVariable}.copy().become(${primitive}).set_stroke(opacity=${pyNumber(opacity)})`
+    : `${referenceVariable}.copy().become(${primitive}).set_opacity(${pyNumber(opacity)})`;
 }
 
 function copyTransformTarget(
@@ -600,7 +686,7 @@ function copyTransformTarget(
 
   const startPoint = manimPoint(transformAtStart, project);
   if (startPoint.x || startPoint.y) parts.push(`.shift(${vectorLiteral(-startPoint.x, -startPoint.y)})`);
-  if (transformAtStart.rotation) parts.push(`.rotate(${pyNumber(-transformAtStart.rotation)} * DEGREES, about_point=ORIGIN)`);
+  if (transformAtStart.rotation) parts.push(`.rotate(${pyNumber(-manimRotationDegrees(transformAtStart.rotation))} * DEGREES, about_point=ORIGIN)`);
   if (transformAtStart.scaleX !== 1) parts.push(`.stretch(${pyNumber(1 / transformAtStart.scaleX)}, 0, about_point=ORIGIN)`);
   if (transformAtStart.scaleY !== 1) parts.push(`.stretch(${pyNumber(1 / transformAtStart.scaleY)}, 1, about_point=ORIGIN)`);
 
@@ -622,7 +708,7 @@ function copyTransformTarget(
   }
   if (targetTransform.scaleX !== 1) parts.push(`.stretch(${pyNumber(targetTransform.scaleX)}, 0, about_point=ORIGIN)`);
   if (targetTransform.scaleY !== 1) parts.push(`.stretch(${pyNumber(targetTransform.scaleY)}, 1, about_point=ORIGIN)`);
-  if (targetTransform.rotation) parts.push(`.rotate(${pyNumber(targetTransform.rotation)} * DEGREES, about_point=ORIGIN)`);
+  if (targetTransform.rotation) parts.push(`.rotate(${pyNumber(manimRotationDegrees(targetTransform.rotation))} * DEGREES, about_point=ORIGIN)`);
   parts.push(`.shift(${transformCoordinate(targetTransform, project)})`);
   return parts.join("");
 }
@@ -879,7 +965,7 @@ function animationExpression(
     const zoom = authoritative?.zoom ?? finite(animation.properties.zoom, stateAtStart.camera.zoom);
     const rotation = authoritative?.rotation ?? finite(animation.properties.rotation, stateAtStart.camera.rotation);
     const proxy: SceneObject = { id: "camera", type: "group", name: "Camera", locked: false, visible: true, transform: { x, y, rotation: 0, scaleX: 1, scaleY: 1 }, style: {}, properties: {} };
-    return `Transform(self.camera.frame, Rectangle(width=config.frame_width / ${pyNumber(zoom)}, height=config.frame_height / ${pyNumber(zoom)}).move_to(${coordinate(proxy, project)}).rotate(${pyNumber(rotation)} * DEGREES), run_time=${point ? "0.0" : pyDuration(animation.duration)}, rate_func=${rate})`;
+    return `Transform(self.camera.frame, Rectangle(width=config.frame_width / ${pyNumber(zoom)}, height=config.frame_height / ${pyNumber(zoom)}).move_to(${coordinate(proxy, project)}).rotate(${pyNumber(manimRotationDegrees(rotation))} * DEGREES), run_time=${point ? "0.0" : pyDuration(animation.duration)}, rate_func=${rate})`;
   }
   const objectMap = new Map(shot.objects.map((object) => [object.id, object]));
   const previewObjectMap = new Map(stateAtStart.objects.map((object) => [object.id, object]));
@@ -1339,7 +1425,7 @@ export function compileManim(input: ProjectDocument): CompileResult {
     lines.push(`        self.camera.background_color = ${pyString(style.colors.background)}`);
     const initialPreview = previewAt(0);
     const shotCamera: SceneObject = { id: "camera", type: "group", name: "Camera", locked: false, visible: true, transform: { x: initialPreview.camera.x, y: initialPreview.camera.y, rotation: 0, scaleX: 1, scaleY: 1 }, style: {}, properties: {} };
-    lines.push(`        self.camera.frame.become(Rectangle(width=config.frame_width / ${pyNumber(initialPreview.camera.zoom)}, height=config.frame_height / ${pyNumber(initialPreview.camera.zoom)}).move_to(${coordinate(shotCamera, project)}).rotate(${pyNumber(initialPreview.camera.rotation)} * DEGREES))`);
+    lines.push(`        self.camera.frame.become(Rectangle(width=config.frame_width / ${pyNumber(initialPreview.camera.zoom)}, height=config.frame_height / ${pyNumber(initialPreview.camera.zoom)}).move_to(${coordinate(shotCamera, project)}).rotate(${pyNumber(manimRotationDegrees(initialPreview.camera.rotation))} * DEGREES))`);
 
     const emit = (object: SceneObject) => {
       if (emitted.has(object.id)) return;
@@ -1365,7 +1451,7 @@ export function compileManim(input: ProjectDocument): CompileResult {
         if (styledObject.transform.scaleX !== 1 || styledObject.transform.scaleY !== 1) {
           lines.push(`        ${variable}.stretch(${pyNumber(styledObject.transform.scaleX)}, 0, about_point=ORIGIN).stretch(${pyNumber(styledObject.transform.scaleY)}, 1, about_point=ORIGIN)`);
         }
-        if (styledObject.transform.rotation) lines.push(`        ${variable}.rotate(${pyNumber(styledObject.transform.rotation)} * DEGREES, about_point=ORIGIN)`);
+        if (styledObject.transform.rotation) lines.push(`        ${variable}.rotate(${pyNumber(manimRotationDegrees(styledObject.transform.rotation))} * DEGREES, about_point=ORIGIN)`);
         lines.push(`        ${variable}.shift(${coordinate(styledObject, project)})`);
         referenceTransforms.set(object.id, { ...styledObject.transform });
       }

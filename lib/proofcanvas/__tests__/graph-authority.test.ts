@@ -5,7 +5,7 @@ import { applyDocumentOperations } from '../documentOperations'
 import { analyzeGraphExpression } from '../graphExpression'
 import { redoAuthoringHistory, undoAuthoringHistory, type ProjectHistory } from '../history'
 import { applyOperations } from '../operations'
-import { ProjectDocumentSchema, cloneSerializable, type ProjectDocument, type SceneObject } from '../schema'
+import { PROJECT_SCHEMA_VERSION, ProjectDocumentSchema, cloneSerializable, type ProjectDocument, type SceneObject } from '../schema'
 
 function graphObject(expression: SceneObject['properties']['expression'] = { kind: 'power', base: { kind: 'variable' }, exponent: 2 }): SceneObject {
   return {
@@ -40,9 +40,9 @@ const undefinedExpression = {
 }
 
 describe('graph authoring compatibility and compiler truth', () => {
-  test('keeps a legacy-invalid V3 document loadable and allows unrelated edits, valid repair, or deletion', () => {
+  test('keeps legacy-invalid graph authority loadable and allows unrelated edits, valid repair, or deletion', () => {
     const legacy = projectWithGraph(undefinedExpression)
-    expect(legacy.schemaVersion).toBe(3)
+    expect(legacy.schemaVersion).toBe(PROJECT_SCHEMA_VERSION)
     expect(projectGraphAuthoringIssues(legacy)).toEqual([
       expect.objectContaining({ code: 'GRAPH_CONSTANT_DIVISION_BY_ZERO', objectId: 'object-graph-authority' }),
     ])

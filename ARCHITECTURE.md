@@ -56,13 +56,23 @@ creative state is serialized.
 
 ## Document and mutation boundary
 
-Schema version 3 describes metadata, aspect ratio, output styles, ordered shots, scene objects,
+Schema version 4 describes metadata, aspect ratio, output styles, ordered shots, scene objects,
 groups, typed animations and property tracks, object lifetimes, portable asset metadata, audio and
 caption metadata, markers, custom easings, and camera state. The registered V1-to-V2 migration is
 deterministic; V2 remains a frozen float-time compatibility format, while the loss-aware V2-to-V3
 migration establishes one bounded 10 ns tick as the persisted and compiler time authority. It
 rewrites only documents whose positive spans, equality classes, strict ordering, containment,
 overlap/touching relations, event chronology, and frozen compiler-work admission remain lossless.
+Animation `targetIds` are a semantic set with stable first-occurrence ordering: published V1-V3
+schemas admitted repeated serialized IDs even though preview already evaluated each ID once. The
+V3-to-V4 migration removes only those redundant occurrences, then advances the version signal and
+adds five strictly described native types: ellipse, polygon, dashed line, double arrow, and
+one-contour cubic freeform path. Repeated compiler expansion was a defect, not authored meaning. Their
+normalized local coordinates use positive X right and positive Y down; compilation negates Y once.
+Every rendering field is explicit, polygon edges are simple, paths are bounded to 64 nodes, each
+line is bounded to 256 rendered dashes, and compiler-occurrence-weighted native geometry is capped
+at 4,096 points or dashes per project. The historical V1-to-V3 object vocabulary is frozen so a
+new object cannot be laundered through a falsely old version.
 Validation is global: it rejects duplicate IDs,
 missing or cyclic parents, invalid targets and timing, overlapping animation families, invalid
 style references, unsafe LaTeX or assets, unrestricted graph expressions, and values outside the
@@ -77,6 +87,11 @@ recovered; its exact export remains addressable after parent soft deletion. Migr
 versioned data-transform tag, archive writes, counters, and a complete integrity pass commit in one
 IMMEDIATE transaction. Invalid or noncanonical V2 data rolls the migration back rather than being
 reclassified as recoverable.
+
+A separate checksummed database migration advances only canonical `ready` V3 projects and
+checkpoints to V4, stably canonicalizing target sets when needed. It leaves recovery-required V2
+bytes and immutable archive records untouched; the historical V2-to-V3 migration continues to
+publish canonical V3 bytes while preserving every exact V2 source in that archive.
 
 Canonical serialization recursively sorts object keys while preserving meaningful array order.
 This gives persistence, export, tests, and source hashing the same deterministic representation.
@@ -206,7 +221,7 @@ the application before restore.
 
 Old backups are upgraded only on a private copy. The source database bytes, inode/link target,
 mode, mtime, directory listing, and sidecars are not mutated by validation; restore publishes the
-fully migrated private copy. Ready V3 rows remain canonical and strict, while recovery archives
+fully migrated private copy. Ready V4 rows remain canonical and strict, while recovery archives
 retain the exact V2 source bytes. Every supported row mutation rewrites project-duration metadata
 from an integer-tick sum, including compatibility cleanup of older binary-dust counters.
 
@@ -224,8 +239,10 @@ transfer design for remote rendering.
   source-aware throttling must be enforced by a trusted same-host reverse proxy; the global window
   can otherwise be abused to cause a temporary owner lockout.
 - The deterministic critic and model proposals require human mathematical and editorial judgment.
-- Accessibility automation and desktop screenshots do not replace human assistive-technology or
-  usability testing.
-- The editor is demonstrated on a 16:9 desktop surface; portrait editing is not browser-validated.
+- Accessibility automation and screenshots do not replace human assistive-technology or usability
+  testing.
+- Native-shape authoring was exercised at a 1024x1366 browser viewport with a 540x960 9:16 frame;
+  the complete portrait animation/render journey and mobile touch editing remain unqualified.
 - Arbitrary Python, Python round-tripping, sampled-pose keyframe editing, accounts, collaboration,
-  audio, 3D, and physics are out of scope.
+  3D, and physics are out of scope. Trusted asset transport and audio/caption completion remain V1
+  work and block a V1 release until their own gates pass.

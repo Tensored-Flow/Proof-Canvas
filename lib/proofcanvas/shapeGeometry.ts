@@ -1,14 +1,23 @@
 import {
   CurrentShapePropertiesSchema,
   PROOFCANVAS_SCHEMA_LIMITS,
+  V4_NATIVE_SHAPE_TYPES,
+  currentShapePropertiesIssue,
+  formatShapePropertiesIssue,
+  objectTypeSupportsStyleProperty,
+  resolveDashedLinePattern,
   type SceneObject,
   type StylePack,
 } from "./schema";
+import { editorLengthToManim, type ProofCanvasAspectRatio } from "./frame";
 
-export const CURRENT_SHAPE_TYPES = ["circle", "rectangle", "line", "arrow", "brace"] as const;
+export const CURRENT_SHAPE_TYPES = [
+  "circle", "rectangle", "line", "arrow", "brace",
+  "ellipse", "polygon", "dashed-line", "double-arrow", "freeform-path",
+] as const;
 export type CurrentShapeType = (typeof CURRENT_SHAPE_TYPES)[number];
 
-export const LINEAR_SHAPE_TYPES = ["line", "arrow"] as const;
+export const LINEAR_SHAPE_TYPES = ["line", "arrow", "dashed-line", "double-arrow"] as const;
 export type LinearShapeType = (typeof LINEAR_SHAPE_TYPES)[number];
 
 export const SHAPE_LINE_CAPS = ["butt", "round", "square"] as const;
@@ -17,6 +26,9 @@ export type ShapeLineCap = (typeof SHAPE_LINE_CAPS)[number];
 export const ARROW_TIP_SHAPES = ["triangle", "stealth", "circle", "square"] as const;
 export type ArrowTipShape = (typeof ARROW_TIP_SHAPES)[number];
 
+export const SHAPE_LINE_JOINS = ["miter", "round", "bevel"] as const;
+export type ShapeLineJoin = (typeof SHAPE_LINE_JOINS)[number];
+
 export const BRACE_DIRECTIONS = ["above", "below", "left", "right"] as const;
 export type BraceDirection = (typeof BRACE_DIRECTIONS)[number];
 
@@ -24,12 +36,144 @@ export const LEGACY_LINE_CAP: ShapeLineCap = "butt";
 export const LEGACY_ARROW_TIP_SHAPE: ArrowTipShape = "triangle";
 /** Manim Arrow's legacy max_tip_length_to_length_ratio default. */
 export const LEGACY_ARROW_TIP_SIZE_RATIO = 0.25;
+export const LEGACY_SHAPE_LINE_JOIN: ShapeLineJoin = "miter";
+export const DEFAULT_DASH_LENGTH = 12;
+export const DEFAULT_GAP_LENGTH = 8;
 export const LEGACY_BRACE_DIRECTION: BraceDirection = "below";
 export const LEGACY_BRACE_SPACING = 12;
 export const LEGACY_SHAPE_WIDTH = 60;
 export const LEGACY_SHAPE_HEIGHT = 30;
 export const MIN_ARROW_TIP_SIZE_RATIO = 0.02;
 export const MAX_ARROW_TIP_SIZE_RATIO = 0.45;
+export const COMPILER_DECIMAL_PLACES = 8;
+export const COMPILER_DASH_TOPOLOGY_MARGIN = 0.000_001;
+export const COMPILER_DASHED_RATIO_MAX_DRIFT = 0.000_000_645_000_001;
+/**
+ * Maximum relative movement from the rounded authored dash length to the
+ * topology-safe Manim literal. This bound is part of the renderer provenance
+ * contract: width-dependent ceil-bin repairs may move the constructor literal,
+ * while the authored dashLength itself remains immutable.
+ */
+export const COMPILER_DASH_LENGTH_MAX_RELATIVE_DRIFT = 0.000_002;
+
+const COMPILER_DECIMAL_SCALE = 10 ** COMPILER_DECIMAL_PLACES;
+const COMPILER_DASH_RATIO_MAX_TICK_NUDGE = 64;
+const COMPILER_ASPECT_RATIOS = ["16:9", "9:16", "1:1"] as const satisfies readonly ProofCanvasAspectRatio[];
+
+/** Numeric value represented by the compiler's bounded decimal literal dialect. */
+export function compilerDecimalNumber(value: number): number {
+  const rounded = Number(value.toFixed(COMPILER_DECIMAL_PLACES));
+  return Object.is(rounded, -0) ? 0 : rounded;
+}
+
+const MIN_COMPILER_DASH_LENGTH = Math.min(...COMPILER_ASPECT_RATIOS.map((aspectRatio) => (
+  compilerDecimalNumber(editorLengthToManim(aspectRatio, PROOFCANVAS_SCHEMA_LIMITS.dashPatternLengthMin))
+)));
+const MAX_COMPILER_DASH_LENGTH = Math.max(...COMPILER_ASPECT_RATIOS.map((aspectRatio) => (
+  compilerDecimalNumber(editorLengthToManim(aspectRatio, PROOFCANVAS_SCHEMA_LIMITS.animationDimensionMax))
+)));
+const MIN_COMPILER_DASH_TICK = Math.round(MIN_COMPILER_DASH_LENGTH * COMPILER_DECIMAL_SCALE);
+const MAX_COMPILER_DASH_TICK = Math.round(MAX_COMPILER_DASH_LENGTH * COMPILER_DECIMAL_SCALE);
+const MIN_COMPILER_DASH_RATIO_TICK = Math.round(PROOFCANVAS_SCHEMA_LIMITS.dashPatternRatioMin * COMPILER_DECIMAL_SCALE);
+const MAX_COMPILER_DASH_RATIO_TICK = Math.round(PROOFCANVAS_SCHEMA_LIMITS.dashPatternRatioMax * COMPILER_DECIMAL_SCALE);
+
+export interface CompilerSafeDashedLinePattern {
+  /** Browser/schema-authoritative topology before compiler-unit conversion. */
+  readonly count: number;
+  /** Exact positive endpoint literal emitted on each side of zero. */
+  readonly halfWidth: number;
+  /** Decimal constructor literal selected inside the authoritative ceil bin. */
+  readonly dashLength: number;
+  /** Decimal ratio literal; this alone controls rendered dash/gap proportions after construction. */
+  readonly dashedRatio: number;
+  /** Pinned Manim's constructor quotient evaluated from the emitted literals. */
+  readonly topologyQuotient: number;
+}
+
+function compilerDashCandidate(
+  halfWidth: number,
+  dashedRatio: number,
+  count: number,
+  preferredDashTick: number,
+): Readonly<{ dashTick: number; quotient: number }> | null {
+  const numerator = 2 * halfWidth * dashedRatio;
+  const minimumTick = Math.max(
+    MIN_COMPILER_DASH_TICK,
+    Math.ceil(numerator / (count - COMPILER_DASH_TOPOLOGY_MARGIN) * COMPILER_DECIMAL_SCALE),
+  );
+  const maximumTick = Math.min(
+    MAX_COMPILER_DASH_TICK,
+    count > 2
+      ? Math.floor(numerator / (count - 1 + COMPILER_DASH_TOPOLOGY_MARGIN) * COMPILER_DECIMAL_SCALE)
+      : MAX_COMPILER_DASH_TICK,
+  );
+  if (minimumTick > maximumTick) return null;
+
+  let dashTick = Math.max(minimumTick, Math.min(maximumTick, preferredDashTick));
+  // The interval calculations and this verification use the same IEEE-754
+  // operations as the generated Python float expression. Four one-tick repairs
+  // cover a boundary rounded in the opposite direction without an open loop.
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const quotient = (2 * halfWidth / (dashTick / COMPILER_DECIMAL_SCALE)) * dashedRatio;
+    if (quotient > count - COMPILER_DASH_TOPOLOGY_MARGIN) {
+      dashTick += 1;
+      continue;
+    }
+    if (count > 2 && quotient < count - 1 + COMPILER_DASH_TOPOLOGY_MARGIN) {
+      dashTick -= 1;
+      continue;
+    }
+    return { dashTick, quotient };
+  }
+  return null;
+}
+
+/**
+ * Preserve the schema/browser dash count after all compiler values cross the
+ * eight-decimal Python literal boundary. Pinned Manim uses dash_length only to
+ * choose the count; its rendered open-line proportions then use dashed_ratio.
+ */
+export function resolveCompilerSafeDashedLinePattern(
+  aspectRatio: ProofCanvasAspectRatio,
+  width: number,
+  dashLength: number,
+  gapLength: number,
+): CompilerSafeDashedLinePattern | null {
+  const authored = resolveDashedLinePattern(width, dashLength, gapLength);
+  if (!authored || authored.count > PROOFCANVAS_SCHEMA_LIMITS.renderedDashesPerLineMax) return null;
+
+  const halfWidth = compilerDecimalNumber(editorLengthToManim(aspectRatio, width) / 2);
+  const preferredDashTick = Math.round(
+    compilerDecimalNumber(editorLengthToManim(aspectRatio, dashLength)) * COMPILER_DECIMAL_SCALE,
+  );
+  const preferredCompilerDashLength = preferredDashTick / COMPILER_DECIMAL_SCALE;
+  const preferredRatioTick = Math.round(compilerDecimalNumber(authored.dashedRatio) * COMPILER_DECIMAL_SCALE);
+
+  for (let offset = 0; offset <= COMPILER_DASH_RATIO_MAX_TICK_NUDGE; offset += 1) {
+    const candidates = offset === 0
+      ? [preferredRatioTick]
+      : [preferredRatioTick + offset, preferredRatioTick - offset];
+    for (const ratioTick of candidates) {
+      if (ratioTick < MIN_COMPILER_DASH_RATIO_TICK || ratioTick > MAX_COMPILER_DASH_RATIO_TICK) continue;
+      const dashedRatio = ratioTick / COMPILER_DECIMAL_SCALE;
+      const candidate = compilerDashCandidate(halfWidth, dashedRatio, authored.count, preferredDashTick);
+      if (!candidate) continue;
+      const compilerDashLength = candidate.dashTick / COMPILER_DECIMAL_SCALE;
+      if (
+        Math.abs(compilerDashLength - preferredCompilerDashLength) / preferredCompilerDashLength
+        > COMPILER_DASH_LENGTH_MAX_RELATIVE_DRIFT
+      ) continue;
+      return {
+        count: authored.count,
+        halfWidth,
+        dashLength: compilerDashLength,
+        dashedRatio,
+        topologyQuotient: candidate.quotient,
+      };
+    }
+  }
+  return null;
+}
 
 type ShapeObject = Pick<SceneObject, "type" | "transform" | "style" | "properties">;
 type UnknownRecord = Readonly<Record<string, unknown>>;
@@ -48,7 +192,57 @@ export type ResolvedShapeGeometry =
       kind: "brace";
       direction: BraceDirection;
       spacing: number;
+    }>
+  | Readonly<{ kind: "ellipse" }>
+  | Readonly<{
+      kind: "polygon";
+      vertices: NormalizedShapePoint[];
+      lineJoin: ShapeLineJoin;
+    }>
+  | Readonly<{
+      kind: "dashed-line";
+      lineCap: ShapeLineCap;
+      dashLength: number;
+      gapLength: number;
+    }>
+  | Readonly<{
+      kind: "double-arrow";
+      lineCap: ShapeLineCap;
+      startTipShape: ArrowTipShape;
+      endTipShape: ArrowTipShape;
+      tipSizeRatio: number;
+    }>
+  | Readonly<{
+      kind: "freeform-path";
+      nodes: FreeformShapeNode[];
+      closed: false;
+      lineCap: ShapeLineCap;
+      lineJoin: ShapeLineJoin;
+    }>
+  | Readonly<{
+      kind: "freeform-path";
+      nodes: FreeformShapeNode[];
+      closed: true;
+      lineJoin: ShapeLineJoin;
     }>;
+
+export interface NormalizedShapePoint {
+  x: number;
+  y: number;
+}
+
+export interface FreeformShapeNode {
+  point: NormalizedShapePoint;
+  inHandle?: NormalizedShapePoint;
+  outHandle?: NormalizedShapePoint;
+}
+
+export interface FreeformCubicSegment {
+  readonly start: NormalizedShapePoint;
+  readonly control1: NormalizedShapePoint;
+  readonly control2: NormalizedShapePoint;
+  readonly end: NormalizedShapePoint;
+}
 
 export interface ResolvedShapePaint {
   /** Null means the primitive is intentionally unfilled. */
@@ -117,6 +311,18 @@ export function resolveShapeDimensions(
   };
 }
 
+/** The immutable authored radius before the current rectangle dimensions clamp it. */
+export function resolveRectangleCornerRadiusRequest(object: ShapeObject, style: StylePack): number | null {
+  if (object.type !== "rectangle") return null;
+  const explicit = shapeValue(object, "rectangle", "cornerRadius");
+  const inherited = finiteInRange(style.corners.object, 0, PROOFCANVAS_SCHEMA_LIMITS.cornerRadiusMax)
+    ? style.corners.object
+    : 0;
+  return finiteInRange(explicit, 0, PROOFCANVAS_SCHEMA_LIMITS.cornerRadiusMax)
+    ? explicit
+    : inherited;
+}
+
 function shapeProperties(object: ShapeObject, kind: CurrentShapeType): UnknownRecord | null {
   const candidate = object.properties.shape;
   if (
@@ -153,12 +359,23 @@ export function isLinearShapeType(type: string): type is LinearShapeType {
 export function shapeAuthoringIssue(
   object: Pick<ShapeObject, "type" | "properties">,
 ): ShapeAuthoringIssue | undefined {
-  if (!isCurrentShapeType(object.type) || !Object.prototype.hasOwnProperty.call(object.properties, "shape")) return undefined;
+  if (!isCurrentShapeType(object.type)) return undefined;
+  if (!Object.prototype.hasOwnProperty.call(object.properties, "shape")) {
+    return (V4_NATIVE_SHAPE_TYPES as readonly string[]).includes(object.type) ? {
+      code: "SHAPE_SETTINGS_INVALID",
+      message: `Shape settings for ${object.type} require an exact bounded shape record.`,
+    } : undefined;
+  }
   const parsed = CurrentShapePropertiesSchema.safeParse(object.properties.shape);
-  if (!parsed.success) return {
-    code: "SHAPE_SETTINGS_INVALID",
-    message: `Shape settings for ${object.type} must use its exact bounded shape record.`,
-  };
+  if (!parsed.success) {
+    const issue = currentShapePropertiesIssue(object.properties.shape);
+    return {
+      code: "SHAPE_SETTINGS_INVALID",
+      message: issue
+        ? `${formatShapePropertiesIssue(issue)}.`
+        : `Shape settings for ${object.type} must use its exact bounded shape record.`,
+    };
+  }
   if (parsed.data.kind !== object.type) return {
     code: "SHAPE_SETTINGS_KIND_MISMATCH",
     message: `Shape settings kind ${parsed.data.kind} does not match object type ${object.type}.`,
@@ -243,13 +460,7 @@ export function resolveShapeGeometry(object: ShapeObject, style: StylePack): Res
     case "rectangle": {
       const { width, height } = resolveShapeDimensions(object);
       const maximum = Math.min(PROOFCANVAS_SCHEMA_LIMITS.cornerRadiusMax, width / 2, height / 2);
-      const explicit = shapeValue(object, "rectangle", "cornerRadius");
-      const inherited = finiteInRange(style.corners.object, 0, PROOFCANVAS_SCHEMA_LIMITS.cornerRadiusMax)
-        ? style.corners.object
-        : 0;
-      const requested = finiteInRange(explicit, 0, PROOFCANVAS_SCHEMA_LIMITS.cornerRadiusMax)
-        ? explicit
-        : inherited;
+      const requested = resolveRectangleCornerRadiusRequest(object, style) ?? 0;
       return { kind: "rectangle", cornerRadius: Math.min(requested, maximum) };
     }
     case "line":
@@ -289,7 +500,91 @@ export function resolveShapeGeometry(object: ShapeObject, style: StylePack): Res
           : LEGACY_BRACE_SPACING,
       };
     }
+    case "ellipse":
+      return { kind: "ellipse" };
+    case "polygon": {
+      const parsed = CurrentShapePropertiesSchema.safeParse(object.properties.shape);
+      const polygon = parsed.success && parsed.data.kind === "polygon" ? parsed.data : null;
+      return {
+        kind: "polygon",
+        vertices: (polygon?.vertices ?? [
+          { x: 0, y: -0.5 }, { x: 0.5, y: 0.5 }, { x: -0.5, y: 0.5 },
+        ]).map(({ x, y }) => ({ x, y })),
+        lineJoin: enumValue(polygon?.lineJoin, SHAPE_LINE_JOINS, LEGACY_SHAPE_LINE_JOIN),
+      };
+    }
+    case "dashed-line": {
+      const parsed = CurrentShapePropertiesSchema.safeParse(object.properties.shape);
+      const dashed = parsed.success && parsed.data.kind === "dashed-line" ? parsed.data : null;
+      return {
+        kind: "dashed-line",
+        lineCap: enumValue(dashed?.lineCap, SHAPE_LINE_CAPS, LEGACY_LINE_CAP),
+        dashLength: finiteInRange(dashed?.dashLength, PROOFCANVAS_SCHEMA_LIMITS.dashPatternLengthMin, PROOFCANVAS_SCHEMA_LIMITS.animationDimensionMax)
+          ? dashed.dashLength : DEFAULT_DASH_LENGTH,
+        gapLength: finiteInRange(dashed?.gapLength, PROOFCANVAS_SCHEMA_LIMITS.dashPatternLengthMin, PROOFCANVAS_SCHEMA_LIMITS.animationDimensionMax)
+          ? dashed.gapLength : DEFAULT_GAP_LENGTH,
+      };
+    }
+    case "double-arrow": {
+      const parsed = CurrentShapePropertiesSchema.safeParse(object.properties.shape);
+      const arrow = parsed.success && parsed.data.kind === "double-arrow" ? parsed.data : null;
+      return {
+        kind: "double-arrow",
+        lineCap: enumValue(arrow?.lineCap, SHAPE_LINE_CAPS, LEGACY_LINE_CAP),
+        startTipShape: enumValue(arrow?.startTipShape, ARROW_TIP_SHAPES, LEGACY_ARROW_TIP_SHAPE),
+        endTipShape: enumValue(arrow?.endTipShape, ARROW_TIP_SHAPES, LEGACY_ARROW_TIP_SHAPE),
+        tipSizeRatio: finiteInRange(arrow?.tipSizeRatio, MIN_ARROW_TIP_SIZE_RATIO, MAX_ARROW_TIP_SIZE_RATIO)
+          ? arrow.tipSizeRatio : LEGACY_ARROW_TIP_SIZE_RATIO,
+      };
+    }
+    case "freeform-path": {
+      const parsed = CurrentShapePropertiesSchema.safeParse(object.properties.shape);
+      const path = parsed.success && parsed.data.kind === "freeform-path" ? parsed.data : null;
+      const nodes = (path?.nodes ?? [
+        { point: { x: -0.5, y: 0.25 } },
+        { point: { x: 0, y: -0.25 } },
+        { point: { x: 0.5, y: 0.25 } },
+      ]).map(({ point, inHandle, outHandle }) => ({
+        point: { ...point },
+        ...(inHandle ? { inHandle: { ...inHandle } } : {}),
+        ...(outHandle ? { outHandle: { ...outHandle } } : {}),
+      }));
+      const lineJoin = enumValue(path?.lineJoin, SHAPE_LINE_JOINS, LEGACY_SHAPE_LINE_JOIN);
+      return path?.closed ? {
+        kind: "freeform-path",
+        nodes,
+        closed: true,
+        lineJoin,
+      } : {
+        kind: "freeform-path",
+        nodes,
+        closed: false,
+        lineCap: enumValue(path?.lineCap, SHAPE_LINE_CAPS, LEGACY_LINE_CAP),
+        lineJoin,
+      };
+    }
   }
+}
+
+function interpolateShapePoint(start: NormalizedShapePoint, end: NormalizedShapePoint, progress: number): NormalizedShapePoint {
+  return {
+    x: start.x + (end.x - start.x) * progress,
+    y: start.y + (end.y - start.y) * progress,
+  };
+}
+
+/** Exact cubic segments shared by SVG preview and pinned-Manim compilation. */
+export function freeformCubicSegments(
+  geometry: Extract<ResolvedShapeGeometry, { kind: "freeform-path" }>,
+): readonly FreeformCubicSegment[] {
+  const pairs = geometry.nodes.slice(0, -1).map((node, index) => [node, geometry.nodes[index + 1]] as const);
+  if (geometry.closed) pairs.push([geometry.nodes.at(-1)!, geometry.nodes[0]]);
+  return pairs.map(([start, end]) => ({
+    start: start.point,
+    control1: start.outHandle ?? interpolateShapePoint(start.point, end.point, 1 / 3),
+    control2: end.inHandle ?? interpolateShapePoint(start.point, end.point, 2 / 3),
+    end: end.point,
+  }));
 }
 
 /** One paint decision for browser primitives, arrow tips, and Manim decorators. */
@@ -299,9 +594,10 @@ export function resolveShapePaint(object: ShapeObject, style: StylePack): Resolv
   const stroke = validHex(object.style.stroke)
     ? object.style.stroke
     : fallbackStroke;
+  const supportsFill = objectTypeSupportsStyleProperty(object, "fill");
   const defaultFill = object.type === "rectangle"
     ? validHex(style.colors.ink) ? style.colors.ink : "#000000"
-    : object.type === "circle"
+    : supportsFill
       ? validHex(style.colors.background) ? style.colors.background : "#ffffff"
       : null;
   const fill = defaultFill !== null && validHex(object.style.fill) ? object.style.fill : defaultFill;

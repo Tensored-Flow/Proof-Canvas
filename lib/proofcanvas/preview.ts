@@ -169,7 +169,7 @@ function reduceShotPreview(
     const source = authoredObjects.get(id);
     const inherited = source?.parentId ? styleFor(source.parentId) : {};
     const supports = (property: string) => !["color", "fill", "stroke", "strokeWidth", "opacity"].includes(property)
-      || objectTypeSupportsStyleProperty(source?.type ?? "group", property as VisualStyleProperty);
+      || objectTypeSupportsStyleProperty(source ?? "group", property as VisualStyleProperty);
     const style = Object.fromEntries([...Object.entries(inherited), ...Object.entries(source?.style ?? {})].filter(([property]) => supports(property)));
     cascadedStyle.set(id, style);
     return style;
@@ -220,7 +220,7 @@ function reduceShotPreview(
       for (const styledId of styledIds) {
         const styledObject = byId.get(styledId);
         if (!styledObject) continue;
-        if (!objectTypeSupportsStyleProperty(styledObject.type, sample.property as VisualStyleProperty)) continue;
+        if (!objectTypeSupportsStyleProperty(styledObject, sample.property as VisualStyleProperty)) continue;
         if (styledId !== object.id && (!visibleIds.has(styledId) || !existsAtPreviewPhase(styledId))) continue;
         if ((sample.property === "opacity" || sample.property === "strokeWidth") && typeof sample.value === "number") {
           styledObject.style = { ...styledObject.style, [sample.property]: sample.value };

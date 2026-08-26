@@ -166,6 +166,38 @@ test("fails closed when parsed provider output does not match the strict schema"
 });
 
 test.each([
+  { operations: [{
+    type: "add-animation",
+    animation: {
+      id: "animation-provider-duplicate-target",
+      type: "move",
+      targetIds: ["object-title", "object-title"],
+      start: 1,
+      duration: 1,
+      easing: "linear",
+      properties: [
+        { key: "deltaX", value: { kind: "number", value: 10 } },
+      ],
+    },
+  }] },
+  { operations: [{
+    type: "update-animation",
+    animationId: "animation-title-write",
+    patch: [{ field: "targetIds", value: ["object-title", "object-title"] }],
+  }] },
+])("rejects provider-authored duplicate animation targets through shared operation validation", async ({ operations }) => {
+  const { client } = clientReturning({
+    intention: "Repeat the same animation target.",
+    summary: ["Repeat the target."],
+    operations,
+  });
+
+  await expect(proposeWithOpenAi(request(), CONFIGURATION, client)).rejects.toThrow(
+    /Duplicate animation target object-title; first targeted at index 0/,
+  );
+});
+
+test.each([
   { type: "emphasise", easing: "editorial", properties: [{ key: "scale", value: { kind: "number", value: 1.1 } }] },
   { type: "write", easing: "there-and-back", properties: [] },
 ] as const)("rejects newly provider-authored unsupported $type easing combinations", async ({ type, easing, properties }) => {

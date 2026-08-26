@@ -553,8 +553,8 @@ describe("timeline operations and compiler", () => {
     const yStretches = [...transformLine!.matchAll(/\.stretch\((-?[\de.]+), 1, about_point=ORIGIN\)/g)].map((match) => Number(match[1]));
     expect(xStretches.reduce((product, value) => product * value, 1)).toBeCloseTo(expectedXStretch, 7);
     expect(yStretches.reduce((product, value) => product * value, 1)).toBeCloseTo(expectedYStretch, 7);
-    expect(transformLine).toContain(`.rotate(${py(-initial.rotation)} * DEGREES, about_point=ORIGIN)`);
-    expect(transformLine).toContain(`.rotate(${py(final.rotation)} * DEGREES, about_point=ORIGIN)`);
+    expect(transformLine).toContain(`.rotate(${py(initial.rotation)} * DEGREES, about_point=ORIGIN)`);
+    expect(transformLine).toContain(`.rotate(${py(-final.rotation)} * DEGREES, about_point=ORIGIN)`);
     expect(transformLine).toContain(`.shift([${py(-(initial.x - 480) * coordinateScale)}, ${py(-(270 - initial.y) * coordinateScale)}, 0])`);
     expect(transformLine).toContain(`.shift([${py((final.x - 480) * coordinateScale)}, ${py((270 - final.y) * coordinateScale)}, 0])`);
     expect(initial.x).not.toBe(authored.x);

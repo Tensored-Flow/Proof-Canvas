@@ -343,6 +343,57 @@ class GeneratedScene(MovingCameraScene):
     assert (frames[0].max(axis=2) - frames[0].min(axis=2) > 20).sum() > 100
 
 
+def test_schema_v4_native_shape_dialect_constructs_in_pinned_manim(tmp_path: Path) -> None:
+    source = """from manim import *
+import math
+
+class GeneratedScene(MovingCameraScene):
+    def construct(self):
+        pc_ellipse = Ellipse(width=1.8, height=0.9).set_fill("#223344", opacity=1.0).set_stroke("#55ddff", width=3.0)
+        pc_ellipse.shift([-4.8, 2.2, 0])
+        pc_polygon = Polygon([-0.5, 0.5, 0], [0.5, 0.5, 0], [0.0, -0.5, 0], joint_type=LineJointType.BEVEL).stretch(1.8, 0, about_point=ORIGIN).stretch(1.2, 1, about_point=ORIGIN).set_fill("#332244", opacity=1.0).set_stroke("#ff88dd", width=3.0)
+        pc_polygon.shift([-2.4, 2.2, 0])
+        pc_dashed = DashedLine([-0.9, 0.0, 0], [0.9, 0.0, 0], dash_length=0.18, dashed_ratio=0.6, cap_style=CapStyleType.ROUND).set_stroke("#ffee55", width=5.0)
+        pc_dashed.shift([0.0, 2.2, 0])
+        pc_double = DoubleArrow([-0.9, 0.0, 0], [0.9, 0.0, 0], buff=0, max_tip_length_to_length_ratio=0.25, tip_shape_start=StealthTip, tip_shape_end=ArrowCircleFilledTip).set_cap_style(CapStyleType.SQUARE).set_color("#55ff88").set_stroke("#55ff88", width=3.0)
+        pc_double.shift([2.6, 2.2, 0])
+        pc_open = VMobject(joint_type=LineJointType.ROUND, cap_style=CapStyleType.ROUND).start_new_path([-0.5, 0.25, 0]).add_cubic_bezier_curve_to([-0.25, 0.25, 0], [-0.1, -0.25, 0], [0.0, -0.25, 0]).add_cubic_bezier_curve_to([0.1, -0.25, 0], [0.25, 0.25, 0], [0.5, 0.25, 0]).stretch(2.0, 0, about_point=ORIGIN).stretch(1.2, 1, about_point=ORIGIN).set_fill("#55aaff", opacity=0.0).set_stroke("#55aaff", width=4.0, opacity=0.8)
+        pc_open.shift([-2.0, -1.0, 0])
+        pc_closed = VMobject(joint_type=LineJointType.MITER).start_new_path([-0.5, 0.25, 0]).add_cubic_bezier_curve_to([-0.4, 0.1, 0], [-0.1, -0.25, 0], [0.0, -0.25, 0]).add_cubic_bezier_curve_to([0.1, -0.25, 0], [0.4, 0.1, 0], [0.5, 0.25, 0]).add_cubic_bezier_curve_to([0.25, 0.4, 0], [-0.25, 0.4, 0], [-0.5, 0.25, 0]).stretch(2.0, 0, about_point=ORIGIN).stretch(1.2, 1, about_point=ORIGIN).set_fill("#ff9955", opacity=1.0).set_stroke("#55ff88", width=4.0).set_opacity(0.7)
+        pc_closed.shift([2.0, -1.0, 0])
+        self.add(pc_ellipse, pc_polygon, pc_dashed, pc_double, pc_open, pc_closed)
+        self.play(Succession(Wait(0.1), group=Group(), run_time=0.1))
+"""
+    frames = render_probe(tmp_path, source, expected_frames=1)
+    assert (frames[0].max(axis=2) - frames[0].min(axis=2) > 20).sum() > 100
+
+
+@pytest.mark.parametrize(
+    ("half_width", "dash_length", "dashed_ratio", "expected_count"),
+    [
+        pytest.param(1.28888887, 0.26666671, 0.62068966, 6, id="real-parity-fixture"),
+        pytest.param(0.00555556, 0.01111111, 0.05, 2, id="minimum-two-dash-boundary"),
+        pytest.param(22.75555556, 0.08888889, 0.5, 256, id="maximum-256-dash-boundary"),
+    ],
+)
+def test_compiler_safe_dashed_literals_construct_exact_topology_in_pinned_manim(
+    half_width: float,
+    dash_length: float,
+    dashed_ratio: float,
+    expected_count: int,
+) -> None:
+    from manim import CapStyleType, DashedLine
+
+    line = DashedLine(
+        [-half_width, 0.0, 0.0],
+        [half_width, 0.0, 0.0],
+        dash_length=dash_length,
+        dashed_ratio=dashed_ratio,
+        cap_style=CapStyleType.BUTT,
+    )
+    assert len(line.submobjects) == expected_count
+
+
 def test_explicit_wait_wrapper_preserves_canonical_point_three_seconds(tmp_path: Path) -> None:
     source = """from manim import *
 import math

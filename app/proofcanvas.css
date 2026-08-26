@@ -191,6 +191,13 @@
 .pc-shape-properties > h3 { border-top: 1px solid var(--pc-rule-soft); padding-top: 6px; font-family: var(--font-display), Georgia, serif; font-size: 12px; font-weight: 620; text-transform: none; }
 .pc-shape-repair { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; border-left: 2px solid var(--pc-warm); padding-left: 6px; }
 .pc-shape-repair p { margin: 0; color: var(--pc-warm); font-family: var(--font-mono), monospace; font-size: 9px; line-height: 1.3; }
+.pc-shape-point-list { display: grid; gap: 6px; min-width: 0; }
+.pc-shape-point-list > h3, .pc-shape-point-list > p { margin: 0; }
+.pc-shape-point-list > h3 { font-family: var(--font-display), Georgia, serif; font-size: 12px; }
+.pc-shape-point { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; min-width: 0; border: 1px solid var(--pc-rule-soft); border-radius: 4px; background: color-mix(in srgb, var(--pc-paper) 72%, transparent); padding: 6px; }
+.pc-shape-point > strong { grid-column: 1 / -1; font-family: var(--font-mono), monospace; font-size: 9px; letter-spacing: .04em; text-transform: uppercase; }
+.pc-shape-point > label { display: grid; min-width: 0; gap: 2px; color: var(--pc-muted); font-family: var(--font-mono), monospace; font-size: 8px; text-transform: uppercase; }
+.pc-shape-point > button { min-width: 0; min-height: 28px; padding: 3px 5px; font-size: 9px; line-height: 1.15; }
 .pc-check input { width: auto; }
 .pc-lifetime-inspector { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 0 0 9px; border: 1px solid var(--pc-rule-soft); border-radius: 4px; padding: 7px; }
 .pc-lifetime-inspector legend { padding: 0 4px; font-family: var(--font-display), Georgia, serif; font-size: 13px; }

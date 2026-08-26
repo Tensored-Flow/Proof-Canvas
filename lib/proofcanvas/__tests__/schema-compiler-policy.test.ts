@@ -1,8 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { compileManim } from "../compiler";
 import { createCantorDemoProject } from "../demo";
+import { resolutionFor } from "../frame";
 import { previewShotAtTime } from "../preview";
-import { PROOFCANVAS_RENDER_SOURCE_MAX_BYTES, PROOFCANVAS_SCHEMA_LIMITS, ProjectDocumentSchema, cloneSerializable, type SceneObject } from "../schema";
+import { CurrentShapePropertiesSchema, PROOFCANVAS_RENDER_SOURCE_MAX_BYTES, PROOFCANVAS_SCHEMA_LIMITS, ProjectDocumentSchema, cloneSerializable, type SceneObject } from "../schema";
+import { resolveCompilerSafeDashedLinePattern } from "../shapeGeometry";
+import { insertShapePreset } from "../shapePresets";
 
 function validateWithRendererPolicy(source: string) {
   const script = [
@@ -17,6 +20,295 @@ function validateWithRendererPolicy(source: string) {
   ].join("; ");
   return spawnSync("python3", ["-c", script], { input: source, encoding: "utf8" });
 }
+
+test("all five schema-v4 native primitives compile deterministically through the pinned renderer policy", () => {
+  const project = cloneSerializable(createCantorDemoProject());
+  const shot = project.shots[0];
+  project.shots = [shot];
+  shot.objects = [];
+  shot.animations = [];
+  shot.propertyTracks = [];
+  shot.audioClips = [];
+  shot.captionClips = [];
+  shot.markers = [];
+  let authored = ProjectDocumentSchema.parse(project);
+  for (const presetId of ["ellipse", "polygon", "dashed-line", "double-arrow", "freeform-path"] as const) {
+    authored = insertShapePreset(authored, authored.shots[0].id, presetId);
+  }
+
+  const first = compileManim(authored);
+  const second = compileManim(cloneSerializable(authored));
+  expect(second).toEqual(first);
+  expect(first.diagnostics.filter(({ severity }) => severity === "error")).toEqual([]);
+  expect(first.python).toContain("Ellipse(width=");
+  expect(first.python).toContain("Polygon([0.0, 0.5, 0], [0.4755, 0.1545, 0]");
+  expect(first.python).toContain("joint_type=LineJointType.MITER");
+  expect(first.python).toContain("DashedLine(");
+  expect(first.python).toContain("dash_length=");
+  expect(first.python).toContain("dashed_ratio=0.60869565");
+  expect(first.python).toContain("cap_style=CapStyleType.BUTT");
+  expect(first.python).toContain("DoubleArrow(");
+  expect(first.python).toContain("tip_shape_start=ArrowTriangleFilledTip");
+  expect(first.python).toContain("tip_shape_end=ArrowTriangleFilledTip");
+  expect(first.python).toContain("VMobject(joint_type=LineJointType.ROUND, cap_style=CapStyleType.ROUND).start_new_path(");
+  expect(first.python.match(/\.add_cubic_bezier_curve_to\(/g)).toHaveLength(2);
+  const policy = validateWithRendererPolicy(first.python);
+  expect(policy.status).toBe(0);
+  expect(policy.stderr).toBe("");
+});
+
+test("the exact quantized polygon and freeform admission boundaries pass renderer policy", () => {
+  const project = cloneSerializable(createCantorDemoProject());
+  const shot = project.shots[0];
+  project.shots = [shot];
+  shot.animations = [];
+  shot.propertyTracks = [];
+  shot.audioClips = [];
+  shot.captionClips = [];
+  shot.markers = [];
+  shot.objects = [
+    {
+      id: "object-quantized-boundary-polygon",
+      type: "polygon",
+      name: "Quantized boundary polygon",
+      locked: false,
+      visible: true,
+      transform: { x: 240, y: 270, width: 120, height: 80, rotation: 0, scaleX: 1, scaleY: 1 },
+      style: {},
+      properties: {
+        shape: {
+          kind: "polygon",
+          lineJoin: "miter",
+          vertices: [
+            { x: -0.5, y: 0 },
+            { x: 0.5, y: 0 },
+            { x: 0, y: 0.000_001 },
+          ],
+        },
+      },
+    },
+    {
+      id: "object-quantized-boundary-freeform",
+      type: "freeform-path",
+      name: "Quantized boundary freeform",
+      locked: false,
+      visible: true,
+      transform: { x: 720, y: 270, width: 120, height: 80, rotation: 0, scaleX: 1, scaleY: 1 },
+      style: {},
+      properties: {
+        shape: {
+          kind: "freeform-path",
+          closed: false,
+          lineCap: "round",
+          lineJoin: "round",
+          nodes: [
+            { point: { x: 0, y: 0 } },
+            { point: { x: 3e-8, y: 0 } },
+          ],
+        },
+      },
+    },
+  ];
+
+  const valid = ProjectDocumentSchema.parse(project);
+  const compiled = compileManim(valid);
+  expect(compiled.diagnostics.filter(({ severity }) => severity === "error")).toEqual([]);
+  expect(compiled.python).toContain("Polygon([-0.5, 0.0, 0], [0.5, 0.0, 0], [0.0, -0.000001, 0]");
+  expect(compiled.python).toContain(
+    ".start_new_path([0.0, 0.0, 0])"
+      + ".add_cubic_bezier_curve_to([1e-8, 0.0, 0], [2e-8, 0.0, 0], [3e-8, 0.0, 0])",
+  );
+  const policy = validateWithRendererPolicy(compiled.python);
+  expect(policy.status).toBe(0);
+  expect(policy.stderr).toBe("");
+});
+
+test("the native parity fixture compiles to exactly six renderer-policy dashes", () => {
+  const project = cloneSerializable(createCantorDemoProject());
+  const shot = project.shots[0];
+  project.shots = [shot];
+  shot.objects = [];
+  shot.animations = [];
+  shot.propertyTracks = [];
+  shot.audioClips = [];
+  shot.captionClips = [];
+  shot.markers = [];
+  let authored = ProjectDocumentSchema.parse(project);
+  authored = insertShapePreset(authored, authored.shots[0].id, "dashed-line");
+  const dashed = authored.shots[0].objects[0];
+  dashed.transform.width = 174;
+  dashed.properties.shape = {
+    kind: "dashed-line",
+    lineCap: "round",
+    dashLength: 18,
+    gapLength: 11,
+  };
+
+  const compiled = compileManim(ProjectDocumentSchema.parse(authored));
+  expect(compiled.python).toContain(
+    "DashedLine([-1.28888887, 0, 0], [1.28888887, 0, 0], "
+      + "dash_length=0.26666671, dashed_ratio=0.62068966, cap_style=CapStyleType.ROUND)",
+  );
+  const policy = validateWithRendererPolicy(compiled.python);
+  expect(policy.status).toBe(0);
+  expect(policy.stderr).toBe("");
+});
+
+test("schema-valid dashed width transforms admit compiler-safe descriptor drift", () => {
+  const cases = [
+    { aspectRatio: "16:9", initialWidth: 174, targetWidth: 58, dashLength: 18, gapLength: 11 },
+    { aspectRatio: "9:16", initialWidth: 40, targetWidth: 4_096, dashLength: 1, gapLength: 19 },
+    { aspectRatio: "1:1", initialWidth: 512, targetWidth: 1, dashLength: 1, gapLength: 1 },
+    { aspectRatio: "1:1", initialWidth: 40.000_000_002, targetWidth: 40, dashLength: 1, gapLength: 19 },
+  ] as const;
+  let observedDashLengthDrift = false;
+  let observedRatioDrift = false;
+
+  for (const [index, testCase] of cases.entries()) {
+    const project = cloneSerializable(createCantorDemoProject());
+    const shot = project.shots[0];
+    project.settings.aspectRatio = testCase.aspectRatio;
+    project.settings.resolution = resolutionFor(testCase.aspectRatio, project.settings.renderPreset);
+    project.shots = [shot];
+    shot.objects = [];
+    shot.animations = [];
+    shot.propertyTracks = [];
+    shot.audioClips = [];
+    shot.captionClips = [];
+    shot.markers = [];
+    let authored = ProjectDocumentSchema.parse(project);
+    authored = insertShapePreset(authored, authored.shots[0].id, "dashed-line");
+    const dashed = authored.shots[0].objects[0];
+    dashed.transform.width = testCase.initialWidth;
+    dashed.properties.shape = {
+      kind: "dashed-line",
+      lineCap: "round",
+      dashLength: testCase.dashLength,
+      gapLength: testCase.gapLength,
+    };
+    authored.shots[0].animations = [{
+      id: `animation-dashed-width-${index}`,
+      type: "transform",
+      targetIds: [dashed.id],
+      start: 0,
+      duration: 1,
+      easing: "linear",
+      properties: { width: testCase.targetWidth },
+    }];
+
+    const initialPattern = resolveCompilerSafeDashedLinePattern(
+      testCase.aspectRatio,
+      testCase.initialWidth,
+      testCase.dashLength,
+      testCase.gapLength,
+    );
+    const targetPattern = resolveCompilerSafeDashedLinePattern(
+      testCase.aspectRatio,
+      testCase.targetWidth,
+      testCase.dashLength,
+      testCase.gapLength,
+    );
+    expect(initialPattern).not.toBeNull();
+    expect(targetPattern).not.toBeNull();
+    observedDashLengthDrift ||= targetPattern?.dashLength !== initialPattern?.dashLength;
+    observedRatioDrift ||= targetPattern?.dashedRatio !== initialPattern?.dashedRatio;
+
+    const compiled = compileManim(ProjectDocumentSchema.parse(authored));
+    expect(compiled.diagnostics.filter(({ severity }) => severity === "error")).toEqual([]);
+    const policy = validateWithRendererPolicy(compiled.python);
+    expect({ status: policy.status, stderr: policy.stderr }).toEqual({ status: 0, stderr: "" });
+  }
+  expect(observedDashLengthDrift).toBe(true);
+  expect(observedRatioDrift).toBe(true);
+});
+
+test("rounded rectangles preserve one authored-radius descriptor through dimension tracks and transforms", () => {
+  const cases = [
+    { authority: "track", dimension: "width" },
+    { authority: "track", dimension: "height" },
+    { authority: "animation", dimension: "width" },
+    { authority: "animation", dimension: "height" },
+  ] as const;
+
+  for (const [index, testCase] of cases.entries()) {
+    const project = cloneSerializable(createCantorDemoProject());
+    const shot = project.shots[0];
+    project.shots = [shot];
+    shot.objects = [];
+    shot.animations = [];
+    shot.propertyTracks = [];
+    shot.audioClips = [];
+    shot.captionClips = [];
+    shot.markers = [];
+    const authored = insertShapePreset(ProjectDocumentSchema.parse(project), shot.id, "rounded-rectangle");
+    const rectangle = authored.shots[0].objects[0];
+    rectangle.transform.width = 200;
+    rectangle.transform.height = 160;
+    rectangle.properties.shape = { kind: "rectangle", cornerRadius: 40 };
+    if (testCase.authority === "track") {
+      authored.shots[0].propertyTracks = [{
+        id: `track-rounded-${testCase.dimension}-${index}`,
+        target: { kind: "object", objectId: rectangle.id },
+        property: testCase.dimension,
+        keyframes: [
+          { id: `keyframe-rounded-${index}-a`, time: 0, value: rectangle.transform[testCase.dimension]!, interpolation: { kind: "linear" } },
+          { id: `keyframe-rounded-${index}-b`, time: 1, value: 20, interpolation: { kind: "linear" } },
+        ],
+      }];
+    } else {
+      authored.shots[0].animations = [{
+        id: `animation-rounded-${testCase.dimension}-${index}`,
+        type: "transform",
+        targetIds: [rectangle.id],
+        start: 0,
+        duration: 1,
+        easing: "linear",
+        properties: { [testCase.dimension]: 20 },
+      }];
+    }
+
+    const compiled = compileManim(ProjectDocumentSchema.parse(authored));
+    expect(compiled.diagnostics.filter(({ severity }) => severity === "error")).toEqual([]);
+    const descriptors = [...compiled.python.matchAll(
+      /RoundedRectangle\(corner_radius=min\(([^,]+), ([^ ]+) \/ 2\.0, ([^ ]+) \/ 2\.0\), width=\2, height=\3\)/g,
+    )];
+    expect(descriptors.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(descriptors.map((match) => match[1]))).toHaveProperty("size", 1);
+    const policy = validateWithRendererPolicy(compiled.python);
+    expect({ status: policy.status, stderr: policy.stderr }).toEqual({ status: 0, stderr: "" });
+  }
+});
+
+test("sub-emission rounded-rectangle radii compile as policy-safe rectangles", () => {
+  const project = cloneSerializable(createCantorDemoProject());
+  const shot = project.shots[0];
+  project.shots = [shot];
+  shot.objects = [];
+  shot.animations = [];
+  shot.propertyTracks = [];
+  shot.audioClips = [];
+  shot.captionClips = [];
+  shot.markers = [];
+  const authored = insertShapePreset(ProjectDocumentSchema.parse(project), shot.id, "rounded-rectangle");
+  const rectangle = authored.shots[0].objects[0];
+  rectangle.properties.shape = { kind: "rectangle", cornerRadius: 1e-9 };
+  authored.shots[0].animations = [{
+    id: "animation-sub-emission-rounded-width",
+    type: "transform",
+    targetIds: [rectangle.id],
+    start: 0,
+    duration: 1,
+    easing: "linear",
+    properties: { width: 10 },
+  }];
+
+  const compiled = compileManim(ProjectDocumentSchema.parse(authored));
+  expect(compiled.diagnostics.filter(({ severity }) => severity === "error")).toEqual([]);
+  expect(compiled.python).not.toContain("RoundedRectangle(");
+  expect(compiled.python).toContain(".copy().become(Rectangle(width=");
+  const policy = validateWithRendererPolicy(compiled.python);
+  expect({ status: policy.status, stderr: policy.stderr }).toEqual({ status: 0, stderr: "" });
+});
 
 test("an actual compiler-owned custom Bezier helper and rate lambda pass the renderer policy", () => {
   const project = cloneSerializable(createCantorDemoProject());
@@ -167,7 +459,7 @@ test("a project at direct numeric schema bounds exercises the compiler method ma
   expect(compiled.python).toContain("self.camera.frame.become(Rectangle(width=config.frame_width");
   expect(compiled.python).toContain("pc_uncountable_yet_zero_length.scale(min(");
   expect(compiled.python).toContain("pc_uncountable_yet_zero_length.shift(");
-  expect(compiled.python).toContain("pc_uncountable_yet_zero_length.rotate(3600.0 * DEGREES, about_point=ORIGIN)");
+  expect(compiled.python).toContain("pc_uncountable_yet_zero_length.rotate(-3600.0 * DEGREES, about_point=ORIGIN)");
   expect(compiled.python).toContain("pc_uncountable_yet_zero_length.stretch(-0.01, 0, about_point=ORIGIN).stretch(100.0, 1, about_point=ORIGIN)");
   expect(compiled.python).toMatch(/pc_ref_[a-f0-9_]+ = pc_[a-z0-9_]+\.copy\(\)/);
   expect(compiled.python).toMatch(/pc_ref_[a-f0-9_]+\.copy\(\).*\.set_opacity\((?:0|1)\.0\)/);
@@ -453,6 +745,29 @@ test("deduplicates and caps hidden diagnostics at the exact 1024 empty-group wor
 });
 
 describe("object style capability contract", () => {
+  function freeformProject(closed: boolean) {
+    const project = cloneSerializable(createCantorDemoProject());
+    const shot = project.shots[0];
+    project.shots = [shot];
+    shot.objects = [];
+    shot.animations = [];
+    shot.propertyTracks = [];
+    shot.audioClips = [];
+    shot.captionClips = [];
+    shot.markers = [];
+    const inserted = insertShapePreset(ProjectDocumentSchema.parse(project), shot.id, "freeform-path");
+    const path = inserted.shots[0].objects.find(({ type }) => type === "freeform-path")!;
+    const source = CurrentShapePropertiesSchema.parse(path.properties.shape);
+    if (source.kind !== "freeform-path") throw new Error("Expected the freeform preset shape record");
+    path.properties.shape = closed ? {
+      kind: "freeform-path",
+      closed: true,
+      lineJoin: source.lineJoin,
+      nodes: source.nodes,
+    } : source;
+    return { project: inserted, shot: inserted.shots[0], path };
+  }
+
   function assetProject(type: "image" | "svg") {
     const project = cloneSerializable(createCantorDemoProject());
     const shot = project.shots[1];
@@ -533,5 +848,86 @@ describe("object style capability contract", () => {
       object.style.stroke = "#123456";
       expect(ProjectDocumentSchema.safeParse(project).success).toBe(false);
     }
+  });
+
+  test("admits fill authority only for closed freeform paths", () => {
+    const closed = freeformProject(true);
+    closed.path.style = { fill: "#123456", stroke: "#654321", strokeWidth: 4, opacity: 0.75 };
+    closed.shot.propertyTracks = [{
+      id: "track-closed-freeform-fill",
+      target: { kind: "object", objectId: closed.path.id },
+      property: "fill",
+      keyframes: [
+        { id: "keyframe-closed-freeform-fill-a", time: 0, value: "#123456", interpolation: { kind: "linear" } },
+        { id: "keyframe-closed-freeform-fill-b", time: 1, value: "#abcdef", interpolation: { kind: "linear" } },
+      ],
+    }];
+    expect(ProjectDocumentSchema.safeParse(closed.project).success).toBe(true);
+
+    const openStyle = freeformProject(false);
+    openStyle.path.style.fill = "#123456";
+    const directStyle = ProjectDocumentSchema.safeParse(openStyle.project);
+    expect(directStyle.success).toBe(false);
+    if (!directStyle.success) expect(directStyle.error.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: expect.arrayContaining(["style", "fill"]), message: expect.stringContaining("do not support fill styling") }),
+    ]));
+
+    const openTrack = freeformProject(false);
+    openTrack.shot.propertyTracks = [{
+      id: "track-open-freeform-fill",
+      target: { kind: "object", objectId: openTrack.path.id },
+      property: "fill",
+      keyframes: [{ id: "keyframe-open-freeform-fill", time: 0, value: "#123456", interpolation: { kind: "linear" } }],
+    }];
+    const directTrack = ProjectDocumentSchema.safeParse(openTrack.project);
+    expect(directTrack.success).toBe(false);
+    if (!directTrack.success) expect(directTrack.error.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: expect.arrayContaining(["propertyTracks", 0, "property"]), message: expect.stringContaining("do not support fill tracks") }),
+    ]));
+  });
+
+  test("compiles closed freeform fill and opacity tracks through policy and rejects paint tampering", () => {
+    const { project, shot, path } = freeformProject(true);
+    path.style = { fill: "#123456", stroke: "#654321", strokeWidth: 4, opacity: 0.75 };
+    shot.propertyTracks = [
+      {
+        id: "track-closed-freeform-fill-policy",
+        target: { kind: "object", objectId: path.id },
+        property: "fill",
+        keyframes: [
+          { id: "keyframe-closed-freeform-fill-policy-a", time: 0, value: "#123456", interpolation: { kind: "linear" } },
+          { id: "keyframe-closed-freeform-fill-policy-b", time: 1, value: "#abcdef", interpolation: { kind: "linear" } },
+        ],
+      },
+      {
+        id: "track-closed-freeform-opacity-policy",
+        target: { kind: "object", objectId: path.id },
+        property: "opacity",
+        keyframes: [
+          { id: "keyframe-closed-freeform-opacity-policy-a", time: 0, value: 0.75, interpolation: { kind: "linear" } },
+          { id: "keyframe-closed-freeform-opacity-policy-b", time: 1, value: 0.4, interpolation: { kind: "linear" } },
+        ],
+      },
+    ];
+    const compiled = compileManim(ProjectDocumentSchema.parse(project));
+    expect(compiled.diagnostics.filter(({ severity }) => severity === "error")).toEqual([]);
+    expect(compiled.python).toContain("VMobject(joint_type=LineJointType.ROUND).start_new_path(");
+    expect(compiled.python).not.toContain("VMobject(joint_type=LineJointType.ROUND, cap_style=");
+    expect(compiled.python).toContain('.set_fill("#123456", opacity=1.0).set_stroke("#654321", width=4.0).set_opacity(0.75)');
+    expect(compiled.python).toContain('.set_fill("#abcdef", opacity=1.0)');
+    expect(compiled.python).toContain(".set_opacity(0.4)");
+    expect(compiled.python).toMatch(/\.copy\(\)\.become\(VMobject\([\s\S]+?\)\.set_opacity\(0\.4\)/);
+    const policy = validateWithRendererPolicy(compiled.python);
+    expect(policy.status).toBe(0);
+    expect(policy.stderr).toBe("");
+
+    const tampered = compiled.python.replace(
+      '.set_fill("#123456", opacity=1.0)',
+      '.set_fill("#123456", opacity=0.0)',
+    );
+    expect(tampered).not.toBe(compiled.python);
+    const rejected = validateWithRendererPolicy(tampered);
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stderr).toContain("SourcePolicyError");
   });
 });

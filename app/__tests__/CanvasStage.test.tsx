@@ -6,7 +6,7 @@ import { createCantorDemoProject } from '@/lib/proofcanvas/demo'
 import { logicalFrameFor, resolutionFor, type ProofCanvasAspectRatio } from '@/lib/proofcanvas/frame'
 import * as latexAuthority from '@/lib/proofcanvas/latex'
 import * as graphAuthority from '@/lib/proofcanvas/graphExpression'
-import { ProjectDocumentSchema, cloneSerializable, type SceneObject } from '@/lib/proofcanvas/schema'
+import { ProjectDocumentSchema, cloneSerializable, resolveDashedLinePattern, type SceneObject } from '@/lib/proofcanvas/schema'
 import { resolveArrowPreviewGeometry } from '@/lib/proofcanvas/shapeGeometry'
 import { insertShapePreset, PROOFCANVAS_SHAPE_PRESET_MIME } from '@/lib/proofcanvas/shapePresets'
 
@@ -108,6 +108,65 @@ test('text and math glyph color follows nested/keyframed fill with fill over col
   compilable.shots[0].propertyTracks[0].keyframes[0].time = 0
   const source = compileManim(ProjectDocumentSchema.parse(compilable)).python
   expect(source.match(/\.set_fill\("#ffffff", opacity=1\.0\)/g)).toHaveLength(2)
+})
+
+test('applies inherited fill only to closed freeforms while opacity fades closed fill and open stroke', () => {
+  const project = cloneSerializable(createCantorDemoProject())
+  const shot = project.shots[0]
+  project.shots = [shot]
+  shot.animations = []
+  const group: SceneObject = {
+    id: 'group-freeform-paint', type: 'group', name: 'Freeform paint', locked: false, visible: true,
+    transform: { x: 480, y: 270, rotation: 0, scaleX: 1, scaleY: 1 }, style: { fill: '#000000' }, properties: {},
+  }
+  const nodes = [
+    { point: { x: -0.5, y: 0.25 } },
+    { point: { x: 0, y: -0.5 } },
+    { point: { x: 0.5, y: 0.25 } },
+  ]
+  const closed: SceneObject = {
+    id: 'object-freeform-closed-fill', parentId: group.id, type: 'freeform-path', name: 'Closed freeform', locked: false, visible: true,
+    transform: { x: 320, y: 270, width: 180, height: 100, rotation: 0, scaleX: 1, scaleY: 1 },
+    style: { stroke: '#123456', strokeWidth: 4 },
+    properties: { shape: { kind: 'freeform-path', closed: true, lineJoin: 'round', nodes } },
+  }
+  const open: SceneObject = {
+    ...cloneSerializable(closed), id: 'object-freeform-open-fill', name: 'Open freeform',
+    transform: { ...closed.transform, x: 640 },
+    properties: { shape: { kind: 'freeform-path', closed: false, lineCap: 'round', lineJoin: 'round', nodes } },
+  }
+  shot.objects = [group, closed, open]
+  shot.propertyTracks = [
+    { id: 'track-group-freeform-fill', target: { kind: 'object', objectId: group.id }, property: 'fill', keyframes: [
+      { id: 'keyframe-group-freeform-fill-a', time: 0, value: '#000000', interpolation: { kind: 'linear' } },
+      { id: 'keyframe-group-freeform-fill-b', time: 2, value: '#ffffff', interpolation: { kind: 'linear' } },
+    ] },
+    { id: 'track-group-freeform-opacity', target: { kind: 'object', objectId: group.id }, property: 'opacity', keyframes: [
+      { id: 'keyframe-group-freeform-opacity-a', time: 0, value: 1, interpolation: { kind: 'linear' } },
+      { id: 'keyframe-group-freeform-opacity-b', time: 2, value: 0, interpolation: { kind: 'linear' } },
+    ] },
+  ]
+  const parsed = ProjectDocumentSchema.parse(project)
+  const props = {
+    project: parsed,
+    shot: parsed.shots[0],
+    previewStyle: parsed.styles.find(({ id }) => id === parsed.activeStyleId)!,
+    projectRevision: 'freeform-paint-cascade',
+    previewQuality: parsed.settings.previewQuality,
+    selectedIds: [],
+    onSelect: jest.fn(),
+    onCommitTransforms: jest.fn(),
+    onCommitKeyboardTransform: jest.fn(),
+    onNotice: jest.fn(),
+  }
+  const view = render(<CanvasStage {...props} playhead={1}/>)
+  const closedGroup = view.container.querySelector('[data-object-id="object-freeform-closed-fill"]')!
+  const openGroup = view.container.querySelector('[data-object-id="object-freeform-open-fill"]')!
+  expect(closedGroup).toHaveAttribute('opacity', '0.5')
+  expect(openGroup).toHaveAttribute('opacity', '0.5')
+  expect(closedGroup.querySelector('path:not([stroke="transparent"])')).toHaveAttribute('fill', '#808080')
+  expect(openGroup.querySelector('path:not([stroke="transparent"])')).toHaveAttribute('fill', 'none')
+  expect(openGroup.querySelector('path:not([stroke="transparent"])')).toHaveAttribute('stroke', '#123456')
 })
 
 test('graph stroke width uses the object override', () => {
@@ -904,6 +963,65 @@ test('owns only the fixed shape-preset drag contract and reports every unavailab
   expect(validDrop.defaultPrevented).toBe(true)
   expect(onInsertShapePresetAt).toHaveBeenCalledTimes(1)
   expect(onInsertShapePresetAt).toHaveBeenCalledWith('arrow', { x: 600, y: 200 })
+})
+
+test('renders exact SVG geometry for all five schema-v4 native primitives', () => {
+  const project = cloneSerializable(createCantorDemoProject())
+  project.shots = [project.shots[0]]
+  project.shots[0].objects = []
+  project.shots[0].animations = []
+  project.shots[0].propertyTracks = []
+  let authored = ProjectDocumentSchema.parse(project)
+  for (const presetId of ['ellipse', 'polygon', 'dashed-line', 'double-arrow', 'freeform-path'] as const) {
+    authored = insertShapePreset(authored, authored.shots[0].id, presetId)
+  }
+  const frame = logicalFrameFor(authored.settings.aspectRatio)
+  const tip = resolveArrowPreviewGeometry(180, 'triangle', 0.25, 0.35 * frame.width / frame.manimWidth)
+  const dash = resolveDashedLinePattern(180, 14, 9)!
+  const view = render(<CanvasStage
+    project={authored}
+    shot={authored.shots[0]}
+    playhead={0}
+    previewStyle={authored.styles.find(({ id }) => id === authored.activeStyleId)!}
+    projectRevision="v4-native-preview"
+    previewQuality={authored.settings.previewQuality}
+    selectedIds={[]}
+    onSelect={jest.fn()}
+    onCommitTransforms={jest.fn()}
+    onCommitKeyboardTransform={jest.fn()}
+    onNotice={jest.fn()}
+  />)
+
+  const ellipse = view.container.querySelector('[data-object-type="ellipse"]')!
+  expect(ellipse).toHaveAttribute('rx', '70')
+  expect(ellipse).toHaveAttribute('ry', '42')
+
+  const polygon = view.container.querySelector('[data-object-type="polygon"]')!
+  expect(polygon).toHaveAttribute('points', '0,-60 61.815,-18.54 38.207,48.540000000000006 -38.207,48.540000000000006 -61.815,-18.54')
+  expect(polygon).toHaveAttribute('stroke-linejoin', 'miter')
+
+  const dashed = view.container.querySelector('[data-object-type="dashed-line"]')!
+  expect(dashed).toHaveAttribute('data-dash-count', String(dash.count))
+  expect(dashed).toHaveAttribute('data-dash-length', '14')
+  expect(dashed).toHaveAttribute('data-gap-length', '9')
+  expect(dashed.querySelector('line:not([stroke="transparent"])')).toHaveAttribute(
+    'stroke-dasharray', `${dash.renderedDashLength} ${dash.renderedGapLength}`,
+  )
+
+  const doubleArrow = view.container.querySelector('[data-object-type="double-arrow"]')!
+  const shaft = doubleArrow.querySelector('line:not([stroke="transparent"])')!
+  expect(shaft).toHaveAttribute('x1', String(-tip.shaftEndX))
+  expect(shaft).toHaveAttribute('x2', String(tip.shaftEndX))
+  expect(doubleArrow.querySelector('[data-arrow-tip-side="start"]')).toHaveAttribute('data-arrow-tip-shape', 'triangle')
+  expect(doubleArrow.querySelector('[data-arrow-tip-side="end"]')).toHaveAttribute('data-arrow-tip-shape', 'triangle')
+
+  const freeform = view.container.querySelector('[data-object-type="freeform-path"]')!
+  expect(freeform).toHaveAttribute('data-freeform-closed', 'false')
+  expect(freeform.querySelector('path:not([stroke="transparent"])')).toHaveAttribute(
+    'd', 'M -100 20 C -64 -42, -40 24, 0 -8 C 44 -38, 60 42, 100 18',
+  )
+  expect(freeform.querySelector('path:not([stroke="transparent"])')).toHaveAttribute('stroke-linecap', 'round')
+  expect(freeform.querySelector('path:not([stroke="transparent"])')).toHaveAttribute('stroke-linejoin', 'round')
 })
 
 test.each([

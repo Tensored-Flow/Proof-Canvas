@@ -10,7 +10,6 @@ import {
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
   LEGACY_FLOAT_TIMELINE_SCHEMA_VERSION,
-  PROJECT_SCHEMA_VERSION,
   canonicalProjectJson,
   classifyLegacyV2ProjectDocument,
   parseProjectDocument,
@@ -139,6 +138,12 @@ const MIGRATIONS: readonly Migration[] = [{
   `,
   dataTransformVersion: "loss-aware-v2-to-v3-r1",
   apply: applyLossAwareV3TimelineMigration,
+}, {
+  version: 3,
+  name: "v4-native-shapes-and-target-sets",
+  sql: "",
+  dataTransformVersion: "stable-target-set-v3-to-v4-r2",
+  apply: applyV4NativeShapeAndTargetSetMigration,
 }];
 
 const MIGRATION_TABLE_SQL = `
@@ -150,6 +155,12 @@ const MIGRATION_TABLE_SQL = `
   ) STRICT;
 `;
 const LOSSLESS_V2_ARCHIVE_REASON = "Lossless schema-v2 to schema-v3 fixed-tick migration";
+const FIXED_TICK_PROJECT_SCHEMA_VERSION = 3 as const;
+const NATIVE_SHAPE_PROJECT_SCHEMA_VERSION = 4 as const;
+const FIXED_TICK_V3_OBJECT_TYPES: ReadonlySet<string> = new Set([
+  "text", "math", "circle", "rectangle", "line", "arrow", "brace",
+  "axes", "graph", "image", "svg", "group",
+]);
 
 function checksum(migration: Migration): string {
   const transformMaterial = migration.dataTransformVersion === undefined ? "" : `\ndata:${migration.dataTransformVersion}`;
@@ -158,6 +169,60 @@ function checksum(migration: Migration): string {
 
 function exactDocumentSha256(raw: string): string {
   return createHash("sha256").update(raw, "utf8").digest("hex");
+}
+
+function canonicalMigrationJson(value: unknown): string {
+  const canonicalize = (candidate: unknown): unknown => {
+    if (Array.isArray(candidate)) return candidate.map(canonicalize);
+    if (candidate && typeof candidate === "object") {
+      return Object.fromEntries(Object.keys(candidate as Record<string, unknown>).sort().map((key) => [key, canonicalize((candidate as Record<string, unknown>)[key])]));
+    }
+    return candidate;
+  };
+  return `${JSON.stringify(canonicalize(value), null, 2)}\n`;
+}
+
+/**
+ * Validate the byte-canonical historical V3 source before applying the V4
+ * migration. V4 may stably remove repeated animation target IDs, so canonical
+ * source validation cannot be reconstructed from the migrated document.
+ */
+function parseCanonicalV3Document(raw: string, label: string): ProjectDocument {
+  let source: unknown;
+  try {
+    source = JSON.parse(raw);
+  } catch {
+    throw new Error(`${label} is not a valid schema-v3 document`);
+  }
+  if (!source || typeof source !== "object" || (source as { schemaVersion?: unknown }).schemaVersion !== FIXED_TICK_PROJECT_SCHEMA_VERSION) {
+    throw new Error(`${label} is not a valid schema-v3 document`);
+  }
+  if (canonicalMigrationJson(source) !== raw) throw new Error(`${label} schema-v3 JSON is not canonical`);
+  let document: ProjectDocument;
+  try {
+    document = parseProjectDocument(source);
+  } catch {
+    throw new Error(`${label} is not a valid schema-v3 document`);
+  }
+  if (document.schemaVersion !== NATIVE_SHAPE_PROJECT_SCHEMA_VERSION) {
+    throw new Error(`${label} schema-v3 migration did not reach schema version ${NATIVE_SHAPE_PROJECT_SCHEMA_VERSION}`);
+  }
+  for (const shot of document.shots) {
+    const unsupported = shot.objects.find((object) => !FIXED_TICK_V3_OBJECT_TYPES.has(object.type));
+    if (unsupported) throw new Error(`${label} schema-v3 document uses schema-v4 object type ${unsupported.type}`);
+  }
+  return document;
+}
+
+function canonicalHistoricalV3Json(document: ProjectDocument, label: string): string {
+  if (document.schemaVersion !== NATIVE_SHAPE_PROJECT_SCHEMA_VERSION) {
+    throw new Error(`${label} schema-v2 migration did not reach schema version ${NATIVE_SHAPE_PROJECT_SCHEMA_VERSION}`);
+  }
+  for (const shot of document.shots) {
+    const unsupported = shot.objects.find((object) => !FIXED_TICK_V3_OBJECT_TYPES.has(object.type));
+    if (unsupported) throw new Error(`${label} schema-v2 document uses post-schema-v3 object type ${unsupported.type}`);
+  }
+  return canonicalMigrationJson({ ...document, schemaVersion: FIXED_TICK_PROJECT_SCHEMA_VERSION });
 }
 
 function legacyProjectCounters(candidate: unknown): { shotCount: number; objectCount: number; durationSeconds: number } {
@@ -341,9 +406,8 @@ function applyLossAwareV3TimelineMigration(database: SqliteDatabase, appliedAt: 
     let rawDocument: unknown;
     try { rawDocument = JSON.parse(row.document_json); } catch { throw new Error(`Project ${row.id} document is invalid JSON`); }
     const version = rawDocument && typeof rawDocument === "object" ? (rawDocument as { schemaVersion?: unknown }).schemaVersion : undefined;
-    if (version === PROJECT_SCHEMA_VERSION) {
-      const document = parseProjectDocument(row.document_json);
-      if (canonicalProjectJson(document) !== row.document_json) throw new Error(`Project ${row.id} schema-v3 JSON is not canonical`);
+    if (version === FIXED_TICK_PROJECT_SCHEMA_VERSION) {
+      parseCanonicalV3Document(row.document_json, `Project ${row.id}`);
       continue;
     }
     const { parsed, classification } = classifyPersistedLegacyDocument(row.document_json);
@@ -367,7 +431,7 @@ function applyLossAwareV3TimelineMigration(database: SqliteDatabase, appliedAt: 
         document_json = ?, document_state = 'ready', shot_count = ?, object_count = ?, duration_seconds = ?
         WHERE id = ?`)
         .run(
-          canonicalProjectJson(document),
+          canonicalHistoricalV3Json(document, `Project ${row.id}`),
           document.shots.length,
           document.shots.reduce((sum, shot) => sum + shot.objects.length, 0),
           projectDurationSeconds(document),
@@ -398,9 +462,8 @@ function applyLossAwareV3TimelineMigration(database: SqliteDatabase, appliedAt: 
   for (const row of checkpoints) {
     let version: unknown;
     try { version = (JSON.parse(row.document_json) as { schemaVersion?: unknown }).schemaVersion; } catch { throw new Error(`Checkpoint ${row.id} document is invalid JSON`); }
-    if (version === PROJECT_SCHEMA_VERSION) {
-      const document = parseProjectDocument(row.document_json);
-      if (canonicalProjectJson(document) !== row.document_json) throw new Error(`Checkpoint ${row.id} schema-v3 JSON is not canonical`);
+    if (version === FIXED_TICK_PROJECT_SCHEMA_VERSION) {
+      parseCanonicalV3Document(row.document_json, `Checkpoint ${row.id}`);
       continue;
     }
     const { parsed, classification } = classifyPersistedLegacyDocument(row.document_json);
@@ -420,10 +483,59 @@ function applyLossAwareV3TimelineMigration(database: SqliteDatabase, appliedAt: 
     });
     if (classification.status === "migrated") {
       database.prepare("UPDATE checkpoints SET document_json = ?, document_state = 'ready' WHERE id = ?")
-        .run(canonicalProjectJson(classification.document), row.id);
+        .run(canonicalHistoricalV3Json(classification.document, `Checkpoint ${row.id}`), row.id);
     } else {
       database.prepare("UPDATE checkpoints SET document_state = 'recovery-required' WHERE id = ?").run(row.id);
     }
+  }
+}
+
+function migrateReadyV3DocumentToV4(raw: string, label: string): string {
+  let version: unknown;
+  try {
+    const candidate = JSON.parse(raw) as { schemaVersion?: unknown };
+    version = candidate?.schemaVersion;
+  } catch {
+    throw new Error(`${label} document is invalid JSON`);
+  }
+  if (version === FIXED_TICK_PROJECT_SCHEMA_VERSION) {
+    const document = parseCanonicalV3Document(raw, label);
+    const migrated = canonicalProjectJson(document);
+    if (document.schemaVersion !== NATIVE_SHAPE_PROJECT_SCHEMA_VERSION) {
+      throw new Error(`${label} migration did not reach schema version ${NATIVE_SHAPE_PROJECT_SCHEMA_VERSION}`);
+    }
+    return migrated;
+  }
+  if (version === NATIVE_SHAPE_PROJECT_SCHEMA_VERSION) {
+    let document: ProjectDocument;
+    try {
+      document = parseProjectDocument(raw);
+    } catch {
+      throw new Error(`${label} is not a valid schema-v4 document`);
+    }
+    if (document.schemaVersion !== NATIVE_SHAPE_PROJECT_SCHEMA_VERSION || canonicalProjectJson(document) !== raw) {
+      throw new Error(`${label} schema-v4 JSON is not canonical`);
+    }
+    return raw;
+  }
+  throw new Error(`${label} ready document must be canonical schema version 3 or 4`);
+}
+
+function applyV4NativeShapeAndTargetSetMigration(database: SqliteDatabase): void {
+  const projects = database.prepare(`SELECT id, document_json
+    FROM projects WHERE document_state = 'ready' ORDER BY id`).all() as Array<{ id: string; document_json: string }>;
+  const updateProject = database.prepare("UPDATE projects SET document_json = ? WHERE id = ? AND document_state = 'ready'");
+  for (const row of projects) {
+    const migrated = migrateReadyV3DocumentToV4(row.document_json, `Project ${row.id}`);
+    if (migrated !== row.document_json) updateProject.run(migrated, row.id);
+  }
+
+  const checkpoints = database.prepare(`SELECT id, document_json
+    FROM checkpoints WHERE document_state = 'ready' ORDER BY id`).all() as Array<{ id: string; document_json: string }>;
+  const updateCheckpoint = database.prepare("UPDATE checkpoints SET document_json = ? WHERE id = ? AND document_state = 'ready'");
+  for (const row of checkpoints) {
+    const migrated = migrateReadyV3DocumentToV4(row.document_json, `Checkpoint ${row.id}`);
+    if (migrated !== row.document_json) updateCheckpoint.run(migrated, row.id);
   }
 }
 

@@ -154,10 +154,11 @@ Deploy exactly one application instance on a persistent local volume behind HTTP
 [`DEPLOY.md`](./DEPLOY.md) for secrets, health checks, backup/restore, and the bounded Docker setup.
 
 Renderer jobs are process-local, ephemeral, and lost on restart. Render requests transfer generated
-source only; checked-in image paths need a future trusted asset-packaging design. The direct editor
-is demonstrated for 16:9 desktop layouts; 9:16 is accepted by the schema but not browser-validated.
-Automated tests and accessibility scans do not replace human usability or assistive-technology
-review.
+source only; checked-in image paths still need the V1 trusted asset-packaging path. Native-shape
+authoring and its deep inspector were exercised in production Chromium at a 1024x1366 viewport with
+a 540x960 9:16 authored frame and no page overflow. That is bounded portrait-authoring evidence,
+not qualification of the complete portrait animation/render journey or mobile touch editing.
+Automated tests and accessibility scans do not replace human usability or assistive-technology review.
 
 ## License
 

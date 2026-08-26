@@ -1,4 +1,8 @@
 import {
+  COMPILER_DASHED_RATIO_MAX_DRIFT,
+  COMPILER_DASH_LENGTH_MAX_RELATIVE_DRIFT,
+  COMPILER_DASH_TOPOLOGY_MARGIN,
+  compilerDecimalNumber,
   LEGACY_ARROW_TIP_SHAPE,
   LEGACY_ARROW_TIP_SIZE_RATIO,
   LEGACY_BRACE_DIRECTION,
@@ -6,19 +10,24 @@ import {
   LEGACY_LINE_CAP,
   isCurrentShapeType,
   isLinearShapeType,
+  freeformCubicSegments,
   lineEndpointsForTransform,
   resolveArrowPreviewGeometry,
+  resolveCompilerSafeDashedLinePattern,
   resolveShapeGeometry,
   resolveShapeDimensions,
   resolveShapePaint,
   transformFromLineEndpoints,
   type LineEndpoints,
 } from "../shapeGeometry";
+import { editorLengthToManim } from "../frame";
+import { resolveDashedLinePattern } from "../schema";
 import { EDITORIAL_INK_STYLE } from "../styles";
 import type { JsonValue, SceneObject, StylePack } from "../schema";
 
 function shapeObject(
-  type: "circle" | "rectangle" | "line" | "arrow" | "brace",
+  type: "circle" | "rectangle" | "line" | "arrow" | "brace"
+    | "ellipse" | "polygon" | "dashed-line" | "double-arrow" | "freeform-path",
   options: Readonly<{
     properties?: Record<string, JsonValue>;
     style?: SceneObject["style"];
@@ -119,6 +128,83 @@ describe("current shape geometry authority", () => {
     expect(JSON.stringify([rectangle, circle, line, arrow, brace])).toBe(before);
   });
 
+  test("resolves all schema-v4 native geometry as defensive copies", () => {
+    const polygon = shapeObject("polygon", { properties: { shape: {
+      kind: "polygon",
+      vertices: [{ x: -0.5, y: 0.5 }, { x: 0, y: -0.5 }, { x: 0.5, y: 0.5 }],
+      lineJoin: "bevel",
+    } } });
+    const dashed = shapeObject("dashed-line", { properties: { shape: {
+      kind: "dashed-line", lineCap: "round", dashLength: 5, gapLength: 95,
+    } } });
+    const doubleArrow = shapeObject("double-arrow", { properties: { shape: {
+      kind: "double-arrow", lineCap: "square", startTipShape: "circle", endTipShape: "stealth", tipSizeRatio: 0.45,
+    } } });
+    const freeform = shapeObject("freeform-path", { properties: { shape: {
+      kind: "freeform-path", closed: false, lineCap: "round", lineJoin: "bevel", nodes: [
+        { point: { x: -0.5, y: 0 }, outHandle: { x: -0.25, y: -0.5 } },
+        { point: { x: 0.5, y: 0 }, inHandle: { x: 0.25, y: 0.5 } },
+      ],
+    } } });
+    const before = JSON.stringify([polygon, dashed, doubleArrow, freeform]);
+
+    expect(resolveShapeGeometry(shapeObject("ellipse", { properties: { shape: { kind: "ellipse" } } }), EDITORIAL_INK_STYLE)).toEqual({ kind: "ellipse" });
+    const resolvedPolygon = resolveShapeGeometry(polygon, EDITORIAL_INK_STYLE);
+    expect(resolvedPolygon).toEqual({ kind: "polygon", vertices: [
+      { x: -0.5, y: 0.5 }, { x: 0, y: -0.5 }, { x: 0.5, y: 0.5 },
+    ], lineJoin: "bevel" });
+    expect(resolveShapeGeometry(dashed, EDITORIAL_INK_STYLE)).toEqual({
+      kind: "dashed-line", lineCap: "round", dashLength: 5, gapLength: 95,
+    });
+    expect(resolveShapeGeometry(doubleArrow, EDITORIAL_INK_STYLE)).toEqual({
+      kind: "double-arrow", lineCap: "square", startTipShape: "circle", endTipShape: "stealth", tipSizeRatio: 0.45,
+    });
+    const resolvedFreeform = resolveShapeGeometry(freeform, EDITORIAL_INK_STYLE);
+    expect(resolvedFreeform).toEqual({
+      kind: "freeform-path", closed: false, lineCap: "round", lineJoin: "bevel", nodes: [
+        { point: { x: -0.5, y: 0 }, outHandle: { x: -0.25, y: -0.5 } },
+        { point: { x: 0.5, y: 0 }, inHandle: { x: 0.25, y: 0.5 } },
+      ],
+    });
+    if (resolvedPolygon?.kind !== "polygon" || resolvedFreeform?.kind !== "freeform-path") throw new Error("Expected V4 geometry");
+    expect(resolvedPolygon.vertices).not.toBe((polygon.properties.shape as { vertices: unknown[] }).vertices);
+    expect(resolvedFreeform.nodes).not.toBe((freeform.properties.shape as { nodes: unknown[] }).nodes);
+    expect(JSON.stringify([polygon, dashed, doubleArrow, freeform])).toBe(before);
+  });
+
+  test("derives exact freeform cubic controls, including the implicit closing segment", () => {
+    const open = {
+      kind: "freeform-path" as const,
+      closed: false as const,
+      lineCap: "round" as const,
+      lineJoin: "bevel" as const,
+      nodes: [
+        { point: { x: -0.5, y: 0 }, outHandle: { x: -0.4, y: -0.5 } },
+        { point: { x: 0.5, y: 0 }, inHandle: { x: 0.4, y: 0.5 } },
+      ],
+    };
+    expect(freeformCubicSegments(open)).toEqual([{
+      start: { x: -0.5, y: 0 }, control1: { x: -0.4, y: -0.5 }, control2: { x: 0.4, y: 0.5 }, end: { x: 0.5, y: 0 },
+    }]);
+    const closed = {
+      kind: "freeform-path" as const,
+      closed: true as const,
+      lineJoin: "miter" as const,
+      nodes: [
+        { point: { x: -0.5, y: 0 } },
+        { point: { x: 0.5, y: 0 } },
+        { point: { x: 0, y: 0.5 } },
+      ],
+    };
+    const segments = freeformCubicSegments(closed);
+    expect(segments).toHaveLength(3);
+    expect(segments.at(-1)).toMatchObject({ start: { x: 0, y: 0.5 }, end: { x: -0.5, y: 0 } });
+    expect(segments.at(-1)?.control1.x).toBeCloseTo(-1 / 6, 14);
+    expect(segments.at(-1)?.control1.y).toBeCloseTo(1 / 3, 14);
+    expect(segments.at(-1)?.control2.x).toBeCloseTo(-1 / 3, 14);
+    expect(segments.at(-1)?.control2.y).toBeCloseTo(1 / 6, 14);
+  });
+
   test("accepts only a matching strict shape record and leaves unknown direct fields inert", () => {
     expect(resolveShapeGeometry(shapeObject("line", {
       properties: {
@@ -216,6 +302,27 @@ describe("current shape geometry authority", () => {
     });
     expect(resolveShapePaint(shapeObject("circle"), EDITORIAL_INK_STYLE)?.fill).toBe(EDITORIAL_INK_STYLE.colors.background);
     expect(resolveShapePaint(shapeObject("line"), EDITORIAL_INK_STYLE)?.fill).toBeNull();
+    expect(resolveShapePaint(shapeObject("ellipse"), EDITORIAL_INK_STYLE)?.fill).toBe(EDITORIAL_INK_STYLE.colors.background);
+    expect(resolveShapePaint(shapeObject("polygon"), EDITORIAL_INK_STYLE)?.fill).toBe(EDITORIAL_INK_STYLE.colors.background);
+    expect(resolveShapePaint(shapeObject("dashed-line"), EDITORIAL_INK_STYLE)?.fill).toBeNull();
+    expect(resolveShapePaint(shapeObject("double-arrow"), EDITORIAL_INK_STYLE)?.fill).toBeNull();
+    expect(resolveShapePaint(shapeObject("freeform-path"), EDITORIAL_INK_STYLE)?.fill).toBeNull();
+    const freeformNodes = [
+      { point: { x: -0.5, y: 0.25 } },
+      { point: { x: 0, y: -0.5 } },
+      { point: { x: 0.5, y: 0.25 } },
+    ];
+    const openFreeform = shapeObject("freeform-path", {
+      properties: { shape: { kind: "freeform-path", closed: false, lineCap: "round", lineJoin: "round", nodes: freeformNodes } },
+      style: { fill: "#123456" },
+    });
+    const closedFreeform = shapeObject("freeform-path", {
+      properties: { shape: { kind: "freeform-path", closed: true, lineJoin: "round", nodes: freeformNodes } },
+      style: { fill: "#123456" },
+    });
+    expect(resolveShapePaint(openFreeform, EDITORIAL_INK_STYLE)?.fill).toBeNull();
+    expect(resolveShapePaint(closedFreeform, EDITORIAL_INK_STYLE)?.fill).toBe("#123456");
+    expect(resolveShapePaint({ ...closedFreeform, style: {} }, EDITORIAL_INK_STYLE)?.fill).toBe(EDITORIAL_INK_STYLE.colors.background);
 
     const arrow = shapeObject("arrow", {
       style: { stroke: "#123456", strokeWidth: 7, opacity: 0.4 },
@@ -247,7 +354,7 @@ describe("current shape geometry authority", () => {
   });
 
   test("shares one 60 by 30 fallback box for schema-valid dimensionless legacy shapes", () => {
-    for (const type of ["circle", "rectangle", "line", "arrow", "brace"] as const) {
+    for (const type of ["circle", "rectangle", "line", "arrow", "brace", "ellipse", "polygon", "dashed-line", "double-arrow", "freeform-path"] as const) {
       const object = shapeObject(type, { transform: { width: undefined, height: undefined } });
       expect(resolveShapeDimensions(object)).toEqual({ width: 60, height: 30 });
     }
@@ -265,11 +372,113 @@ describe("current shape geometry authority", () => {
   test("identifies only current linear primitives", () => {
     expect(isCurrentShapeType("circle")).toBe(true);
     expect(isCurrentShapeType("brace")).toBe(true);
+    expect(isCurrentShapeType("ellipse")).toBe(true);
+    expect(isCurrentShapeType("freeform-path")).toBe(true);
     expect(isCurrentShapeType("graph")).toBe(false);
     expect(isLinearShapeType("line")).toBe(true);
     expect(isLinearShapeType("arrow")).toBe(true);
+    expect(isLinearShapeType("dashed-line")).toBe(true);
+    expect(isLinearShapeType("double-arrow")).toBe(true);
     expect(isLinearShapeType("brace")).toBe(false);
     expect(isLinearShapeType("rectangle")).toBe(false);
+  });
+});
+
+describe("compiler-safe dashed-line literals", () => {
+  function expectPreservedDashTopology(
+    aspectRatio: "16:9" | "9:16" | "1:1",
+    width: number,
+    dashLength: number,
+    gapLength: number,
+  ) {
+    const authored = resolveDashedLinePattern(width, dashLength, gapLength)!;
+    const emitted = resolveCompilerSafeDashedLinePattern(aspectRatio, width, dashLength, gapLength);
+    expect(emitted).not.toBeNull();
+    expect(emitted?.count).toBe(authored.count);
+    expect(Math.max(2, Math.ceil(emitted!.topologyQuotient))).toBe(authored.count);
+    expect(emitted!.topologyQuotient).toBeLessThanOrEqual(authored.count - COMPILER_DASH_TOPOLOGY_MARGIN);
+    if (authored.count > 2) {
+      expect(emitted!.topologyQuotient).toBeGreaterThanOrEqual(
+        authored.count - 1 + COMPILER_DASH_TOPOLOGY_MARGIN,
+      );
+    }
+    const ratioDrift = Math.abs(emitted!.dashedRatio - authored.dashedRatio);
+    expect(ratioDrift).toBeLessThanOrEqual(COMPILER_DASHED_RATIO_MAX_DRIFT);
+    const preferredDashLength = compilerDecimalNumber(editorLengthToManim(aspectRatio, dashLength));
+    expect(Math.abs(emitted!.dashLength - preferredDashLength) / preferredDashLength)
+      .toBeLessThanOrEqual(COMPILER_DASH_LENGTH_MAX_RELATIVE_DRIFT);
+    expect(Math.abs(
+      emitted!.dashedRatio / authored.count - authored.dashedRatio / authored.count,
+    )).toBeLessThanOrEqual(COMPILER_DASHED_RATIO_MAX_DRIFT);
+    expect(Math.abs(
+      (1 - emitted!.dashedRatio) / (authored.count - 1)
+        - (1 - authored.dashedRatio) / (authored.count - 1),
+    )).toBeLessThanOrEqual(COMPILER_DASHED_RATIO_MAX_DRIFT);
+    expect(resolveCompilerSafeDashedLinePattern(aspectRatio, width, dashLength, gapLength)).toEqual(emitted);
+  }
+
+  test("moves the real parity fixture safely inside Manim's six-dash ceil bin", () => {
+    const emitted = resolveCompilerSafeDashedLinePattern("16:9", 174, 18, 11);
+    expect(emitted).toEqual({
+      count: 6,
+      halfWidth: 1.28888887,
+      dashLength: 0.26666671,
+      dashedRatio: 0.62068966,
+      topologyQuotient: 5.999998983735798,
+    });
+    expectPreservedDashTopology("16:9", 174, 18, 11);
+  });
+
+  test("preserves opposite dash counts when endpoint rounding collapses a ceil boundary", () => {
+    const atBoundary = resolveCompilerSafeDashedLinePattern("1:1", 40, 1, 19);
+    const aboveBoundary = resolveCompilerSafeDashedLinePattern("1:1", 40.000_000_002, 1, 19);
+    expect(atBoundary).toEqual({
+      count: 2,
+      halfWidth: 0.22222222,
+      dashLength: 0.01111112,
+      dashedRatio: 0.05,
+      topologyQuotient: 1.999998380001296,
+    });
+    expect(aboveBoundary).toEqual({
+      count: 3,
+      halfWidth: 0.22222222,
+      dashLength: 0.01111111,
+      dashedRatio: 0.05000003,
+      topologyQuotient: 2.0000013800001257,
+    });
+    expectPreservedDashTopology("1:1", 40, 1, 19);
+    expectPreservedDashTopology("1:1", 40.000_000_002, 1, 19);
+  });
+
+  test("preserves every admitted count at both sides of each ceil boundary in every frame", () => {
+    for (const aspectRatio of ["16:9", "9:16", "1:1"] as const) {
+      expectPreservedDashTopology(aspectRatio, 1, 1, 19);
+      for (let count = 3; count <= 256; count += 1) {
+        for (const quotient of [count - 1 + 0.000_000_1, count - 0.000_000_1]) {
+          expectPreservedDashTopology(aspectRatio, quotient * 16, 8, 8);
+        }
+      }
+    }
+  });
+
+  test("stays deterministic across admitted ratio, dimension, and decimal-rounding extremes", () => {
+    const widths = [1, 2, 39.99999998, 40.00000002, 174, 511.9999999, 2048, 4096];
+    const lengths = [1, 1.00000001, 2, 7.99999999, 8, 18, 19, 4096];
+    for (const aspectRatio of ["16:9", "9:16", "1:1"] as const) {
+      for (const width of widths) {
+        for (const dashLength of lengths) {
+          for (const gapLength of lengths) {
+            const authored = resolveDashedLinePattern(width, dashLength, gapLength)!;
+            if (
+              authored.count > 256
+              || authored.dashedRatio < 0.05
+              || authored.dashedRatio > 0.95
+            ) continue;
+            expectPreservedDashTopology(aspectRatio, width, dashLength, gapLength);
+          }
+        }
+      }
+    }
   });
 });
 

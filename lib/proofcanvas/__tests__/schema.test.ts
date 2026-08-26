@@ -107,6 +107,99 @@ describe("ProofCanvas project schema", () => {
     expect(() => parseProjectDocument(candidate)).toThrow("Unsupported ProofCanvas schema version: 99");
   });
 
+  test("migrates a unique-target schema-v3 document by changing only the version signal", () => {
+    const legacy = cloneSerializable(createCantorDemoProject()) as unknown as Record<string, unknown>;
+    legacy.schemaVersion = 3;
+    const shots = legacy.shots as Array<Record<string, unknown>>;
+    const objects = shots[0].objects as Array<Record<string, unknown>>;
+    (objects[0].properties as Record<string, unknown>).publishedCustomPayload = {
+      exact: ["preserved", 3, false],
+    };
+    const before = cloneSerializable(legacy);
+    const migrated = parseProjectDocument(legacy);
+    expect(migrated.schemaVersion).toBe(4);
+    const migratedWithoutVersion = cloneSerializable(migrated) as unknown as Record<string, unknown>;
+    delete migratedWithoutVersion.schemaVersion;
+    delete before.schemaVersion;
+    expect(migratedWithoutVersion).toEqual(before);
+    expect((legacy as Record<string, unknown>).schemaVersion).toBe(3);
+  });
+
+  test("stably deduplicates historically valid V1/V2/V3 animation target sets without mutating input", () => {
+    const legacyWithDuplicateTarget = () => {
+      const project = cloneSerializable(createCantorDemoProject());
+      const shot = project.shots[1];
+      shot.animations = [{
+        id: "animation-legacy-duplicate-target",
+        type: "move",
+        targetIds: [
+          "object-conclusion-title",
+          "object-conclusion-title",
+          "object-conclusion-cardinality",
+          "object-conclusion-title",
+          "object-conclusion-cardinality",
+        ],
+        start: 0,
+        duration: 1,
+        easing: "linear",
+        properties: { deltaX: 10 },
+      }];
+      shot.propertyTracks = [];
+      return project;
+    };
+    const expectedTargets = ["object-conclusion-title", "object-conclusion-cardinality"];
+
+    const legacyV3 = legacyWithDuplicateTarget();
+    (legacyV3 as unknown as Record<string, unknown>).schemaVersion = 3;
+    const legacyV3Before = cloneSerializable(legacyV3);
+    const previewBeforeMigration = previewShotAtTime(legacyV3.shots[1], 0.5);
+    const migratedV3 = parseProjectDocument(legacyV3);
+    const expectedV3 = cloneSerializable(legacyV3) as unknown as Record<string, unknown>;
+    expectedV3.schemaVersion = PROJECT_SCHEMA_VERSION;
+    const expectedV3Shot = (expectedV3.shots as Array<{ animations: Array<{ targetIds: string[] }> }>)[1];
+    expectedV3Shot.animations[0].targetIds = expectedTargets;
+    expect(migratedV3).toEqual(expectedV3);
+    expect(previewShotAtTime(migratedV3.shots[1], 0.5)).toEqual(previewBeforeMigration);
+    expect(legacyV3).toEqual(legacyV3Before);
+
+    const legacyV2 = legacyWithDuplicateTarget();
+    (legacyV2 as unknown as Record<string, unknown>).schemaVersion = 2;
+    const legacyV2Before = cloneSerializable(legacyV2);
+    const classifiedV2 = classifyLegacyV2ProjectDocument(legacyV2);
+    expect(classifiedV2.status).toBe("migrated");
+    if (classifiedV2.status === "migrated") expect(classifiedV2.document.shots[1].animations[0].targetIds).toEqual(expectedTargets);
+    expect(parseProjectDocument(legacyV2).shots[1].animations[0].targetIds).toEqual(expectedTargets);
+    expect(legacyV2).toEqual(legacyV2Before);
+
+    const legacyV1 = legacyWithDuplicateTarget();
+    const legacyV1Record = legacyV1 as unknown as Record<string, unknown>;
+    legacyV1Record.schemaVersion = 1;
+    legacyV1Record.aspectRatio = "16:9";
+    delete legacyV1Record.settings;
+    const legacyV1Before = cloneSerializable(legacyV1);
+    expect(parseProjectDocument(legacyV1).shots[1].animations[0].targetIds).toEqual(expectedTargets);
+    expect(legacyV1).toEqual(legacyV1Before);
+  });
+
+  test("rejects false-version laundering of schema-v4 native objects as schema-v3", () => {
+    const candidate = cloneSerializable(createCantorDemoProject()) as unknown as Record<string, unknown>;
+    candidate.schemaVersion = 3;
+    const shot = (candidate.shots as Array<Record<string, unknown>>)[0];
+    shot.objects = [{
+      id: "object-laundered-ellipse",
+      type: "ellipse",
+      name: "Laundered ellipse",
+      locked: false,
+      visible: true,
+      transform: { x: 480, y: 270, width: 100, height: 60, rotation: 0, scaleX: 1, scaleY: 1 },
+      style: {},
+      properties: { shape: { kind: "ellipse" } },
+    }];
+    shot.animations = [];
+    shot.propertyTracks = [];
+    expect(() => parseProjectDocument(candidate)).toThrow(/Invalid ProofCanvas schema-v3 document: Legacy project contains non-legacy object type ellipse/);
+  });
+
   test("migrates the frozen v0 fixture through the explicit registry", () => {
     const legacy = cloneSerializable(createCantorDemoProject()) as unknown as Record<string, unknown>;
     legacy.schemaVersion = 0;
@@ -167,6 +260,41 @@ describe("ProofCanvas project schema", () => {
     const shot = cloneSerializable(createCantorDemoProject().shots[1]);
     shot.animations = [legacyEmphasis];
     expect(DocumentOperationSchema.safeParse({ type: "add-shot", shot })).toMatchObject({ success: false });
+  });
+
+  test("requires unique target IDs at the shared animation and operation ingress boundary", () => {
+    const duplicateTargetAnimation = {
+      id: "animation-duplicate-target",
+      type: "move" as const,
+      targetIds: ["object-title", "object-title"],
+      start: 1,
+      duration: 1,
+      easing: "linear" as const,
+      properties: { deltaX: 10 },
+    };
+    const message = "Duplicate animation target object-title; first targeted at index 0";
+
+    const direct = SceneAnimationSchema.safeParse(duplicateTargetAnimation);
+    expect(direct.success).toBe(false);
+    if (!direct.success) expect(direct.error.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: ["targetIds", 1], message }),
+    ]));
+
+    // Configured-provider output is decoded through these same two operation
+    // variants before it can reach applyOperations.
+    for (const operation of [
+      { type: "add-animation", animation: duplicateTargetAnimation },
+      { type: "update-animation", animationId: "animation-existing", patch: { targetIds: ["object-title", "object-title"] } },
+    ]) {
+      const parsed = SceneOperationSchema.safeParse(operation);
+      expect(parsed.success).toBe(false);
+      if (!parsed.success) expect(parsed.error.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          path: operation.type === "add-animation" ? ["animation", "targetIds", 1] : ["patch", "targetIds", 1],
+          message,
+        }),
+      ]));
+    }
   });
 
   test("classifies schema-v2 fixed-tick migration loss without coalescing chronology", () => {
@@ -1499,6 +1627,152 @@ describe("ProofCanvas project schema", () => {
     if (!overlapResult.success) {
       expect(overlapResult.error.issues.filter(({ message }) => message.includes("overlap on the same object hierarchy")))
         .toHaveLength(PROOFCANVAS_SCHEMA_LIMITS.overlapIssuesPerShot);
+    }
+  });
+
+  test("holds the exact 256-dash boundary for base, transform-animation, and width-keyframe geometry", () => {
+    const makeProject = (width: number) => {
+      const project = cloneSerializable(createCantorDemoProject());
+      const shot = project.shots[0];
+      project.shots = [shot];
+      shot.duration = 10;
+      shot.objects = [{
+        id: "object-dash-budget",
+        type: "dashed-line",
+        name: "Dash budget",
+        locked: false,
+        visible: true,
+        transform: { x: 480, y: 270, width, height: 2, rotation: 0, scaleX: 1, scaleY: 1 },
+        style: {},
+        properties: { shape: { kind: "dashed-line", lineCap: "butt", dashLength: 1, gapLength: 1 } },
+      }];
+      shot.animations = [];
+      shot.propertyTracks = [];
+      shot.audioClips = [];
+      shot.captionClips = [];
+      shot.markers = [];
+      return project;
+    };
+
+    expect(ProjectDocumentSchema.safeParse(makeProject(512))).toMatchObject({ success: true });
+    expect(ProjectDocumentSchema.safeParse(makeProject(513))).toMatchObject({ success: false });
+
+    const animationAtLimit = makeProject(2);
+    animationAtLimit.shots[0].animations = [{
+      id: "animation-dash-width-256",
+      type: "transform",
+      targetIds: ["object-dash-budget"],
+      start: 0,
+      duration: 1,
+      easing: "linear",
+      properties: { width: 512 },
+    }];
+    expect(ProjectDocumentSchema.safeParse(animationAtLimit)).toMatchObject({ success: true });
+    animationAtLimit.shots[0].animations[0].properties.width = 513;
+    expect(ProjectDocumentSchema.safeParse(animationAtLimit)).toMatchObject({ success: false });
+
+    const keyframeAtLimit = makeProject(2);
+    keyframeAtLimit.shots[0].propertyTracks = [{
+      id: "track-dash-width-256",
+      target: { kind: "object", objectId: "object-dash-budget" },
+      property: "width",
+      keyframes: [
+        { id: "keyframe-dash-width-a", time: 0, value: 2, interpolation: { kind: "linear" } },
+        { id: "keyframe-dash-width-b", time: 1, value: 512, interpolation: { kind: "linear" } },
+      ],
+    }];
+    expect(ProjectDocumentSchema.safeParse(keyframeAtLimit)).toMatchObject({ success: true });
+    keyframeAtLimit.shots[0].propertyTracks[0].keyframes[1].value = 513;
+    expect(ProjectDocumentSchema.safeParse(keyframeAtLimit)).toMatchObject({ success: false });
+  });
+
+  test("budgets native polygon geometry across every base and animation occurrence", () => {
+    const project = cloneSerializable(createCantorDemoProject());
+    const shot = project.shots[0];
+    project.shots = [shot];
+    shot.duration = 80;
+    const vertices = Array.from({ length: PROOFCANVAS_SCHEMA_LIMITS.shapePointsMax }, (_, index) => {
+      const angle = 2 * Math.PI * index / PROOFCANVAS_SCHEMA_LIMITS.shapePointsMax;
+      return { x: 0.49 * Math.cos(angle), y: 0.49 * Math.sin(angle) };
+    });
+    shot.objects = [{
+      id: "object-native-occurrence-budget",
+      type: "polygon",
+      name: "Native occurrence budget",
+      locked: false,
+      visible: true,
+      transform: { x: 480, y: 270, width: 120, height: 120, rotation: 0, scaleX: 1, scaleY: 1 },
+      style: {},
+      properties: { shape: { kind: "polygon", vertices, lineJoin: "miter" } },
+    }];
+    shot.propertyTracks = [];
+    shot.audioClips = [];
+    shot.captionClips = [];
+    shot.markers = [];
+    const animation = (index: number) => ({
+      id: `animation-native-occurrence-${index}`,
+      type: "move" as const,
+      targetIds: ["object-native-occurrence-budget"],
+      start: index,
+      duration: 0.5,
+      easing: "linear" as const,
+      properties: { deltaX: index % 2 === 0 ? 1 : -1 },
+    });
+    shot.animations = Array.from({ length: 63 }, (_, index) => animation(index));
+    expect(ProjectDocumentSchema.safeParse(project)).toMatchObject({ success: true });
+
+    shot.animations.push(animation(63));
+    const overLimit = ProjectDocumentSchema.safeParse(project);
+    expect(overLimit.success).toBe(false);
+    if (!overLimit.success) expect(overLimit.error.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: `Native shape geometry exceeds the project work limit of ${PROOFCANVAS_SCHEMA_LIMITS.nativeGeometryWorkPerProject} points or dashes` }),
+    ]));
+  });
+
+  test("rejects 64 repeated targets before they can understate 64-vertex compiler work", () => {
+    const project = cloneSerializable(createCantorDemoProject());
+    const shot = project.shots[1];
+    project.shots = [shot];
+    shot.duration = 2;
+    const objectId = "object-duplicate-target-polygon";
+    const vertices = Array.from({ length: PROOFCANVAS_SCHEMA_LIMITS.shapePointsMax }, (_, index) => {
+      const angle = 2 * Math.PI * index / PROOFCANVAS_SCHEMA_LIMITS.shapePointsMax;
+      return { x: 0.49 * Math.cos(angle), y: 0.49 * Math.sin(angle) };
+    });
+    shot.objects = [{
+      id: objectId,
+      type: "polygon",
+      name: "Duplicate target polygon",
+      locked: false,
+      visible: true,
+      transform: { x: 480, y: 270, width: 120, height: 120, rotation: 0, scaleX: 1, scaleY: 1 },
+      style: {},
+      properties: { shape: { kind: "polygon", vertices, lineJoin: "miter" } },
+    }];
+    shot.animations = [{
+      id: "animation-duplicate-target-budget",
+      type: "move",
+      targetIds: Array.from({ length: PROOFCANVAS_SCHEMA_LIMITS.animationTargets }, () => objectId),
+      start: 0,
+      duration: 1,
+      easing: "linear",
+      properties: { deltaX: 1 },
+    }];
+    shot.propertyTracks = [];
+    shot.audioClips = [];
+    shot.captionClips = [];
+    shot.markers = [];
+
+    const parsed = ProjectDocumentSchema.safeParse(project);
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      const duplicateIssues = parsed.error.issues.filter(({ message }) => message.startsWith("Duplicate animation target"));
+      expect(duplicateIssues).toHaveLength(PROOFCANVAS_SCHEMA_LIMITS.animationTargets - 1);
+      expect(duplicateIssues[0]).toMatchObject({
+        path: ["shots", 0, "animations", 0, "targetIds", 1],
+        message: `Duplicate animation target ${objectId}; first targeted at index 0`,
+      });
+      expect(parsed.error.issues.some(({ message }) => message.startsWith("Native shape geometry exceeds"))).toBe(false);
     }
   });
 
