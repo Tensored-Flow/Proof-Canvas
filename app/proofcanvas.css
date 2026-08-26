@@ -109,6 +109,8 @@
 .pc-component-list button { display: grid; min-height: 48px; gap: 2px; text-align: left; }
 .pc-component-list button b { font-family: var(--font-display), Georgia, serif; font-size: 13px; }
 .pc-component-list button small { overflow: hidden; color: var(--pc-muted); font-size: 9px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.pc-component-list button[draggable="true"] { cursor: grab; }
+.pc-component-list button[data-dragging="true"] { border-color: var(--pc-warm); background: #e4d6c5; opacity: .72; }
 .pc-library-empty { grid-column: 1 / -1; color: var(--pc-muted); font-family: var(--font-display), Georgia, serif; font-size: 13px; font-style: italic; }
 .pc-style-library { display: grid; gap: 6px; }
 .pc-style-library button { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: 7px; text-align: left; }

@@ -45,9 +45,9 @@ creative state is serialized.
 | Routes/UI | `app/page.tsx`, `app/ProjectDashboard.tsx`, `app/projects/[projectId]/`, `app/login/` | Protected dashboard, durable editor loader, and owner login |
 | Auth/storage | `lib/proofcanvas/auth.server.ts`, `database.server.ts`, `repository.server.ts`, `backup.server.ts` | Sessions, CSRF/origin checks, STRICT SQLite migrations, CAS/idempotency, checkpoints, and operations |
 | Schema | `lib/proofcanvas/schema.ts` | Versioned document, types, migration, global validation, and canonical JSON |
-| Operations/history | `lib/proofcanvas/operations.ts`, `history.ts` | Atomic edits, reference repair, inherited locks, undo, and redo |
+| Operations/history | `lib/proofcanvas/operations.ts`, `documentOperations.ts`, `objectReferences.ts`, `history.ts` | Atomic edits, declared reference remapping, inherited locks, structural duplication, undo, and redo |
 | Preview/styles | `lib/proofcanvas/preview.ts`, `styles.ts` | Deterministic browser state and output-style grammar |
-| Components | `lib/proofcanvas/components.ts` | Six semantic assemblies made from editable scene objects |
+| Components | `lib/proofcanvas/components.ts` | Exactly twelve ordered, style-derived semantic assemblies: 12 ordinary root groups and 48 editable leaves |
 | AI | `lib/proofcanvas/ai.ts`, `openaiProvider.ts` | Deterministic fallback, bounded provider context, strict output parsing, and local proposal validation |
 | Critique/compiler | `lib/proofcanvas/critique.ts`, `compiler.ts` | Deterministic diagnostics and validated Manim Python generation |
 | Next API boundary | `app/api/proofcanvas/**`, `lib/proofcanvas/renderClient.server.ts` | Bounded AI/render envelopes, server compilation, sidecar authentication, and response validation |
@@ -108,6 +108,16 @@ and validates the complete result. An exception publishes nothing. History store
 complete project, so a multi-operation action—including an AI proposal—undoes and redoes as one
 entry. Whole-document load, import, reset, component insertion, and shot editing use the same
 validate-before-publish rule.
+
+Semantic-component instantiation derives typography and strokes from the active style, allocates
+IDs against the complete project namespace, computes exact rotated-leaf bounds, and clamps them 24
+logical pixels inside every supported frame. The complete candidate document is schema-preflighted
+before publication. Click insertion uses the live preview camera centre; drag/drop maps the pointer
+through the inverse SVG and camera transforms. A successful insertion creates one history entry and
+selects only its ordinary root group.
+
+Structural copy operations rewrite only the declared `annotation-arrow` `properties.targetId`
+reference. Opaque `assetId`, `externalId`, and nested lookalike fields are intentionally preserved.
 
 Groups maintain hierarchy pre-order. Reordering is sibling-only and keeps a group subtree
 contiguous. Group bounds are derived from rotated leaf-descendant geometry. Group transforms are
@@ -243,6 +253,10 @@ transfer design for remote rendering.
   testing.
 - Native-shape authoring was exercised at a 1024x1366 browser viewport with a 540x960 9:16 frame;
   the complete portrait animation/render journey and mobile touch editing remain unqualified.
+- The exact twelve-card registry and representative component insertion and manipulation were
+  exercised at 1440×900 and 1280×800. This is partial semantic-component and browser evidence;
+  trusted image/SVG authoring and the remaining required viewports are still unqualified.
 - Arbitrary Python, Python round-tripping, sampled-pose keyframe editing, accounts, collaboration,
-  3D, and physics are out of scope. Trusted asset transport and audio/caption completion remain V1
-  work and block a V1 release until their own gates pass.
+  3D, and physics are out of scope. Trusted image/SVG authoring, asset transport and packages,
+  remaining animation vocabulary, and audio/caption completion remain V1 work and block a V1
+  release until their own gates pass.

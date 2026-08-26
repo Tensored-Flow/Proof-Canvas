@@ -9,6 +9,7 @@ import * as graphAuthority from '@/lib/proofcanvas/graphExpression'
 import { ProjectDocumentSchema, cloneSerializable, resolveDashedLinePattern, type SceneObject } from '@/lib/proofcanvas/schema'
 import { resolveArrowPreviewGeometry } from '@/lib/proofcanvas/shapeGeometry'
 import { insertShapePreset, PROOFCANVAS_SHAPE_PRESET_MIME } from '@/lib/proofcanvas/shapePresets'
+import { PROOFCANVAS_SEMANTIC_COMPONENT_MIME } from '@/lib/proofcanvas/components'
 
 jest.mock('@/lib/proofcanvas/latex', () => {
   const actual = jest.requireActual('@/lib/proofcanvas/latex') as typeof import('@/lib/proofcanvas/latex')
@@ -963,6 +964,78 @@ test('owns only the fixed shape-preset drag contract and reports every unavailab
   expect(validDrop.defaultPrevented).toBe(true)
   expect(onInsertShapePresetAt).toHaveBeenCalledTimes(1)
   expect(onInsertShapePresetAt).toHaveBeenCalledWith('arrow', { x: 600, y: 200 })
+})
+
+test('owns the fixed semantic-component drop contract without accepting ambiguous library payloads', () => {
+  const project = cloneSerializable(createCantorDemoProject())
+  project.shots = [project.shots[0]]
+  project.shots[0].camera = { x: 600, y: 200, zoom: 2, rotation: 90 }
+  const parsed = ProjectDocumentSchema.parse(project)
+  const onInsertSemanticComponentAt = jest.fn()
+  const onNotice = jest.fn()
+  const shared = {
+    project: parsed,
+    shot: parsed.shots[0],
+    playhead: 0,
+    previewStyle: parsed.styles.find(({ id }) => id === parsed.activeStyleId)!,
+    projectRevision: 'component-drop-contract',
+    previewQuality: parsed.settings.previewQuality,
+    selectedIds: [] as string[],
+    onSelect: jest.fn(),
+    onCommitTransforms: jest.fn(),
+    onCommitKeyboardTransform: jest.fn(),
+    onNotice,
+  }
+  const view = render(<CanvasStage {...shared} onInsertSemanticComponentAt={onInsertSemanticComponentAt}/>)
+  const svg = view.container.querySelector('svg.pc-stage') as SVGSVGElement
+  Object.defineProperty(svg, 'createSVGPoint', { configurable: true, value: () => {
+    const point = { x: 0, y: 0, matrixTransform: () => ({ x: point.x, y: point.y }) }
+    return point
+  } })
+  Object.defineProperty(svg, 'getScreenCTM', { configurable: true, value: () => ({ inverse: () => ({}) }) })
+
+  const transfer = (types: string[], value: string) => ({
+    types,
+    effectAllowed: 'copy',
+    dropEffect: 'link',
+    getData: jest.fn((type: string) => type === PROOFCANVAS_SEMANTIC_COMPONENT_MIME ? value : 'arrow'),
+  })
+
+  expect(svg).toHaveAttribute('data-component-drop-enabled', 'true')
+  const invalid = transfer([PROOFCANVAS_SEMANTIC_COMPONENT_MIME], 'not-a-component')
+  fireEvent(svg, stageDragEvent('drop', invalid))
+  expect(onNotice).toHaveBeenLastCalledWith('That semantic component is not available.')
+  expect(onInsertSemanticComponentAt).not.toHaveBeenCalled()
+
+  const ambiguous = transfer([PROOFCANVAS_SEMANTIC_COMPONENT_MIME, PROOFCANVAS_SHAPE_PRESET_MIME], 'mathematical-title')
+  const ambiguousDrop = stageDragEvent('drop', ambiguous)
+  fireEvent(svg, ambiguousDrop)
+  expect(ambiguousDrop.defaultPrevented).toBe(false)
+  expect(ambiguous.getData).not.toHaveBeenCalled()
+  expect(onInsertSemanticComponentAt).not.toHaveBeenCalled()
+
+  const enabled = transfer([PROOFCANVAS_SEMANTIC_COMPONENT_MIME], 'mathematical-title')
+  const dragOver = stageDragEvent('dragover', enabled)
+  fireEvent(svg, dragOver)
+  expect(dragOver.defaultPrevented).toBe(true)
+  expect(enabled.dropEffect).toBe('copy')
+  fireEvent(svg, stageDragEvent('drop', enabled, { x: 480, y: 270 }))
+  expect(onInsertSemanticComponentAt).toHaveBeenCalledWith('mathematical-title', { x: 600, y: 200 })
+
+  onInsertSemanticComponentAt.mockClear()
+  view.rerender(<CanvasStage {...shared} authoringEnabled={false} onInsertSemanticComponentAt={onInsertSemanticComponentAt}/>)
+  expect(svg).toHaveAttribute('data-component-drop-enabled', 'false')
+  const disabled = transfer([PROOFCANVAS_SEMANTIC_COMPONENT_MIME], 'mathematical-title')
+  fireEvent(svg, stageDragEvent('dragover', disabled))
+  expect(disabled.dropEffect).toBe('none')
+  fireEvent(svg, stageDragEvent('drop', disabled))
+  expect(onNotice).toHaveBeenLastCalledWith('Pause playback before dropping a component.')
+  expect(onInsertSemanticComponentAt).not.toHaveBeenCalled()
+
+  view.rerender(<CanvasStage {...shared} authoringEnabled/>)
+  expect(svg).toHaveAttribute('data-component-drop-enabled', 'false')
+  fireEvent(svg, stageDragEvent('drop', transfer([PROOFCANVAS_SEMANTIC_COMPONENT_MIME], 'mathematical-title')))
+  expect(onNotice).toHaveBeenLastCalledWith('Component insertion is not available on this canvas.')
 })
 
 test('renders exact SVG geometry for all five schema-v4 native primitives', () => {

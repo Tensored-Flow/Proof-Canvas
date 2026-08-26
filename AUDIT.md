@@ -1,18 +1,21 @@
 # ProofCanvas engineering audit
 
-Audit snapshot: `2026-08-26T06:55:14Z`.
+Audit snapshot: `2026-08-26T20:40:58Z`.
 
 ## Verdict
 
 The standalone working tree provides a functioning private structured edit-to-Manim vertical
-slice. Schema V4 now carries five additional native shapes through strict admission, manual
-authoring, SVG preview, deterministic compilation, and renderer-policy validation. The root editor,
-canvas operations, hierarchy, shots, timeline, SQLite persistence, AI proposal transaction, critic,
-compiler, isolated renderer, and downloadable MP4 operate on one validated `ProjectDocument`.
+slice. Schema V4 carries five additional native shapes through strict admission, manual authoring,
+SVG preview, deterministic compilation, and renderer-policy validation. The editor also exposes an
+exact ordered twelve-card semantic-component library whose ordinary grouped leaves remain editable,
+ungroupable, persistable, and deterministically compilable. The root editor, canvas operations,
+hierarchy, shots, timeline, SQLite persistence, AI proposal transaction, critic, compiler, isolated
+renderer, and downloadable MP4 operate on one validated `ProjectDocument`.
 
-This is a milestone audit, not the final V1 audit. The semantic-component library, asset/package
-transport, audio/captions, complete animation vocabulary, representative 45–60 second project,
-hosted qualification, and final V1 release gates remain open.
+This is a milestone audit, not the final V1 audit. Trusted asset storage and portable package
+transport, image/SVG authoring, synchronized audio/captions, the remaining exact animation
+vocabulary, the representative 45–60 second project, hosted qualification, and final V1 release
+gates remain open.
 
 The checks below establish engineering behavior in the stated environment. They are not claims of
 production readiness, human usability approval, accessibility conformance, mathematical review,
@@ -36,22 +39,27 @@ subjective visual quality, or general natural-language reliability.
 
 | Command | Result |
 |---|---|
-| `npm test -- --runInBand` | PASS: 49/49 suites, 893/893 tests, 0 snapshots |
+| `npm test -- --runInBand` | PASS on the exact M3.7c candidate: 50/50 suites, 905/905 tests, 0 snapshots |
 | `npm run typecheck -- --pretty false` | PASS: `tsc --noEmit` |
-| `npm run build` | PASS twice inside the native-shape harness: production webpack build; dashboard, auth, health, project, AI, and render routes emitted |
+| `npm run build` | PASS: production webpack build; dashboard, auth, health, project, AI, and render routes emitted |
+| `npm run test:e2e` | PASS: 2/2 production Chromium viewport projects at 1440×900 and 1280×800; 0 failures, retries, or skips; exact twelve-card registry, representative click/drag insertion and persistence, accessibility/overflow checks, and genuine MP4 download |
 | `npm run test:renderer` | PASS: hash-locked isolated test image passed 550/550 tests with one Starlette/httpx deprecation warning; lean runtime image also built |
 | `npm run artifacts:verify` | PASS: exact nine-file set, sizes, SHA-256 records, media headers/dimensions, render metadata, browser summary, project identity, and reversible-AI claims verified |
-| `bash scripts/proofcanvas/native-shape-parity/run.sh` | PASS twice: first publication and atomic replacement; 1/1 authenticated production-browser journey, five browser/Manim parity probes, staged verification, final-path verification, and rollback-safe finalization |
+| `bash scripts/proofcanvas/native-shape-parity/run.sh` | PASS on the exact M3.7c tree: 1/1 authenticated production-browser journey, five browser/Manim parity probes, staged verification, final-path verification, and rollback-safe atomic replacement |
 | `npm audit --omit=dev --audit-level=high` | PASS: 0 vulnerabilities |
 | `git diff --check` | PASS |
 
-The new browser journey starts at owner login, opens an exact persisted schema-V4 project, and runs
-in an externally networkless digest-pinned Playwright container against the production build. One
-transaction proves the ordered 16-card clickable/draggable palette, click and native drag/drop
-insertion, every deep native-shape control, exact undo/redo, locked mutation refusal, playback
-mutation refusal, and autosave. It also exercises a 1024x1366 browser viewport with a 540x960
-authored frame: the library and inspector remain usable and the document does not overflow. Separate
-console, page, request, and HTTP-5xx error arrays are empty.
+The current production-browser journey starts at owner login, creates and reopens a durable
+schema-V4 project, and runs in an externally networkless digest-pinned Playwright container against
+the production build. It asserts the exact ordered twelve-card component registry; click-inserts
+Callout and Title & subtitle; performs a real `DataTransfer` drag/drop of Vector explanation;
+selects only the inserted root; manipulates, resizes, rotates, and aligns groups; and proves
+representative component persistence through reload and JSON export/import. Separate console, page,
+request, and HTTP-5xx error arrays are empty.
+
+The dedicated native-shape browser journey separately proves the ordered 16-card clickable and
+draggable palette, every deep native-shape control, exact undo/redo, locked and playback mutation
+refusal, autosave, and a bounded 1024x1366 browser viewport with a 540x960 authored frame.
 
 The same persisted document is compiled twice deterministically, rasterized once by real
 `CanvasStage` SVG in Chromium and once by pinned Manim 0.21/Cairo, then compared with per-shape
@@ -66,27 +74,27 @@ typography, animation, or complete portrait-render parity.
 | `examples/proofcanvas/uncountable-yet-zero-length.proofcanvas.json` | 31,142 | `8800d5510fcc6ef2e1de6c1797773e8e69afbc4e52defb7613f8369f22e40ce2` |
 | `examples/proofcanvas/uncountable-yet-zero-length.py` | 19,861 | `014eae0e47ed5c1dd0dfa936ac2358ff111daf9366849a7ba8a187484bbbca57` |
 | `examples/proofcanvas/ai-command-results.json` | 14,246 | `a11b5e781d85a9859031172fcc27409070230eabaa0bcb6a28ec836305e7d2c1` |
-| `examples/proofcanvas/artifact-manifest.json` | 1,865 | `10535ddad01ad9d6e913291d65b7b7dc326eb461b25f0e2b5fa5c5e6614a409c` |
+| `examples/proofcanvas/artifact-manifest.json` | 1,865 | `24739c4b9dbaae2ed3e1f9862cc3d78b049cec871f084bcc04416508434b951a` |
 | `examples/proofcanvas/uncountable-yet-zero-length.mp4` | 445,731 | `0f540ea8373e327ee41f8e134615783c85543da37e7b4fd378a3c4d2d64bd7b0` |
 | `examples/proofcanvas/render-metadata.json` | 617 | `206e8e7d821261a2487c4fe4c5e3c20e67902b9c2cd2040c4ce50c32788fdbdf` |
-| `examples/proofcanvas/evidence/browser-summary.json` | 1,033 | `6d7a6aba68b4fd509894263387107d8c87a0745daa304133b6481808ce73a8f6` |
+| `examples/proofcanvas/evidence/browser-summary.json` | 1,033 | `7533f24db23606d35d5a583f995a11d7633ae829324a73834605ed53c0f56262` |
 | `examples/proofcanvas/render-evidence/proofcanvas-manim-frame-12s.png` | 47,174 | `05301ce843dff1573d56574ecc19ae227037dbaa509f56905694f67792be1080` |
-| `examples/proofcanvas/evidence/proofcanvas-editorial-1440x900.png` | 155,095 | `34747d985157796cba37a37e26e1eaef13ae7e5d9add68eab9b4567e7075f4ce` |
-| `examples/proofcanvas/evidence/proofcanvas-editorial-1280x800.png` | 136,951 | `dfcecef82cda15154661679e45fa55a7617df84647811f74ee69315110eb643b` |
+| `examples/proofcanvas/evidence/proofcanvas-editorial-1440x900.png` | 152,591 | `6c8fe5f8ef38a7c8b656f6240ae5d6847700ddf8d40c8c45a808f90522df5895` |
+| `examples/proofcanvas/evidence/proofcanvas-editorial-1280x800.png` | 135,846 | `2a4d069a76c3207f0ff2600f46acb764c32b3049835fb0e969ee4d1a933d86ef` |
 
 ### Native-shape parity and authoring evidence
 
 The retained directory is an exact 21-file set. Its manifest canonically binds 20 non-manifest
-artifacts, 10 harness files, and 135 current runtime-input files; retained verification recomputes
+artifacts, 10 harness files, and 133 current runtime-input files; retained verification recomputes
 all of them. Publication was exercised both with no prior directory and with Linux atomic directory
 exchange. Prior evidence remains rollback-capable until the candidate passes verification at its
 final path.
 
 | Repository-relative artifact | Bytes | SHA-256 |
 |---|---:|---|
-| `examples/proofcanvas/native-shape-parity/evidence-manifest.json` | 29,979 | `51c195eba9ee87e94c11da39dcdced602d9ba34f0df84bec11dc88dddf1a27fe` |
-| `examples/proofcanvas/native-shape-parity/parity-report.json` | 37,632 | `a42b699c3135f6a7129fc3f4dca158f793d466aa259e5289630ea32d65cdd428` |
-| `examples/proofcanvas/native-shape-parity/browser-authoring.json` | 3,602 | `71737eb01d9d5e3defbbe6e557f4febadbd109133aa501498a38d522cc117af6` |
+| `examples/proofcanvas/native-shape-parity/evidence-manifest.json` | 29,452 | `a23b1c0de567fd2374e26b46b6a65674e57014b685a5ad342bbf363959a66880` |
+| `examples/proofcanvas/native-shape-parity/parity-report.json` | 37,105 | `54aa0dad86f52a4de9c815652bd285d44dc5c26f29a01fc25b36fb2bc2c9e3ca` |
+| `examples/proofcanvas/native-shape-parity/browser-authoring.json` | 3,602 | `a092263afc67797dcc7f542341a3edc960be96a174afe70739f6ab2eb104c23f` |
 | `examples/proofcanvas/native-shape-parity/browser-stage.png` | 12,006 | `d37b6c96bae43ce701bf19b53f7da5ac3852e4e016ba77ed3283130ad8ed7614` |
 | `examples/proofcanvas/native-shape-parity/manim-frame.png` | 13,673 | `4b411d98bb204e6327f3ac6f736de863fcb783b46be3a24dab4f2ef196fc9afe` |
 
@@ -105,13 +113,31 @@ H.264, 854x480, 15.00034 fps, 28.466016 seconds, and 427 decoded frames. Its evi
 decoded at 12.533008 seconds. Render metadata binds the video to generated-Python SHA-256
 `014eae0e47ed5c1dd0dfa936ac2358ff111daf9366849a7ba8a187484bbbca57`.
 
-The browser journey independently rendered and downloaded another valid `mp4/ftyp` file: 540,138
-bytes, SHA-256 `87281a5c09b7747edb16a415f2852946afe09cad644c2a9458fa1d17eddd2d69`.
+The browser journey independently rendered and downloaded another valid `mp4/ftyp` file: 467,759
+bytes, SHA-256 `c44f0e1a5eadf8bf91bc1ad5131c417fb37c10d50ea5c41dbfbdacb21ea07259`.
 
-Both editor screenshots and the decoded Manim frame were visually inspected. Text and controls
-remain legible without clipping at both target sizes. The output frame materially contains the
-same title, recursive interval construction, annotation, palette, and asymmetry. This is bounded
-visual evidence, not a human design or usability verdict.
+The editor screenshots show the dedicated Semantic component study with Title & subtitle, Vector
+explanation, and Callout. Both target screenshots were visually inspected for clipping and
+legibility after replacing viewport-dependent evidence placement with exact scene coordinates. The
+decoded Manim frame separately validates the canonical Cantor sample; these are complementary
+authoring and rendering evidence, not a browser/Manim parity comparison. This is bounded visual
+evidence, not a human design or usability verdict.
+
+## Semantic-component checkpoint evidence
+
+The registry contains exactly twelve ordered cards and instantiates 12 root groups plus 48 directly
+editable leaves. Defaults derive typography and strokes from the active style, explicit math leaves
+use the reviewed MathTex display dialect, and the annotated graph uses the restricted `sin(x)` AST.
+Insertion allocates against the full project namespace, clamps exact rotated-leaf bounds 24 logical
+pixels inside every supported frame, preflights the complete candidate document, and commits one
+history transaction with root-only selection. Invalid, unavailable, ambiguous, non-finite, locked,
+and playback-time ingress fails closed.
+
+Fresh independent correctness review returned `CLOSED_NO_FINDINGS` after replaying six suites / 137
+tests, typecheck, and compilation of all twelve components with zero diagnostics. A separate fresh
+visual review found no viewport-edge clipping, component overlap, page overflow, or cut-off primary
+controls in the retained 1440×900 and 1280×800 frames. Static images do not independently prove all
+dynamic assertions; the checked-in browser journey supplies that evidence.
 
 ## Five AI command results
 
@@ -141,7 +167,7 @@ request was made.
   stable IDs, global hierarchy and reference checks, resource ceilings, safe LaTeX/assets/graphs,
   strict native-shape descriptors, atomic operations, and history.
 - SVG direct manipulation of ordinary objects and styled groups, multi-selection, snap/alignment,
-  layers, inherited locks/visibility, six existing semantic components, 16 editable shape presets,
+  layers, inherited locks/visibility, exactly twelve editable semantic components, 16 editable shape presets,
   multiple shots, and timeline blocks.
 - Deterministic approximate preview, Editorial Ink and Raw Manim grammars, persistence, import,
   export, diagnostics, and deterministic critique.
@@ -275,7 +301,7 @@ publication. All were repaired and regression-tested:
 
 ## Highest-value next engineering step
 
-Complete the twelve-component semantic library and exact animation vocabulary on the same
-schema/editor/compiler/policy boundary, then proceed to trusted portable assets and synchronized
-audio/captions. Those are current V1 product blockers; multi-tenant admission remains outside this
-private-owner V1 contract.
+Implement trusted project-local asset storage and bounded `.proofcanvas` packaging, then
+synchronized audio/caption workflows and the remaining exact animation/render vocabulary. Those
+are the next V1 product blockers; multi-tenant admission remains outside this private-owner V1
+contract.

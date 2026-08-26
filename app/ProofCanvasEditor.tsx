@@ -10,7 +10,7 @@ import ShotStoryboard, { type StoryboardActionResult } from './ShotStoryboard'
 import ShotTimeline from './ShotTimeline'
 import { REQUIRED_AI_COMMANDS, interpretDemoCommand, type AiProposal } from '@/lib/proofcanvas/ai'
 import { compileManim } from '@/lib/proofcanvas/compiler'
-import { SEMANTIC_COMPONENTS, insertSemanticComponent, type SemanticComponentId } from '@/lib/proofcanvas/components'
+import { PROOFCANVAS_SEMANTIC_COMPONENT_MIME, SEMANTIC_COMPONENTS, insertSemanticComponent, semanticComponentById, type SemanticComponentId } from '@/lib/proofcanvas/components'
 import { critiqueProject, type CritiqueIssue } from '@/lib/proofcanvas/critique'
 import { ensureSessionCsrfToken } from '@/lib/proofcanvas/csrf.client'
 import { createCantorDemoProject } from '@/lib/proofcanvas/demo'
@@ -567,6 +567,7 @@ export default function ProofCanvasEditor({
   const [libraryTab, setLibraryTab] = useState<LibraryTab>('text')
   const [librarySearch, setLibrarySearch] = useState('')
   const [draggedShapePresetId, setDraggedShapePresetId] = useState<ShapePresetId | null>(null)
+  const [draggedComponentId, setDraggedComponentId] = useState<SemanticComponentId | null>(null)
   const [animationType, setAnimationType] = useState<AnimationType>('fade-in')
   const [lifetimeInputRevision, setLifetimeInputRevision] = useState(0)
   const [timelineDraft, setTimelineDraft] = useState<{ id: string; start: number; duration: number } | null>(null)
@@ -1426,18 +1427,45 @@ export default function ProofCanvasEditor({
     }
   }, [commitDocument, setSelectedIds])
 
-  const insertComponent = (componentId: SemanticComponentId) => {
+  const insertComponentAt = useCallback((componentId: SemanticComponentId, origin?: { x: number; y: number }) => {
     try {
-      const latestProject = historyRef.current.present
-      const latestShot = latestProject.shots.find(({ id }) => id === shot.id) ?? latestProject.shots[0]
-      const frame = logicalFrameFor(latestProject.settings.aspectRatio)
+      const current = authorityRef.current
+      if (current.isPlaying) {
+        setStatus('Pause sequence playback before inserting a component.')
+        return false
+      }
+      const definition = semanticComponentById(componentId)
+      if (!definition) {
+        setStatus('That semantic component is not available.')
+        return false
+      }
+      const latestProject = current.history.present
+      const latestShot = latestProject.shots.find(({ id }) => id === current.workspace.activeShotId) ?? latestProject.shots[0]
+      const insertionPoint = origin ?? (() => {
+        const camera = previewShotAtTime(latestShot, current.workspace.playhead).camera
+        return { x: camera.x, y: camera.y }
+      })()
       const before = new Set(latestShot.objects.map(({ id }) => id))
-      const next = insertSemanticComponent(latestProject, latestShot.id, componentId, { x: frame.centerX, y: frame.centerY })
-      if (commitDocument(next, `Insert ${componentId}`)) setSelectedIds(next.shots.find(({ id }) => id === shot.id)!.objects.filter(({ id }) => !before.has(id)).map(({ id }) => id))
+      const next = insertSemanticComponent(latestProject, latestShot.id, definition.id, insertionPoint)
+      const nextShot = next.shots.find(({ id }) => id === latestShot.id)!
+      const inserted = nextShot.objects.filter(({ id }) => !before.has(id))
+      const insertedIds = new Set(inserted.map(({ id }) => id))
+      const insertedRootIds = inserted
+        .filter(({ parentId }) => !parentId || !insertedIds.has(parentId))
+        .map(({ id }) => id)
+      if (insertedRootIds.length !== 1 || inserted.find(({ id }) => id === insertedRootIds[0])?.type !== 'group') {
+        throw new Error('Semantic component did not produce exactly one editable root group')
+      }
+      if (commitDocument(next, `Insert ${definition.name}`)) {
+        setSelectedIds(insertedRootIds)
+        return true
+      }
+      return false
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Component insertion failed')
+      return false
     }
-  }
+  }, [commitDocument, setSelectedIds])
 
   const duplicateSelection = useCallback(() => {
     if (!selectedRootIds.length) return setStatus('Select an object to duplicate')
@@ -2975,7 +3003,28 @@ export default function ProofCanvasEditor({
             }}
             onDragEnd={() => setDraggedShapePresetId(null)}
           ><span aria-hidden="true">{SHAPE_PRESET_ICONS[preset.id]}</span><b>{preset.name}</b><small>{preset.description}</small></button>)}{visibleShapePresets.length === 0 && <p className="pc-library-empty" role="status">No shapes match “{librarySearch}”.</p>}</div>}
-          {libraryTab === 'components' && <div className="pc-component-list">{visibleComponents.map((component) => { const labels: Record<SemanticComponentId, string> = { 'mathematical-title': 'Insert mathematical title', 'proposition-statement': 'Insert proposition or definition', 'equation-chain': 'Insert equation chain', 'annotated-diagram': 'Insert annotated diagram', 'focus-callout': 'Insert focus callout', 'recursive-intervals': 'Insert recursive interval construction' }; return <button key={component.id} type="button" onClick={() => insertComponent(component.id)} disabled={isPlaying} title={component.description} aria-label={labels[component.id]} data-component-id={component.id}><b>{component.name}</b><small>{component.description}</small></button> })}{visibleComponents.length === 0 && <p className="pc-library-empty" role="status">No components match “{librarySearch}”.</p>}</div>}
+          {libraryTab === 'components' && <div className="pc-component-list" data-semantic-component-count={SEMANTIC_COMPONENTS.length}>{visibleComponents.map((component) => <button
+            key={component.id}
+            type="button"
+            draggable={!isPlaying}
+            onClick={() => insertComponentAt(component.id)}
+            onDragStart={(event) => {
+              if (authorityRef.current.isPlaying || !semanticComponentById(component.id)) {
+                event.preventDefault()
+                setStatus('Pause sequence playback before dragging a component.')
+                return
+              }
+              event.dataTransfer.effectAllowed = 'copy'
+              event.dataTransfer.setData(PROOFCANVAS_SEMANTIC_COMPONENT_MIME, component.id)
+              setDraggedComponentId(component.id)
+            }}
+            onDragEnd={() => setDraggedComponentId(null)}
+            disabled={isPlaying}
+            title={component.description}
+            aria-label={`Insert ${component.name}`}
+            data-component-id={component.id}
+            data-dragging={draggedComponentId === component.id ? 'true' : 'false'}
+          ><b>{component.name}</b><small>{component.description}</small></button>)}{visibleComponents.length === 0 && <p className="pc-library-empty" role="status">No components match “{librarySearch}”.</p>}</div>}
           {libraryTab === 'styles' && <div className="pc-style-library" role="radiogroup" aria-label="Library output styles"><button type="button" role="radio" aria-checked={project.activeStyleId === EDITORIAL_INK_STYLE_ID} tabIndex={project.activeStyleId === EDITORIAL_INK_STYLE_ID ? 0 : -1} disabled={isPlaying} data-style-surface="library" data-style-id={EDITORIAL_INK_STYLE_ID} onKeyDown={(event) => navigateStyleRadios(event, EDITORIAL_INK_STYLE_ID, 'library')} onClick={() => selectOutputStyle(EDITORIAL_INK_STYLE_ID, 'Editorial Ink')}><i data-style-swatch="editorial"/><span><b>Editorial Ink</b><small>Warm restrained proof-film system</small></span></button><button type="button" role="radio" aria-checked={project.activeStyleId === RAW_MANIM_STYLE_ID} tabIndex={project.activeStyleId === RAW_MANIM_STYLE_ID ? 0 : -1} disabled={isPlaying} data-style-surface="library" data-style-id={RAW_MANIM_STYLE_ID} onKeyDown={(event) => navigateStyleRadios(event, RAW_MANIM_STYLE_ID, 'library')} onClick={() => selectOutputStyle(RAW_MANIM_STYLE_ID, 'Raw Manim')}><i data-style-swatch="raw"/><span><b>Raw Manim</b><small>Direct geometric defaults</small></span></button></div>}
         </section>
         <section className="pc-layer-section"><div className="pc-section-heading"><h2>Layers</h2><span>{shot.objects.length}</span></div>
@@ -3000,7 +3049,7 @@ export default function ProofCanvasEditor({
           </div>
           <button type="button" onClick={() => setRightPanelCollapsed((value) => !value)} aria-pressed={!rightPanelCollapsed} aria-label={rightPanelCollapsed ? 'Show inspector panel' : 'Hide inspector panel'}>Inspector</button>
         </div>
-        <IsolatedCanvasStage clock={playbackClockRef.current} isPlaying={isPlaying} pausedPlayhead={playhead} previewStyleId={previewStyle.id} project={project} projectRevision={projectRevision} shot={shot} previewStyle={previewStyle} previewQuality={project.settings.previewQuality} selectedIds={selectedRootIds} authoringEnabled={!isPlaying} onSelect={(ids) => setSelectedIds(selectionRootIds(shot, ids))} onNotice={setStatus} onCommitTransforms={(updates, label) => commitOps(updates.map(({ objectId, transform }) => ({ type: 'update-object', objectId, patch: { transform } })), label)} onCommitKeyboardTransform={commitCanvasKeyboardTransform} onInsertShapePresetAt={insertShapePresetAt}/>
+        <IsolatedCanvasStage clock={playbackClockRef.current} isPlaying={isPlaying} pausedPlayhead={playhead} previewStyleId={previewStyle.id} project={project} projectRevision={projectRevision} shot={shot} previewStyle={previewStyle} previewQuality={project.settings.previewQuality} selectedIds={selectedRootIds} authoringEnabled={!isPlaying} onSelect={(ids) => setSelectedIds(selectionRootIds(shot, ids))} onNotice={setStatus} onCommitTransforms={(updates, label) => commitOps(updates.map(({ objectId, transform }) => ({ type: 'update-object', objectId, patch: { transform } })), label)} onCommitKeyboardTransform={commitCanvasKeyboardTransform} onInsertShapePresetAt={insertShapePresetAt} onInsertSemanticComponentAt={insertComponentAt}/>
         <p className="pc-status" role="status" aria-label="Editor status">{status}</p>
       </section>
 

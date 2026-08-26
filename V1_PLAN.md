@@ -88,8 +88,36 @@ Acceptance criteria: AC-05, AC-06, remaining AC-07 and AC-08, AC-11, AC-16.
 - Bound each generated dashed line to 256 children and all compiler-occurrence-weighted native
   geometry to 4,096 points or dashes. Renderer policy independently revalidates the generated-source
   grammar and immutable shape descriptors.
-- This milestone is engineering evidence for native geometry and does not by itself qualify the
-  remaining semantic-component library, complete V1 workflow, human visual taste, or deployment.
+- This milestone qualifies native geometry only; the complete V1 workflow, human visual taste,
+  and deployment remain open.
+
+### Milestone 3.7c — editable semantic-component library
+
+Acceptance criteria: the twelve-component portion of AC-06, with supporting manual-authoring and
+browser evidence.
+
+- Expand the stable component registry to exactly 12 ordered cards: Title & subtitle, Definition,
+  Theorem / proposition, Proof-step sequence, Equation derivation, Annotated graph, Case comparison,
+  Callout, Marginal note, Recursive construction, Vector explanation, and Example & abstraction.
+- Instantiate each card as one ordinary root group with directly editable leaves: 48 leaves and 60
+  objects across the complete library, with no implicit animations, lifetimes, tracks, raster assets,
+  or authored literal palette colours. Every math leaf explicitly uses the reviewed MathTex display
+  dialect; the graph is the restricted `sin(x)` expression and vector notation avoids unsupported
+  matrix environments.
+- Derive insertion defaults from the active project style, allocate IDs against the complete project
+  namespace, and clamp exact rotated descendant bounds 24 pixels inside every 16:9, 9:16, and 1:1
+  logical frame. Preflight the whole candidate document atomically against schema-v4 object, graph,
+  native-work, canonical-JSON, hierarchy, and reference limits before returning inserted objects.
+- Keep schema version 4: these components are authored compositions over the existing object model,
+  not a new persistence vocabulary. Component insertion remains editable, ungroupable, and
+  deterministically recompilable.
+- Expose the registry through searchable click and drag authoring. Click targets the live preview
+  camera centre; drops use inverse SVG/camera coordinates; playback, invalid payloads, and
+  unavailable components fail closed. Each successful insertion is one history transaction with
+  root-only selection, and representative components survive durable reload and JSON round trip.
+
+This slice implements and tests the twelve-component subrequirement of AC-06. AC-06 remains open
+for trusted image/SVG authoring and complete V1 qualification.
 
 ## Milestone 4 — assets, packages, audio, and captions
 

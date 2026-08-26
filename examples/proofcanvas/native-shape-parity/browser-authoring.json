@@ -128,13 +128,13 @@
     },
     "playback": {
       "path": "authoring-playback-1440x900.png",
-      "sha256": "5fb9410998a0e0d75927ff2f7bdedc33ad4fa04310155d85a21f9c35ab167a49",
+      "sha256": "e9e9727310c2ca92ef9145f186877f175504644659af78eddf24299cae314a21",
       "width": 1440,
       "height": 900
     },
     "portrait": {
       "path": "authoring-portrait-1024x1366.png",
-      "sha256": "e06faf3007d1d3a632e7c0148c8c97269bdda56ea0b56eec8002158f8414e974",
+      "sha256": "73e7b6154c2298c7535f31556b2f9745095cec5896701e6b761bd8fbaeeb5331",
       "width": 1024,
       "height": 1366
     }

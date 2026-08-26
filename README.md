@@ -125,6 +125,9 @@ appropriate TLS/network controls in front of the application.
 - Direct manipulation and AI proposals use atomic transactions. One proposal creates one undo
   entry; a failed operation publishes nothing.
 - Locks are inherited through groups. AI cannot unlock objects.
+- The searchable Components tab exposes exactly twelve ordered semantic assemblies. Click inserts
+  at the live preview camera centre and drag/drop inserts at the camera-transformed pointer; each
+  result is one ordinary editable root group committed as one atomic history entry.
 - The browser preview is deterministic but approximate. SVG/KaTeX typography, paths, easing,
   graphs, group geometry, and camera motion do not promise frame parity with Manim.
 - Projects are private to one installation and persist in a checksummed, STRICT SQLite repository.
@@ -158,6 +161,10 @@ source only; checked-in image paths still need the V1 trusted asset-packaging pa
 authoring and its deep inspector were exercised in production Chromium at a 1024x1366 viewport with
 a 540x960 9:16 authored frame and no page overflow. That is bounded portrait-authoring evidence,
 not qualification of the complete portrait animation/render journey or mobile touch editing.
+The exact twelve-card order and representative Callout, Vector explanation, and Title & subtitle
+insertion and manipulation were exercised in production Chromium at 1440×900 and 1280×800,
+including durable reload and JSON round trip. This qualifies the semantic-component slice only,
+not the complete V1 object library or V1 release.
 Automated tests and accessibility scans do not replace human usability or assistive-technology review.
 
 ## License

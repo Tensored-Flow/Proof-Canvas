@@ -415,6 +415,84 @@ describe("atomic scene operations", () => {
     expect(new Set(groupCopy.objects.map(({ id }) => id)).size).toBe(groupCopy.objects.length);
   });
 
+  test("remaps only declared annotation targets across nested object duplication", () => {
+    const project = cloneSerializable(createCantorDemoProject());
+    const shot = project.shots[0];
+    const baseTransform = { x: 600, y: 320, width: 180, height: 120, rotation: 0, scaleX: 1, scaleY: 1 };
+    const outer: SceneObject = {
+      id: "group-reference-component",
+      type: "group",
+      name: "Reference component",
+      locked: false,
+      visible: true,
+      transform: baseTransform,
+      style: {},
+      properties: {},
+    };
+    const inner: SceneObject = {
+      ...cloneSerializable(outer),
+      id: "group-reference-inner",
+      name: "Reference inner",
+      parentId: outer.id,
+      transform: { ...baseTransform, width: 150, height: 90 },
+    };
+    const target: SceneObject = {
+      ...cloneSerializable(outer),
+      id: "object-reference-target",
+      type: "rectangle",
+      name: "Reference target",
+      parentId: inner.id,
+      transform: { ...baseTransform, x: 560, width: 48, height: 36 },
+    };
+    const arrow: SceneObject = {
+      ...cloneSerializable(target),
+      id: "object-reference-arrow",
+      type: "arrow",
+      name: "Reference arrow",
+      semanticRole: "annotation-arrow",
+      transform: { ...baseTransform, x: 640, width: 70, height: 24 },
+      properties: {
+        targetId: target.id,
+        externalId: target.id,
+        assetId: target.id,
+        targetIds: [target.id],
+        nested: { targetId: target.id },
+      },
+    };
+    const opaqueTarget: SceneObject = {
+      ...cloneSerializable(arrow),
+      id: "object-opaque-target-field",
+      name: "Opaque target field",
+      semanticRole: "decorative-arrow",
+      properties: { targetId: target.id },
+    };
+    shot.objects.push(outer, inner, target, arrow, opaqueTarget);
+    const valid = ProjectDocumentSchema.parse(project);
+
+    const duplicated = duplicateObjects(valid, SHOT, [outer.id]).project.shots[0];
+    const copiedOuter = duplicated.objects.find(({ name }) => name === "Reference component copy")!;
+    const copiedInner = duplicated.objects.find(({ name }) => name === "Reference inner copy")!;
+    const copiedTarget = duplicated.objects.find(({ name }) => name === "Reference target copy")!;
+    const copiedArrow = duplicated.objects.find(({ name }) => name === "Reference arrow copy")!;
+    const copiedOpaqueTarget = duplicated.objects.find(({ name }) => name === "Opaque target field copy")!;
+
+    expect(copiedInner.parentId).toBe(copiedOuter.id);
+    expect(copiedTarget.parentId).toBe(copiedInner.id);
+    expect(copiedArrow.parentId).toBe(copiedInner.id);
+    expect(copiedArrow.properties).toEqual({
+      targetId: copiedTarget.id,
+      externalId: target.id,
+      assetId: target.id,
+      targetIds: [target.id],
+      nested: { targetId: target.id },
+    });
+    expect(copiedOpaqueTarget.properties.targetId).toBe(target.id);
+
+    const arrowOnly = duplicateObjects(valid, SHOT, [arrow.id]).project.shots[0]
+      .objects.find(({ name }) => name === "Reference arrow copy")!;
+    expect(arrowOnly.properties.targetId).toBe(target.id);
+  });
+
   test("inherits locks from ancestors and rejects unlock-then-mutate bypasses", () => {
     const project = createCantorDemoProject();
     const locked = applyOperations(project, SHOT, [{ type: "lock-object", objectId: "object-interval-diagram" }]).project;

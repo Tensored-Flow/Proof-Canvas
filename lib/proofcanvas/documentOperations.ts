@@ -4,6 +4,7 @@ import { addTimelineTimes, compareTimelineTimes, logicalFrameFor, resolutionFor,
 import { firstVisibilityAnimationByTarget, previewShotAtTime } from "./preview";
 import { effectiveObjectLifetime, propertyTrackKey, samplePropertyTrack } from "./timeline";
 import { projectAuthoringTransitionIssue } from "./authoringPolicy";
+import { remapDeclaredObjectPropertyReferences } from "./objectReferences";
 import {
   AspectRatioSchema,
   CustomEasingPresetSchema,
@@ -383,20 +384,6 @@ function copiedName(value: string, maximum: number): string {
   return `${value.slice(0, maximum - suffix.length)}${suffix}`;
 }
 
-function remapObjectPropertyReferences(
-  object: SceneObject,
-  mapping: ReadonlyMap<string, string>,
-): SceneObject["properties"] {
-  const properties = cloneSerializable(object.properties);
-  // Object properties are intentionally open-ended. Only remap references
-  // declared by a component contract; names such as `externalId` or `assetId`
-  // are opaque author data and may legally collide with scene-object IDs.
-  if (object.semanticRole === "annotation-arrow" && typeof properties.targetId === "string") {
-    properties.targetId = mapping.get(properties.targetId) ?? properties.targetId;
-  }
-  return properties;
-}
-
 type MutableIdMapping = Map<string, string[]>;
 
 function setMapping(mapping: MutableIdMapping, sourceId: string, ...targetIds: string[]): void {
@@ -459,7 +446,7 @@ function buildDuplicateShot(project: ProjectDocument, shotId: string, name?: str
     ...object,
     id: scalarMapping.get(object.id)!,
     ...(object.parentId ? { parentId: scalarMapping.get(object.parentId)! } : {}),
-    properties: remapObjectPropertyReferences(object, scalarMapping),
+    properties: remapDeclaredObjectPropertyReferences(object, scalarMapping),
   }));
   shot.animations = shot.animations.map((animation) => ({
     ...animation,
@@ -824,7 +811,7 @@ function buildSplitShot(project: ProjectDocument, shotId: string, boundary: numb
       }
     }
     if (clone.parentId) clone.parentId = objectMapping.get(clone.parentId) ?? clone.parentId;
-    clone.properties = remapObjectPropertyReferences(object, objectMapping);
+    clone.properties = remapDeclaredObjectPropertyReferences(object, objectMapping);
     const lifetime = sourceLifetime(object, source.duration);
     clone.lifetime = normalizedLifetime(
       subtractTimelineTimes(compareTimelineTimes(lifetime.start, boundary) < 0 ? boundary : lifetime.start, boundary),

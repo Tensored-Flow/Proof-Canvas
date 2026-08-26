@@ -31,6 +31,17 @@ async function boxCenter(locator: Locator) {
   return { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 }
 }
 
+async function setSelectedPosition(page: Page, x: number, y: number) {
+  const xPosition = page.getByRole('spinbutton', { name: 'X position' })
+  await xPosition.fill(String(x))
+  await xPosition.blur()
+  await expect(xPosition).toHaveValue(String(x))
+  const yPosition = page.getByRole('spinbutton', { name: 'Y position' })
+  await yPosition.fill(String(y))
+  await yPosition.blur()
+  await expect(yPosition).toHaveValue(String(y))
+}
+
 test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => {
   const ownerPassword = process.env.PROOFCANVAS_E2E_OWNER_PASSWORD
   expect(ownerPassword, 'The isolated acceptance harness must provide an ephemeral owner password').toBeTruthy()
@@ -48,7 +59,7 @@ test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => 
   await page.getByRole('button', { name: 'Log in' }).click()
   await expect(page).toHaveURL(/\/$/)
   await expect(page.getByRole('heading', { name: 'Your mathematical motion projects' })).toBeVisible()
-  await page.getByRole('textbox', { name: 'Project title' }).fill('M3.6 graph authority acceptance')
+  await page.getByRole('textbox', { name: 'Project title' }).fill('M3.7c semantic component acceptance')
   await page.getByRole('button', { name: 'New sample project' }).click()
   await expect(page).toHaveURL(/\/projects\/project-[a-f0-9]{24}$/)
   const editor = page.getByRole('application', { name: 'ProofCanvas editor' })
@@ -104,7 +115,6 @@ test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => 
   const screenshotName = testInfo.project.name.includes('1440')
     ? 'proofcanvas-editorial-1440x900.png'
     : 'proofcanvas-editorial-1280x800.png'
-  await page.screenshot({ path: path.join(evidenceDir, screenshotName), fullPage: false })
 
   const stageBounds = await page.locator('.pc-stage').boundingBox()
   const titleBounds = await title.boundingBox()
@@ -212,8 +222,8 @@ test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => 
   await page.getByRole('button', { name: 'Add math' }).click()
   await page.getByRole('button', { name: 'Add brace' }).click()
   await page.getByRole('tab', { name: 'Shapes' }).click()
-  await page.getByRole('button', { name: 'Add circle' }).click()
-  await page.getByRole('button', { name: 'Add arrow' }).click()
+  await page.getByRole('button', { name: 'Insert Circle' }).click()
+  await page.getByRole('button', { name: 'Insert Arrow' }).click()
   await page.getByRole('tab', { name: 'Graphs' }).click()
   await page.getByRole('button', { name: 'Add coordinate axes' }).click()
   await page.getByRole('button', { name: 'Add function graph' }).click()
@@ -280,6 +290,13 @@ test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => 
   await xPosition.blur()
   await expect(page.getByRole('spinbutton', { name: 'X position' })).toHaveValue('520')
 
+  await page.getByRole('button', { name: 'Add shot' }).click()
+  await expect(editor).toHaveAttribute('data-active-shot-id', /shot-scene-3/)
+  const componentShotName = page.getByRole('textbox', { name: 'Shot name' })
+  await componentShotName.fill('Semantic component study')
+  await componentShotName.blur()
+  const componentShotTab = page.getByRole('tab', { name: /^Shot \d+, Semantic component study,/ })
+  await expect(componentShotTab).toBeVisible()
   await page.getByRole('tab', { name: 'Components' }).click()
   await expect(page.getByRole('tab', { name: 'Components' })).toHaveAttribute('aria-selected', 'true')
   await page.getByRole('tab', { name: 'Components' }).focus()
@@ -287,13 +304,40 @@ test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => 
   await expect(page.getByRole('tab', { name: 'Graphs' })).toBeFocused()
   await page.keyboard.press('ArrowRight')
   await expect(page.getByRole('tab', { name: 'Components' })).toBeFocused()
-  await page.getByRole('button', { name: 'Insert focus callout' }).click()
-  await expect(page.getByRole('treeitem', { name: /Focus callout/ })).toBeVisible()
-  await page.getByRole('button', { name: 'Insert mathematical title' }).click()
-  const insertedTitleGroupLayer = page.getByRole('treeitem', { name: /^Mathematical title;/ })
+  const componentLibrary = page.locator('.pc-component-list')
+  await expect(componentLibrary).toHaveAttribute('data-semantic-component-count', '12')
+  await expect(componentLibrary.locator('[data-component-id]')).toHaveCount(12)
+  expect(await componentLibrary.locator('[data-component-id]').evaluateAll((cards) => cards.map((card) => card.getAttribute('data-component-id')))).toEqual([
+    'mathematical-title', 'definition-block', 'proposition-statement', 'proof-step-sequence',
+    'equation-chain', 'annotated-diagram', 'case-comparison', 'focus-callout', 'marginal-note',
+    'recursive-intervals', 'vector-explanation', 'example-abstraction',
+  ])
+  await page.getByRole('button', { name: 'Insert Callout' }).click()
+  await expect(page.locator('[data-layer-object-id="group-focus-callout"]')).toBeVisible()
+  await setSelectedPosition(page, 240, 390)
+  const componentDragHistory = await historyCount(page)
+  const componentTransfer = await page.evaluateHandle(() => new DataTransfer())
+  await page.getByRole('button', { name: 'Insert Vector explanation' }).dispatchEvent('dragstart', { dataTransfer: componentTransfer })
+  const componentDropStage = page.locator('.pc-stage')
+  const componentDropBounds = await componentDropStage.boundingBox()
+  expect(componentDropBounds).not.toBeNull()
+  const componentDropPoint = {
+    x: componentDropBounds!.x + componentDropBounds!.width * 0.7,
+    y: componentDropBounds!.y + componentDropBounds!.height * 0.62,
+  }
+  await componentDropStage.dispatchEvent('dragover', { dataTransfer: componentTransfer, clientX: componentDropPoint.x, clientY: componentDropPoint.y })
+  await componentDropStage.dispatchEvent('drop', { dataTransfer: componentTransfer, clientX: componentDropPoint.x, clientY: componentDropPoint.y })
+  await page.getByRole('button', { name: 'Insert Vector explanation' }).dispatchEvent('dragend', { dataTransfer: componentTransfer })
+  expect(await historyCount(page)).toBe(componentDragHistory + 1)
+  await expect(page.locator('[data-layer-object-id="group-vector-explanation"]')).toHaveAttribute('aria-selected', 'true')
+  await page.getByRole('button', { name: 'Insert Title & subtitle' }).click()
+  const insertedTitleGroupLayer = page.locator('[data-layer-object-id="group-mathematical-title"]')
   await insertedTitleGroupLayer.click()
   const insertedTitleGroup = page.locator('[data-group-move-target="group-mathematical-title"]')
   await expect(insertedTitleGroup).toBeVisible()
+  await setSelectedPosition(page, 480, 110)
+  await page.screenshot({ path: path.join(evidenceDir, screenshotName), fullPage: false })
+  await setSelectedPosition(page, 480, 230)
   let groupCenterBefore = await boxCenter(insertedTitleGroup)
   const canvasCenter = await page.locator('.pc-stage').evaluate((element: SVGSVGElement) => {
     const point = element.createSVGPoint()
@@ -330,15 +374,19 @@ test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => 
   expect(Math.abs(groupCenterAfterRotate.x - groupCenterBefore.x)).toBeLessThan(2)
   expect(Math.abs(groupCenterAfterRotate.y - groupCenterBefore.y)).toBeLessThan(2)
   await insertedTitleGroupLayer.click()
-  await initialTitleLayer.click({ modifiers: ['Shift'] })
+  const insertedVectorGroupLayer = page.locator('[data-layer-object-id="group-vector-explanation"]')
+  await insertedVectorGroupLayer.click({ modifiers: ['Shift'] })
   await page.getByRole('button', { name: 'Align right' }).click()
   await insertedTitleGroupLayer.click()
   const alignedGroup = await insertedTitleGroup.boundingBox()
-  await initialTitleLayer.click()
-  const alignedTitle = await title.boundingBox()
+  await insertedVectorGroupLayer.click()
+  const alignedTitle = await page.locator('[data-group-move-target="group-vector-explanation"]').boundingBox()
   expect(alignedGroup).not.toBeNull()
   expect(alignedTitle).not.toBeNull()
   expect(Math.abs((alignedGroup!.x + alignedGroup!.width) - (alignedTitle!.x + alignedTitle!.width))).toBeLessThan(2)
+  await constructionTab.click()
+  await expect(editor).toHaveAttribute('data-active-shot-id', 'shot-cantor-construction')
+  await playhead.fill('12.5')
   await page.getByRole('tab', { name: 'Text' }).click()
 
   const titleLayer = page.getByRole('treeitem', { name: /Uncountable, Yet Zero Length/ })
@@ -454,13 +502,16 @@ test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => 
   await expect(editor).toHaveAttribute('data-durable', 'true')
   await expect(editor).toHaveAttribute('data-save-state', 'saved')
   await expect(page.getByRole('treeitem', { name: /Persisted theorem title/ })).toHaveAttribute('data-layer-object-id', 'object-title')
-  await expect(page.getByRole('treeitem', { name: /Focus callout/ })).toBeVisible()
+  await page.getByRole('tab', { name: /^Shot \d+, Semantic component study,/ }).click()
+  await expect(page.locator('[data-layer-object-id="group-focus-callout"]')).toBeVisible()
+  await expect(page.locator('[data-layer-object-id="group-vector-explanation"]')).toBeVisible()
+  await constructionTab.click()
   await expect(page.getByRole('radio', { name: 'Raw Manim' })).toBeChecked()
   expect(await page.locator('[data-animation-id]').count()).toBe(savedAnimationCount)
   await page.getByRole('radio', { name: 'Editorial Ink' }).check()
 
   await page.getByRole('button', { name: 'Add shot' }).click()
-  await expect(editor).toHaveAttribute('data-active-shot-id', /shot-scene-3/)
+  await expect(editor).toHaveAttribute('data-active-shot-id', /shot-scene-4/)
   const shotName = page.getByRole('textbox', { name: 'Shot name' })
   await shotName.fill('Closing annotation')
   await shotName.blur()
@@ -507,7 +558,9 @@ test('complete structured edit-to-Manim journey', async ({ page }, testInfo) => 
   expect(await importInput.locator('..').evaluate((element) => element.matches(':focus-within'))).toBe(true)
   await importInput.setInputFiles({ name: 'project.json', mimeType: 'application/json', buffer: Buffer.from(exportedJson) })
   await expect(editor).toHaveAttribute('data-project-id', projectId!)
-  await expect(page.getByRole('treeitem', { name: /Focus callout/ })).toBeVisible()
+  await page.getByRole('tab', { name: /^Shot \d+, Semantic component study,/ }).click()
+  await expect(page.locator('[data-layer-object-id="group-focus-callout"]')).toBeVisible()
+  await constructionTab.click()
   expect(await page.locator('[data-animation-id]').count()).toBe(exportedProject.shots[0].animations.length)
   await page.getByLabel('Owner menu').click()
   await importInput.setInputFiles({ name: 'invalid.json', mimeType: 'application/json', buffer: Buffer.from('{"schemaVersion":999}') })

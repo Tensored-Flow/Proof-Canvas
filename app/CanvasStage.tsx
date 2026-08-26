@@ -11,6 +11,7 @@ import { objectTypeSupportsStyleProperty, resolveDashedLinePattern, type Project
 import { freeformCubicSegments, isLinearShapeType, resolveArrowPreviewGeometry, resolveShapeDimensions, resolveShapeGeometry, resolveShapePaint } from '@/lib/proofcanvas/shapeGeometry'
 import { PROOFCANVAS_SHAPE_PRESET_MIME, shapePresetById, type ShapePresetId } from '@/lib/proofcanvas/shapePresets'
 import { resolvedGraphStroke, styledDisplayTransform, styledTransform } from '@/lib/proofcanvas/styles'
+import { PROOFCANVAS_SEMANTIC_COMPONENT_MIME, semanticComponentById, type SemanticComponentId } from '@/lib/proofcanvas/components'
 
 type Gesture = {
   kind: 'move' | 'resize' | 'rotate'
@@ -45,6 +46,7 @@ export interface CanvasStageProps {
   onCommitTransforms(updates: Array<{ objectId: string; transform: Partial<SceneObject['transform']> }>, label: string): void
   onCommitKeyboardTransform(intent: CanvasKeyboardTransformIntent): void
   onInsertShapePresetAt?(presetId: ShapePresetId, point: { x: number; y: number }): void
+  onInsertSemanticComponentAt?(componentId: SemanticComponentId, point: { x: number; y: number }): void
   onNotice(message: string): void
 }
 
@@ -476,7 +478,7 @@ export const CanvasThumbnail = memo(function CanvasThumbnail({ aspectRatio, shot
   </svg>
 }, (previous, next) => previous.visualRevision === next.visualRevision)
 
-export default function CanvasStage({ project, shot, playhead, previewStyle, projectRevision, previewQuality, selectedIds, authoringEnabled = true, onSelect, onCommitTransforms, onCommitKeyboardTransform, onInsertShapePresetAt, onNotice }: CanvasStageProps) {
+export default function CanvasStage({ project, shot, playhead, previewStyle, projectRevision, previewQuality, selectedIds, authoringEnabled = true, onSelect, onCommitTransforms, onCommitKeyboardTransform, onInsertShapePresetAt, onInsertSemanticComponentAt, onNotice }: CanvasStageProps) {
   const svgRef = useRef<SVGSVGElement | null>(null)
   const gestureRef = useRef<Gesture | null>(null)
   const [previewTransforms, setPreviewTransforms] = useState<Map<string, SceneObject['transform']>>(new Map())
@@ -484,11 +486,33 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, pro
   const [guides, setGuides] = useState<{ x?: number; y?: number }>({})
   const frame = useMemo(() => logicalFrameFor(project.settings.aspectRatio), [project.settings.aspectRatio])
   const preview = useMemo(() => previewShotAtTime(shot, playhead), [shot, playhead])
-  const dropShapePreset = (event: ReactDragEvent<SVGSVGElement>) => {
-    if (!Array.from(event.dataTransfer.types).includes(PROOFCANVAS_SHAPE_PRESET_MIME)) return
+  const supportedDropType = (types: readonly string[]) => {
+    const supported = [PROOFCANVAS_SHAPE_PRESET_MIME, PROOFCANVAS_SEMANTIC_COMPONENT_MIME]
+      .filter((type) => types.includes(type))
+    return supported.length === 1 ? supported[0] : null
+  }
+  const dropLibraryItem = (event: ReactDragEvent<SVGSVGElement>) => {
+    const dropType = supportedDropType(Array.from(event.dataTransfer.types))
+    if (!dropType) return
     event.preventDefault()
     event.stopPropagation()
-    const presetId = event.dataTransfer.getData(PROOFCANVAS_SHAPE_PRESET_MIME)
+    const itemId = event.dataTransfer.getData(dropType)
+    if (dropType === PROOFCANVAS_SEMANTIC_COMPONENT_MIME) {
+      if (!authoringEnabled) {
+        onNotice('Pause playback before dropping a component.')
+        return
+      }
+      if (!onInsertSemanticComponentAt) {
+        onNotice('Component insertion is not available on this canvas.')
+        return
+      }
+      if (!semanticComponentById(itemId)) {
+        onNotice('That semantic component is not available.')
+        return
+      }
+      onInsertSemanticComponentAt(itemId as SemanticComponentId, cameraPoint(svgPoint(event.currentTarget, event), preview.camera, frame))
+      return
+    }
     if (!authoringEnabled) {
       onNotice('Pause playback before dropping a shape.')
       return
@@ -497,11 +521,11 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, pro
       onNotice('Shape insertion is not available on this canvas.')
       return
     }
-    if (!shapePresetById(presetId)) {
+    if (!shapePresetById(itemId)) {
       onNotice('That shape preset is not available.')
       return
     }
-    onInsertShapePresetAt(presetId as ShapePresetId, cameraPoint(svgPoint(event.currentTarget, event), preview.camera, frame))
+    onInsertShapePresetAt(itemId as ShapePresetId, cameraPoint(svgPoint(event.currentTarget, event), preview.camera, frame))
   }
   const objects = preview.objects.map((object) => previewTransforms.has(object.id) ? { ...object, transform: previewTransforms.get(object.id)! } : object)
   const visibleObjects = objects.filter((object) => object.preview.opacity > 0.001)
@@ -766,7 +790,7 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, pro
   const motionExceptionCount = shot.animations.filter(({ easing }) => easing !== previewStyle.motion.easing).length
   return (
     <div className="pc-stage-wrap" data-testid="proofcanvas-stage" style={{ background: previewStyle.colors.background, aspectRatio: `${frame.width} / ${frame.height}`, '--pc-stage-ratio': frame.width / frame.height } as CSSProperties}>
-      <svg ref={svgRef} className="pc-stage" viewBox={`0 0 ${frame.width} ${frame.height}`} style={{ '--pc-stage-aspect': `${frame.width} / ${frame.height}` } as CSSProperties} data-preview-quality={previewQuality} data-authoring-enabled={authoringEnabled ? 'true' : 'false'} data-shape-drop-enabled={authoringEnabled && onInsertShapePresetAt ? 'true' : 'false'} role="group" tabIndex={0} aria-disabled={!authoringEnabled} aria-label={`${shot.name} canvas at ${playhead.toFixed(1)} seconds${authoringEnabled ? '' : '; playback preview, editing disabled'}`} onDragOver={(event) => { if (Array.from(event.dataTransfer.types).includes(PROOFCANVAS_SHAPE_PRESET_MIME)) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = authoringEnabled && onInsertShapePresetAt ? 'copy' : 'none' } }} onDrop={dropShapePreset} onPointerDown={(event) => { if (authoringEnabled && event.target === event.currentTarget) { event.currentTarget.focus({ preventScroll: true }); onSelect([]) } }} onPointerMove={onPointerMove} onPointerUp={endGesture} onPointerCancel={cancelPointerGesture}>
+      <svg ref={svgRef} className="pc-stage" viewBox={`0 0 ${frame.width} ${frame.height}`} style={{ '--pc-stage-aspect': `${frame.width} / ${frame.height}` } as CSSProperties} data-preview-quality={previewQuality} data-authoring-enabled={authoringEnabled ? 'true' : 'false'} data-shape-drop-enabled={authoringEnabled && onInsertShapePresetAt ? 'true' : 'false'} data-component-drop-enabled={authoringEnabled && onInsertSemanticComponentAt ? 'true' : 'false'} role="group" tabIndex={0} aria-disabled={!authoringEnabled} aria-label={`${shot.name} canvas at ${playhead.toFixed(1)} seconds${authoringEnabled ? '' : '; playback preview, editing disabled'}`} onDragOver={(event) => { const dropType = supportedDropType(Array.from(event.dataTransfer.types)); if (dropType) { event.preventDefault(); event.stopPropagation(); const available = dropType === PROOFCANVAS_SHAPE_PRESET_MIME ? Boolean(onInsertShapePresetAt) : Boolean(onInsertSemanticComponentAt); event.dataTransfer.dropEffect = authoringEnabled && available ? 'copy' : 'none' } }} onDrop={dropLibraryItem} onPointerDown={(event) => { if (authoringEnabled && event.target === event.currentTarget) { event.currentTarget.focus({ preventScroll: true }); onSelect([]) } }} onPointerMove={onPointerMove} onPointerUp={endGesture} onPointerCancel={cancelPointerGesture}>
         <g data-pc-camera-transform transform={`translate(${frame.centerX} ${frame.centerY}) scale(${preview.camera.zoom}) rotate(${-preview.camera.rotation}) translate(${-preview.camera.x} ${-preview.camera.y})`}>
           {guides.x !== undefined && <line className="pc-snap-guide" data-guide-axis="x" x1={guides.x} x2={guides.x} y1={0} y2={frame.height}/>}
           {guides.y !== undefined && <line className="pc-snap-guide" data-guide-axis="y" x1={0} x2={frame.width} y1={guides.y} y2={guides.y}/>}

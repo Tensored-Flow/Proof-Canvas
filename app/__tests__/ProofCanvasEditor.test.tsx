@@ -193,7 +193,7 @@ describe('ProofCanvas editor client', () => {
     expect(axesY + 75).toBeLessThanOrEqual(frame.height)
 
     fireEvent.click(screen.getByRole('tab', { name: 'Components' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Insert mathematical title' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Insert Title & subtitle' }))
     const titleParts = [...container.querySelectorAll<SVGForeignObjectElement>('[data-parent-id="group-mathematical-title"]')]
     expect(titleParts).toHaveLength(2)
     for (const part of titleParts) {
@@ -720,8 +720,8 @@ describe('ProofCanvas editor client', () => {
     expect(container.querySelector('[data-object-id="object-text"] .pc-canvas-text')).toHaveTextContent('Edited mathematical narration')
 
     fireEvent.click(screen.getByRole('tab', { name: 'Components' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Insert focus callout' }))
-    expect(screen.getByRole('treeitem', { name: /Focus callout/ })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Insert Callout' }))
+    expect(screen.getAllByRole('treeitem', { name: /^Callout;/ }).find((item) => item.getAttribute('aria-level') === '1')).toBeInTheDocument()
     expect(editor()).toHaveAttribute('data-history-past-count', '3')
     expect(screen.queryByRole('tab', { name: 'Media' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Add raster image' })).not.toBeInTheDocument()
@@ -731,13 +731,13 @@ describe('ProofCanvas editor client', () => {
   it('derives a selected group frame from authored visible descendants independently of output style', () => {
     const { container } = render(<ProofCanvasEditor />)
     fireEvent.click(screen.getByRole('tab', { name: 'Components' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Insert mathematical title' }))
-    fireEvent.click(screen.getByRole('treeitem', { name: /Mathematical title/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Insert Title & subtitle' }))
+    fireEvent.click(screen.getByRole('treeitem', { name: /^Title & subtitle;/ }))
 
     const moveTarget = () => container.querySelector<SVGRectElement>('[data-group-move-target="group-mathematical-title"]')!
-    expect(Number(moveTarget().getAttribute('width'))).toBe(340)
+    expect(Number(moveTarget().getAttribute('width'))).toBe(420)
     fireEvent.click(screen.getByRole('radio', { name: 'Raw Manim' }))
-    expect(Number(moveTarget().getAttribute('width'))).toBe(340)
+    expect(Number(moveTarget().getAttribute('width'))).toBe(420)
   })
 
   it('labels inherited visibility and omits the dead group-opacity control', () => {
@@ -782,11 +782,17 @@ describe('ProofCanvas editor client', () => {
 
     fireEvent.click(screen.getByRole('tab', { name: 'Components' }))
     for (const label of [
-      'Insert mathematical title', 'Insert proposition or definition', 'Insert equation chain',
-      'Insert annotated diagram', 'Insert focus callout', 'Insert recursive interval construction',
+      'Insert Title & subtitle', 'Insert Definition', 'Insert Theorem / proposition',
+      'Insert Proof-step sequence', 'Insert Equation derivation', 'Insert Annotated graph',
+      'Insert Case comparison', 'Insert Callout', 'Insert Marginal note',
+      'Insert Recursive construction', 'Insert Vector explanation', 'Insert Example & abstraction',
     ]) fireEvent.click(screen.getByRole('button', { name: label }))
 
-    for (const id of ['mathematical-title', 'proposition-statement', 'equation-chain', 'annotated-diagram', 'focus-callout', 'recursive-intervals']) {
+    for (const id of [
+      'mathematical-title', 'definition-block', 'proposition-statement', 'proof-step-sequence',
+      'equation-chain', 'annotated-diagram', 'case-comparison', 'focus-callout', 'marginal-note',
+      'recursive-intervals', 'vector-explanation', 'example-abstraction',
+    ]) {
       expect(container.querySelector(`[data-layer-object-id="group-${id}"]`)).toBeInTheDocument()
     }
   })

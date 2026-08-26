@@ -17,6 +17,7 @@ import {
 import { styleById, styledDisplayBounds, styledTransform } from "./styles";
 import { compareTimelineTimes } from "./frame";
 import { projectAuthoringTransitionIssue } from "./authoringPolicy";
+import { remapDeclaredObjectPropertyReferences } from "./objectReferences";
 
 export const ManualSceneOperationSchema = z.union([
   SceneOperationSchema,
@@ -779,6 +780,7 @@ export function duplicateObjects(
     clone.transform.x += offset.x;
     clone.transform.y += offset.y;
     if (clone.parentId && mapping.has(clone.parentId)) clone.parentId = mapping.get(clone.parentId)!;
+    clone.properties = remapDeclaredObjectPropertyReferences(item, mapping);
     return { type: "add-object", object: clone };
   });
   return applyOperations(project, shotId, operations);

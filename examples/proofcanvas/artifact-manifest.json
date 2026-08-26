@@ -36,15 +36,15 @@
     },
     "evidence/browser-summary.json": {
       "bytes": 1033,
-      "sha256": "6d7a6aba68b4fd509894263387107d8c87a0745daa304133b6481808ce73a8f6"
+      "sha256": "7533f24db23606d35d5a583f995a11d7633ae829324a73834605ed53c0f56262"
     },
     "evidence/proofcanvas-editorial-1440x900.png": {
-      "bytes": 155095,
-      "sha256": "34747d985157796cba37a37e26e1eaef13ae7e5d9add68eab9b4567e7075f4ce"
+      "bytes": 152591,
+      "sha256": "6c8fe5f8ef38a7c8b656f6240ae5d6847700ddf8d40c8c45a808f90522df5895"
     },
     "evidence/proofcanvas-editorial-1280x800.png": {
-      "bytes": 136951,
-      "sha256": "dfcecef82cda15154661679e45fa55a7617df84647811f74ee69315110eb643b"
+      "bytes": 135846,
+      "sha256": "2a4d069a76c3207f0ff2600f46acb764c32b3049835fb0e969ee4d1a933d86ef"
     },
     "render-evidence/proofcanvas-manim-frame-12s.png": {
       "bytes": 47174,

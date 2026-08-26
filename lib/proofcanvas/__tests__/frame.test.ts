@@ -138,7 +138,7 @@ describe("shared logical frame authority", () => {
     project.shots[0].objects[0].transform = { ...project.shots[0].objects[0].transform, x: frame.centerX, y: frame.centerY };
     const valid = ProjectDocumentSchema.parse(project);
     expect(compileManim(valid).python).toContain(".move_to([0.0, 0.0, 0])");
-    expect(instantiateSemanticComponent("mathematical-title", new Set(), undefined, aspectRatio)[0].transform)
+    expect(instantiateSemanticComponent(valid, valid.shots[0].id, "mathematical-title")[0].transform)
       .toEqual(expect.objectContaining({ x: frame.centerX, y: frame.centerY }));
     expect(critiqueProject(valid).some(({ kind }) => kind === "outside-frame")).toBe(false);
     const proposal = interpretDemoCommand({
