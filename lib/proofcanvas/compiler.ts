@@ -2,6 +2,7 @@ import {
   PROOFCANVAS_SCHEMA_LIMITS,
   PROOFCANVAS_RENDER_SOURCE_MAX_BYTES,
   ProjectDocumentSchema,
+  assetVisualSettingsFor,
   mathPropertiesFor,
   objectTypeSupportsStyleProperty,
   utf8ByteLength,
@@ -13,7 +14,7 @@ import {
 } from "./schema";
 import { analyzeMathProperties, normalizeLegacyMathProperties } from "./latex";
 import { firstVisibilityAnimationByTarget, initiallyHiddenByEntranceIds, previewShotAtAnimationEnd, previewShotAtAnimationPeak, previewShotAtTime, previewShotBeforePointEventsAtTime } from "./preview";
-import { resolvedGraphStroke, styledTransform } from "./styles";
+import { resolvedGraphStroke, resolvedObjectColor, styledTransform } from "./styles";
 import { manimRateFunctionName } from "./easing";
 import { effectiveObjectLifetime, objectExistsAtTime } from "./timeline";
 import {
@@ -67,6 +68,20 @@ export interface CompilerDiagnostic {
 export interface CompileResult {
   python: string;
   diagnostics: CompilerDiagnostic[];
+}
+
+export interface CompilerAssetDescriptor {
+  path: string;
+  mimeType: "image/png" | "image/jpeg" | "image/webp" | "image/svg+xml";
+  width: number;
+  height: number;
+}
+
+export interface CompileManimOptions {
+  /** Present only at the trusted server render boundary. */
+  assetsById?: ReadonlyMap<string, CompilerAssetDescriptor>;
+  /** Audio remains an error unless the caller explicitly accounts for bounded external muxing or a labelled visual-only source export. */
+  audioTransport?: boolean;
 }
 
 const MAX_HIDDEN_TARGET_DIAGNOSTICS = 64;
@@ -159,6 +174,46 @@ const PROOFCANVAS_CUBIC_BEZIER_HELPER = [
   "    inverse = 1.0 - candidate",
   "    return 3.0 * inverse * inverse * candidate * y1 + 3.0 * inverse * candidate * candidate * y2 + candidate * candidate * candidate",
 ].join("\n");
+
+const PROOFCANVAS_IMAGE_HELPER = [
+  "def proofcanvas_image(path, crop_x, crop_y, crop_width, crop_height, fit, preserve, target_width, target_height, mask, radius):",
+  "    image = Image.open(path).convert(\"RGBA\")",
+  "    source_width, source_height = image.size",
+  "    left = max(0, min(source_width - 1, int(math.floor(crop_x * source_width))))",
+  "    top = max(0, min(source_height - 1, int(math.floor(crop_y * source_height))))",
+  "    right = max(left + 1, min(source_width, int(math.ceil((crop_x + crop_width) * source_width))))",
+  "    bottom = max(top + 1, min(source_height, int(math.ceil((crop_y + crop_height) * source_height))))",
+  "    image = image.crop((left, top, right, bottom))",
+  "    if preserve and fit != \"fill\":",
+  "        scale = min(target_width / image.width, target_height / image.height) if fit == \"contain\" else max(target_width / image.width, target_height / image.height)",
+  "        resized_width = max(1, int(round(image.width * scale)))",
+  "        resized_height = max(1, int(round(image.height * scale)))",
+  "        image = image.resize((resized_width, resized_height), Image.Resampling.LANCZOS)",
+  "        canvas = Image.new(\"RGBA\", (target_width, target_height), (0, 0, 0, 0))",
+  "        canvas.alpha_composite(image, ((target_width - resized_width) // 2, (target_height - resized_height) // 2))",
+  "        image = canvas",
+  "    else:",
+  "        image = image.resize((target_width, target_height), Image.Resampling.LANCZOS)",
+  "    if mask != \"none\":",
+  "        alpha = Image.new(\"L\", image.size, 0)",
+  "        draw = ImageDraw.Draw(alpha)",
+  "        if mask == \"circle\":",
+  "            diameter = min(target_width, target_height)",
+  "            offset_x = (target_width - diameter) // 2",
+  "            offset_y = (target_height - diameter) // 2",
+  "            draw.ellipse((offset_x, offset_y, offset_x + diameter, offset_y + diameter), fill=255)",
+  "        else:",
+  "            draw.rounded_rectangle((0, 0, target_width - 1, target_height - 1), radius=radius, fill=255)",
+  "        image.putalpha(ImageChops.multiply(image.getchannel(\"A\"), alpha))",
+  "    return ImageMobject(np.array(image))",
+].join("\n");
+
+function needsImagePreprocessing(object: SceneObject): boolean {
+  if (object.type !== "image") return false;
+  const visual = assetVisualSettingsFor(object);
+  return !!visual.crop || visual.fit === "cover" || !visual.preserveAspectRatio
+    || visual.fit === "fill" || (!!visual.mask && visual.mask.kind !== "none");
+}
 
 function compilerRateExpression(rateFunction: CompilerRateFunction): string {
   if (rateFunction.kind === "named") return easingName(rateFunction.easing);
@@ -361,7 +416,7 @@ function styleChain(object: SceneObject, style: StylePack): string {
     if (paint.opacity !== 1) parts.push(`.set_opacity(${pyNumber(paint.opacity)})`);
     return parts.join("");
   }
-  const color = object.style.color ?? object.style.stroke ?? style.colors.ink;
+  const color = object.style.stroke ?? resolvedObjectColor(object, style);
   const fill = object.style.fill;
   const graphStroke = object.type === "graph" ? resolvedGraphStroke(object, style) : null;
   const stroke = graphStroke?.stroke ?? object.style.stroke ?? color;
@@ -387,7 +442,12 @@ function visualTargetChain(object: SceneObject & { preview?: { opacity: number }
   return parts.join("");
 }
 
-function dimensionChain(object: SceneObject, variable: string, project: ProjectDocument): string {
+function dimensionChain(
+  object: SceneObject,
+  variable: string,
+  project: ProjectDocument,
+  assetsById?: ReadonlyMap<string, CompilerAssetDescriptor>,
+): string {
   const parts: string[] = [];
   if (["text", "math"].includes(object.type)) {
     const width = object.transform.width === undefined ? null : size(object.transform.width, project);
@@ -397,8 +457,22 @@ function dimensionChain(object: SceneObject, variable: string, project: ProjectD
     } else if (width !== null) parts.push(`.scale_to_fit_width(${pyNumber(width)})`);
     else if (height !== null) parts.push(`.scale_to_fit_height(${pyNumber(height)})`);
   } else if (["image", "svg"].includes(object.type)) {
-    if (object.transform.width !== undefined) parts.push(`.stretch_to_fit_width(${pyNumber(size(object.transform.width, project))})`);
-    if (object.transform.height !== undefined) parts.push(`.stretch_to_fit_height(${pyNumber(size(object.transform.height, project))})`);
+    const assetId = typeof object.properties.assetId === "string" ? object.properties.assetId : "";
+    const asset = assetsById?.get(assetId);
+    const visual = asset ? assetVisualSettingsFor(object) : null;
+    const targetWidth = object.transform.width === undefined ? null : size(object.transform.width, project);
+    const targetHeight = object.transform.height === undefined ? null : size(object.transform.height, project);
+    if (asset && !needsImagePreprocessing(object) && visual?.preserveAspectRatio && visual.fit === "contain") {
+      if (targetWidth !== null && targetHeight !== null) {
+        const scale = Math.min(targetWidth / asset.width, targetHeight / asset.height);
+        parts.push(`.stretch_to_fit_width(${pyNumber(asset.width * scale)})`);
+        parts.push(`.stretch_to_fit_height(${pyNumber(asset.height * scale)})`);
+      } else if (targetWidth !== null) parts.push(`.scale_to_fit_width(${pyNumber(targetWidth)})`);
+      else if (targetHeight !== null) parts.push(`.scale_to_fit_height(${pyNumber(targetHeight)})`);
+    } else {
+      if (targetWidth !== null) parts.push(`.stretch_to_fit_width(${pyNumber(targetWidth)})`);
+      if (targetHeight !== null) parts.push(`.stretch_to_fit_height(${pyNumber(targetHeight)})`);
+    }
   }
   return parts.join("");
 }
@@ -408,6 +482,7 @@ function primitiveExpression(
   project: ProjectDocument,
   style: StylePack,
   diagnostics: CompilerDiagnostic[],
+  assetsById?: ReadonlyMap<string, CompilerAssetDescriptor>,
 ): string {
   const shapeDimensions = resolveShapeDimensions(object);
   const width = size(isCurrentShapeType(object.type) ? shapeDimensions.width : object.transform.width, project);
@@ -570,7 +645,39 @@ function primitiveExpression(
     case "image":
     case "svg": {
       const source = String(object.properties.source ?? "");
+      const assetId = typeof object.properties.assetId === "string" ? object.properties.assetId : "";
+      const asset = assetsById?.get(assetId);
+      if (asset) {
+        const validMime = object.type === "svg"
+          ? asset.mimeType === "image/svg+xml"
+          : ["image/png", "image/jpeg", "image/webp"].includes(asset.mimeType);
+        if (!validMime || !/^assets\/[0-9a-f]{64}\.(?:png|jpe?g|webp|svg)$/.test(asset.path)) {
+          diagnostics.push({ severity: "error", code: "ASSET_RENDER_DESCRIPTOR_INVALID", message: "Trusted asset metadata does not match this object type.", objectId: object.id });
+          return "VMobject()";
+        }
+        const visual = assetVisualSettingsFor(object);
+        if (object.type === "svg" && (visual.crop || visual.fit === "cover" || !visual.preserveAspectRatio || visual.fit === "fill" || (visual.mask && visual.mask.kind !== "none"))) {
+          diagnostics.push({
+            severity: "error",
+            code: "ASSET_RENDER_VISUAL_UNSUPPORTED",
+            message: "SVG crop, cover, fill, and masking require a bounded SVG rasteriser and remain fail-closed.",
+            objectId: object.id,
+          });
+          return "VMobject()";
+        }
+        if (object.type === "svg") return `SVGMobject(${pyString(asset.path)})`;
+        if (!needsImagePreprocessing(object)) return `ImageMobject(${pyString(asset.path)})`;
+        const crop = visual.crop ?? { x: 0, y: 0, width: 1, height: 1 };
+        const mask = visual.mask ?? { kind: "none" as const };
+        const targetWidth = Math.max(1, Math.min(4096, Math.round((object.transform.width ?? asset.width) / project.settings.resolution.width * project.settings.resolution.width)));
+        const targetHeight = Math.max(1, Math.min(4096, Math.round((object.transform.height ?? asset.height) / project.settings.resolution.height * project.settings.resolution.height)));
+        const radius = mask.kind === "rounded-rectangle"
+          ? Math.max(0, Math.min(targetWidth / 2, targetHeight / 2, Math.round(mask.radius / Math.max(object.transform.width ?? asset.width, 0.001) * targetWidth)))
+          : 0;
+        return `proofcanvas_image(${pyString(asset.path)}, ${pyNumber(crop.x)}, ${pyNumber(crop.y)}, ${pyNumber(crop.width)}, ${pyNumber(crop.height)}, ${pyString(visual.fit)}, ${visual.preserveAspectRatio ? "True" : "False"}, ${targetWidth}, ${targetHeight}, ${pyString(mask.kind)}, ${pyNumber(radius)})`;
+      }
       diagnostics.push({ severity: "error", code: "ASSET_RENDER_TRANSPORT_UNSUPPORTED", message: "Image and SVG objects remain browser-only until trusted asset transport is implemented.", objectId: object.id });
+      if (assetsById) return "VMobject()";
       if (source.startsWith("data:")) {
         return `VGroup(Rectangle(width=${pyNumber(width)}, height=${pyNumber(height)}), Text(${pyString(object.name)}, font_size=16))`;
       }
@@ -1270,7 +1377,7 @@ export function estimateManimTimelineDurationUpperBound(project: ProjectDocument
   return totalFrames / frameRate;
 }
 
-export function compileManim(input: ProjectDocument): CompileResult {
+export function compileManim(input: ProjectDocument, options: CompileManimOptions = {}): CompileResult {
   const mathDiagnostics: CompilerDiagnostic[] = [];
   for (const shot of Array.isArray(input?.shots) ? input.shots : []) {
     for (const object of Array.isArray(shot?.objects) ? shot.objects : []) {
@@ -1322,7 +1429,7 @@ export function compileManim(input: ProjectDocument): CompileResult {
     code: "RENDER_SETTINGS_EXTERNAL",
     message: `Renderer transport must apply ${project.settings.resolution.width}x${project.settings.resolution.height} at ${project.settings.frameRate}fps (${project.settings.renderPreset}); preview quality ${project.settings.previewQuality} is editor-only.`,
   });
-  for (const shot of project.shots) {
+  if (!options.audioTransport) for (const shot of project.shots) {
     for (const clip of shot.audioClips) diagnostics.push({
       severity: "error",
       code: "AUDIO_CLIP_RENDER_UNSUPPORTED",
@@ -1342,20 +1449,25 @@ export function compileManim(input: ProjectDocument): CompileResult {
     : schedules;
   const { objects: variables, references } = variableMaps(project);
   const needsCubicBezierHelper = emittedSchedules.some(({ helpers }) => helpers.cubicBezier);
+  const needsImageHelper = project.shots.some((shot) => shot.objects.some(needsImagePreprocessing));
   const lines: string[] = [
     "from manim import *",
     "import math",
+    ...(needsImageHelper ? ["import numpy as np", "from PIL import Image, ImageChops, ImageDraw"] : []),
     `# ProofCanvas settings: ${project.settings.aspectRatio}, ${project.settings.resolution.width}x${project.settings.resolution.height}, ${project.settings.frameRate}fps, ${project.settings.renderPreset}, preview=${project.settings.previewQuality}`,
     "",
   ];
   if (needsCubicBezierHelper) lines.push(PROOFCANVAS_CUBIC_BEZIER_HELPER, "");
+  if (needsImageHelper) lines.push(PROOFCANVAS_IMAGE_HELPER, "");
   lines.push("", "class GeneratedScene(MovingCameraScene):", "    def construct(self):");
 
   project.shots.forEach((shot, shotIndex) => {
     const style = project.styles.find(({ id }) => id === project.activeStyleId)!;
     const objectMap = new Map(shot.objects.map((object) => [object.id, object]));
     const schedule = emittedSchedules[shotIndex];
-    diagnostics.push(...schedules[shotIndex].diagnostics);
+    diagnostics.push(...schedules[shotIndex].diagnostics.filter((diagnostic) => (
+      !options.audioTransport || diagnostic.code !== "AUDIO_TRACK_RENDER_UNSUPPORTED"
+    )));
     const compiledAnimations = schedule.events.map(({ animation }) => animation);
     const compiledScheduleShot: Shot = { ...shot, animations: compiledAnimations };
     // Initial visibility is authored semantic authority. Compiler-owned
@@ -1445,8 +1557,8 @@ export function compileManim(input: ProjectDocument): CompileResult {
           ...initialObject,
           transform: safeDerivedTransform(styledTransform(initialObject, style), object.transform, diagnostics, object.id),
         };
-        lines.push(`        ${variable} = ${primitiveExpression(styledObject, project, style, diagnostics)}${styleChain(styledObject, style)}`);
-        const dimensions = dimensionChain(styledObject, variable, project);
+        lines.push(`        ${variable} = ${primitiveExpression(styledObject, project, style, diagnostics, options.assetsById)}${styleChain(styledObject, style)}`);
+        const dimensions = dimensionChain(styledObject, variable, project, options.assetsById);
         if (dimensions) lines.push(`        ${variable}${dimensions}`);
         if (styledObject.transform.scaleX !== 1 || styledObject.transform.scaleY !== 1) {
           lines.push(`        ${variable}.stretch(${pyNumber(styledObject.transform.scaleX)}, 0, about_point=ORIGIN).stretch(${pyNumber(styledObject.transform.scaleY)}, 1, about_point=ORIGIN)`);

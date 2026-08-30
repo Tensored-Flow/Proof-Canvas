@@ -4,6 +4,7 @@ import { routeFailure } from "@/lib/proofcanvas/http.server";
 import {
   RenderClientError,
   readBoundedJson,
+  referencedRenderAssetIds,
   submitRender,
   type RenderQuality,
 } from "@/lib/proofcanvas/renderClient.server";
@@ -90,7 +91,10 @@ export async function POST(request: Request) {
     if (durable.revision !== envelope.revision) {
       throw new ProjectRepositoryError(409, "revision_conflict", "Project changed since this revision was loaded", durable.revision);
     }
-    const job = await submitRender({ project: durable.document, quality: envelope.quality, ...(envelope.shotId ? { shotId: envelope.shotId } : {}) });
+    const assets = referencedRenderAssetIds(durable.document, envelope.shotId).map((assetId) => (
+      projectRepository().getProjectAsset({ projectId: durable.id, assetId })
+    ));
+    const job = await submitRender({ project: durable.document, assets, quality: envelope.quality, ...(envelope.shotId ? { shotId: envelope.shotId } : {}) });
     return json({ ok: true, projectId: durable.id, revision: durable.revision, job }, 202);
   } catch (error) {
     return failure(error);

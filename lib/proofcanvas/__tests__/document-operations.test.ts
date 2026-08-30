@@ -122,6 +122,216 @@ describe("typed document operations", () => {
     expect(canonicalProjectJson(project)).toBe(before);
   });
 
+  test("fits every authored landscape object and camera into the centred portrait frame without mutating the source", () => {
+    const project = authoringProject();
+    const shot = project.shots[0];
+    const title = shot.objects[0];
+    title.parentId = "group-landscape-content";
+    title.transform = { x: 120, y: 90, width: 320, height: 80, rotation: 12, scaleX: 1.25, scaleY: 0.8 };
+    title.style = { ...title.style, fontSize: 31, opacity: 0.75 };
+    shot.objects.unshift({
+      id: "group-landscape-content",
+      type: "group",
+      name: "Landscape content",
+      locked: false,
+      visible: true,
+      transform: { x: 480, y: 270, width: 800, height: 440, rotation: 0, scaleX: 1, scaleY: 1 },
+      style: {},
+      properties: {},
+    });
+    shot.objects.push({
+      id: "object-landscape-rounded-rectangle",
+      type: "rectangle",
+      name: "Rounded rectangle",
+      parentId: "group-landscape-content",
+      locked: false,
+      visible: true,
+      transform: { x: 760, y: 420, width: 240, height: 100, rotation: 0, scaleX: 1, scaleY: 1 },
+      style: { stroke: "#315866", strokeWidth: 4, opacity: 0.6 },
+      properties: { shape: { kind: "rectangle", cornerRadius: 20 } },
+    });
+    shot.camera = { x: 720, y: 180, zoom: 1.4, rotation: 7 };
+    const source = ProjectDocumentSchema.parse(project);
+    const sourceJson = canonicalProjectJson(source);
+
+    const result = applyDocumentOperations(source, [{
+      type: "set-project-settings",
+      settings: { aspectRatio: "9:16", frameRate: 24, renderPreset: "1080p", previewQuality: "high" },
+      cameraPolicy: "fit-all",
+    }]);
+    const fitted = result.project.shots[0];
+    const fittedGroup = fitted.objects.find(({ id }) => id === "group-landscape-content")!;
+    const fittedTitle = fitted.objects.find(({ id }) => id === title.id)!;
+    const fittedRectangle = fitted.objects.find(({ id }) => id === "object-landscape-rounded-rectangle")!;
+
+    expect(result.summary).toEqual(["Updated project settings to 9:16 24fps and fit all authored content"]);
+    expect(result.project.settings).toEqual({
+      aspectRatio: "9:16",
+      frameRate: 24,
+      resolution: { width: 1080, height: 1920 },
+      renderPreset: "1080p",
+      previewQuality: "high",
+    });
+    expect(fittedGroup.transform).toEqual({ x: 270, y: 480, width: 450, height: 247.5, rotation: 0, scaleX: 1, scaleY: 1 });
+    expect(fittedTitle.transform).toEqual({ x: 67.5, y: 378.75, width: 180, height: 45, rotation: 12, scaleX: 1.25, scaleY: 0.8 });
+    expect(fittedTitle.parentId).toBe("group-landscape-content");
+    expect(fittedTitle.style).toEqual({ ...title.style, fontSize: 17.4375 });
+    expect(fittedRectangle.transform).toEqual({ x: 427.5, y: 564.375, width: 135, height: 56.25, rotation: 0, scaleX: 1, scaleY: 1 });
+    expect(fittedRectangle.style).toEqual({ stroke: "#315866", strokeWidth: 2.25, opacity: 0.6 });
+    expect(fittedRectangle.properties).toEqual({ shape: { kind: "rectangle", cornerRadius: 11.25 } });
+    expect(fitted.camera).toEqual({ x: 405, y: 429.375, zoom: 1.4, rotation: 7 });
+    expect(ProjectDocumentSchema.safeParse(result.project).success).toBe(true);
+    expect(canonicalProjectJson(source)).toBe(sourceJson);
+  });
+
+  test("reframes geometric keyframes and semantic motion while preserving non-geometric values", () => {
+    const project = authoringProject();
+    const shot = project.shots[0];
+    const title = shot.objects[0];
+    title.transform = { x: 180, y: 120, width: 300, height: 72, rotation: 15, scaleX: 1.2, scaleY: 0.9 };
+    const moveTarget = {
+      ...cloneSerializable(title),
+      id: "object-fit-move",
+      type: "rectangle" as const,
+      name: "Move target",
+      transform: { x: 360, y: 240, width: 180, height: 60, rotation: -5, scaleX: 1, scaleY: 1 },
+      style: { stroke: "#315866", strokeWidth: 4, opacity: 0.8 },
+      properties: { shape: { kind: "rectangle", cornerRadius: 12 } },
+    };
+    const transformTarget = {
+      ...cloneSerializable(title),
+      id: "object-fit-transform",
+      name: "Transform target",
+      transform: { x: 600, y: 320, width: 200, height: 100, rotation: 3, scaleX: 0.8, scaleY: 1.1 },
+    };
+    shot.objects.push(moveTarget, transformTarget);
+    shot.animations = [{
+      id: "animation-fit-move",
+      type: "move",
+      targetIds: [moveTarget.id],
+      start: 1,
+      duration: 0.5,
+      easing: "ease-in-out",
+      properties: { deltaX: 80, deltaY: -40 },
+    }, {
+      id: "animation-fit-transform",
+      type: "transform",
+      targetIds: [transformTarget.id],
+      start: 2,
+      duration: 0.5,
+      easing: "linear",
+      properties: { x: 800, y: 420, width: 1, height: 120, rotation: 25, scaleX: 1.4, scaleY: 0.7 },
+    }, {
+      id: "animation-fit-camera",
+      type: "camera-focus",
+      targetIds: [title.id],
+      start: 3,
+      duration: 0.5,
+      easing: "editorial",
+      properties: { x: 760, y: 200, zoom: 1.6, rotation: -8 },
+    }];
+    shot.propertyTracks = [{
+      id: "track-fit-title-x",
+      target: { kind: "object", objectId: title.id },
+      property: "x",
+      keyframes: [
+        { id: "keyframe-fit-title-x-start", time: 0, value: 100, interpolation: { kind: "linear" } },
+        { id: "keyframe-fit-title-x-end", time: 0.5, value: 900, interpolation: { kind: "linear" } },
+      ],
+    }, {
+      id: "track-fit-title-y",
+      target: { kind: "object", objectId: title.id },
+      property: "y",
+      keyframes: [
+        { id: "keyframe-fit-title-y-start", time: 0, value: 50, interpolation: { kind: "linear" } },
+        { id: "keyframe-fit-title-y-end", time: 0.5, value: 490, interpolation: { kind: "linear" } },
+      ],
+    }, {
+      id: "track-fit-title-width",
+      target: { kind: "object", objectId: title.id },
+      property: "width",
+      keyframes: [
+        { id: "keyframe-fit-title-width-start", time: 0, value: 1, interpolation: { kind: "linear" } },
+        { id: "keyframe-fit-title-width-end", time: 0.5, value: 400, interpolation: { kind: "linear" } },
+      ],
+    }, {
+      id: "track-fit-title-opacity",
+      target: { kind: "object", objectId: title.id },
+      property: "opacity",
+      keyframes: [
+        { id: "keyframe-fit-title-opacity-start", time: 0, value: 0.4, interpolation: { kind: "linear" } },
+        { id: "keyframe-fit-title-opacity-end", time: 0.5, value: 0.9, interpolation: { kind: "linear" } },
+      ],
+    }, {
+      id: "track-fit-move-stroke-width",
+      target: { kind: "object", objectId: moveTarget.id },
+      property: "strokeWidth",
+      keyframes: [
+        { id: "keyframe-fit-move-stroke-width-start", time: 0, value: 2, interpolation: { kind: "linear" } },
+        { id: "keyframe-fit-move-stroke-width-end", time: 0.5, value: 6, interpolation: { kind: "linear" } },
+      ],
+    }, {
+      id: "track-fit-camera-x",
+      target: { kind: "camera" },
+      property: "x",
+      keyframes: [
+        { id: "keyframe-fit-camera-x-start", time: 4, value: 640, interpolation: { kind: "linear" } },
+        { id: "keyframe-fit-camera-x-end", time: 5, value: 720, interpolation: { kind: "linear" } },
+      ],
+    }, {
+      id: "track-fit-camera-y",
+      target: { kind: "camera" },
+      property: "y",
+      keyframes: [
+        { id: "keyframe-fit-camera-y-start", time: 4, value: 160, interpolation: { kind: "linear" } },
+        { id: "keyframe-fit-camera-y-end", time: 5, value: 240, interpolation: { kind: "linear" } },
+      ],
+    }, {
+      id: "track-fit-camera-zoom",
+      target: { kind: "camera" },
+      property: "zoom",
+      keyframes: [
+        { id: "keyframe-fit-camera-zoom-start", time: 4, value: 1.1, interpolation: { kind: "linear" } },
+        { id: "keyframe-fit-camera-zoom-end", time: 5, value: 1.5, interpolation: { kind: "linear" } },
+      ],
+    }];
+    const source = ProjectDocumentSchema.parse(project);
+    const result = applyDocumentOperations(source, [{
+      type: "set-project-settings",
+      settings: { aspectRatio: "9:16", frameRate: 30, renderPreset: "720p", previewQuality: "standard" },
+      cameraPolicy: "fit-all",
+    }]).project;
+    const fitted = result.shots[0];
+    const trackValues = (id: string) => fitted.propertyTracks.find((track) => track.id === id)!.keyframes.map(({ value }) => value);
+    const animationProperties = (id: string) => fitted.animations.find((animation) => animation.id === id)!.properties;
+
+    expect(trackValues("track-fit-title-x")).toEqual([56.25, 506.25]);
+    expect(trackValues("track-fit-title-y")).toEqual([356.25, 603.75]);
+    expect(trackValues("track-fit-title-width")).toEqual([1, 225]);
+    expect(trackValues("track-fit-title-opacity")).toEqual([0.4, 0.9]);
+    expect(trackValues("track-fit-move-stroke-width")).toEqual([1.125, 3.375]);
+    expect(trackValues("track-fit-camera-x")).toEqual([360, 405]);
+    expect(trackValues("track-fit-camera-y")).toEqual([418.125, 463.125]);
+    expect(trackValues("track-fit-camera-zoom")).toEqual([1.1, 1.5]);
+    expect(animationProperties("animation-fit-move")).toEqual({ deltaX: 45, deltaY: -22.5 });
+    expect(animationProperties("animation-fit-transform")).toEqual({ x: 450, y: 564.375, width: 1, height: 67.5, rotation: 25, scaleX: 1.4, scaleY: 0.7 });
+    expect(animationProperties("animation-fit-camera")).toEqual({ x: 427.5, y: 440.625, zoom: 1.6, rotation: -8 });
+    expect(ProjectDocumentSchema.safeParse(result).success).toBe(true);
+  });
+
+  test("retains the preserve settings policy without reframing authored geometry", () => {
+    const project = authoringProject();
+    project.shots[0].camera = { x: 710, y: 190, zoom: 1.2, rotation: 4 };
+    const source = ProjectDocumentSchema.parse(project);
+    const result = applyDocumentOperations(source, [{
+      type: "set-project-settings",
+      settings: { aspectRatio: "9:16", frameRate: 24, renderPreset: "draft", previewQuality: "draft" },
+      cameraPolicy: "preserve",
+    }]).project;
+    expect(result.shots[0].objects).toEqual(source.shots[0].objects);
+    expect(result.shots[0].camera).toEqual(source.shots[0].camera);
+  });
+
   test("refuses duration shrink that truncates authored state", () => {
     const project = authoringProject();
     project.shots[0].markers = [{ id: "marker-end", time: 5, name: "End", color: "#000000" }];

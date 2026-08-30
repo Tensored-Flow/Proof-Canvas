@@ -77,11 +77,14 @@ docker run --detach --name "$renderer_container" --init \
   --memory=4g \
   --memory-swap=4g \
   --tmpfs "/tmp:rw,nosuid,nodev,size=3g,mode=1777" \
+  --volume "$run_directory:/evidence:ro" \
+  --volume "$repository_root/scripts/proofcanvas/verify-png-evidence.py:/verify-png-evidence.py:ro" \
+  --volume "$repository_root/scripts/proofcanvas/verify-video-evidence.py:/verify-video-evidence.py:ro" \
   --env PROOFCANVAS_RENDER_TOKEN="$render_token" \
   "$renderer_image" >/dev/null
 
 echo 'Running both viewport projects in the externally networkless acceptance namespace.'
-timeout --signal=TERM --kill-after=20s 20m docker exec "$acceptance_container" bash -lc '
+timeout --signal=TERM --kill-after=20s 25m docker exec "$acceptance_container" bash -lc '
   set -euo pipefail
   for attempt in $(seq 1 80); do
     if curl --fail --silent --show-error http://127.0.0.1:8080/health >/dev/null; then break; fi
@@ -187,7 +190,48 @@ timeout --signal=TERM --kill-after=20s 20m docker exec "$acceptance_container" b
     sleep 0.25
   done
   node_modules/.bin/playwright test --config=playwright.config.ts
+
+  echo "Restarting the production Next.js process against the same durable volume."
+  stop_group "$next_pid" "$next_wait_pid"
+  next_pid=""
+  next_wait_pid=""
+  python3 scripts/proofcanvas/assert-port-released.py 3218
+  env -u PROOFCANVAS_E2E_OWNER_PASSWORD \
+  PROOFCANVAS_APP_ORIGIN=https://127.0.0.1:3217 \
+  PROOFCANVAS_OWNER_PASSWORD_HASH="$owner_hash" \
+  PROOFCANVAS_SESSION_SECRET="$session_secret" \
+  PROOFCANVAS_DATA_DIR=/tmp/proofcanvas-data \
+  setsid --fork --wait node_modules/.bin/next start --hostname 127.0.0.1 --port 3218 >/tmp/proofcanvas-next-restart.log 2>&1 &
+  next_wait_pid=$!
+  if ! next_pid="$(owned_session_leader "$next_wait_pid" /tmp/proofcanvas-next-restart.log)"; then exit 1; fi
+  for attempt in $(seq 1 160); do
+    if curl --insecure --fail --silent --show-error https://127.0.0.1:3217/login >/dev/null; then break; fi
+    if ! kill -0 "$next_pid" 2>/dev/null; then tail -n 120 /tmp/proofcanvas-next-restart.log >&2; exit 1; fi
+    if [[ "$attempt" -eq 160 ]]; then tail -n 120 /tmp/proofcanvas-next-restart.log >&2; exit 1; fi
+    sleep 0.25
+  done
+  PROOFCANVAS_RESTART_PHASE=1 \
+  PROOFCANVAS_REPORT_FILE=/evidence/restart-report.json \
+  node_modules/.bin/playwright test --config=playwright.config.ts \
+    --project=proofcanvas-chromium-1440 \
+    --grep "controlled application process restart"
 '
+
+echo 'Fully decoding both UI-downloaded MP4s inside the pinned renderer image.'
+docker exec "$renderer_container" /opt/venv/bin/python /verify-video-evidence.py \
+  /evidence/ui-download/proofcanvas-render.mp4 \
+  --width 1280 --height 720 --fps 30 --audio required --min-duration 45 --max-duration 60 \
+  > "$run_directory/landscape-video-verification.json"
+docker exec "$renderer_container" /opt/venv/bin/python /verify-video-evidence.py \
+  /evidence/ui-download/proofcanvas-portrait-480x854-24fps.mp4 \
+  --width 480 --height 854 --fps 24 --audio forbidden --min-duration 1 --max-duration 310 \
+  > "$run_directory/portrait-video-verification.json"
+
+echo 'Fully decoding the UI-downloaded still inside the pinned renderer image.'
+docker exec "$renderer_container" /opt/venv/bin/python /verify-png-evidence.py \
+  /evidence/ui-download/proofcanvas-still-current.png \
+  --width 1280 --height 720 \
+  > "$run_directory/still-verification.json"
 
 node "$repository_root/scripts/proofcanvas/validate-e2e.mjs" "$run_directory" "$evidence_directory"
 echo "Retained bounded ProofCanvas browser evidence in $evidence_directory"

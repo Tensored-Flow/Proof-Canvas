@@ -37,6 +37,18 @@ RUNTIME_INPUT_FILES = [
     "services/proofcanvas-render/requirements.lock",
     "tsconfig.json",
 ]
+GENERATED_DIRECTORY_NAMES = frozenset({
+    ".cache",
+    ".mypy_cache",
+    ".next",
+    ".pytest_cache",
+    ".ruff_cache",
+    "__pycache__",
+    "coverage",
+    "node_modules",
+})
+GENERATED_FILE_NAMES = frozenset({".DS_Store"})
+GENERATED_FILE_SUFFIXES = frozenset({".pyc", ".pyo", ".tsbuildinfo"})
 
 
 def require(condition: bool, message: str) -> None:
@@ -57,6 +69,14 @@ def regular_file_record(repository: Path, relative_path: str) -> dict[str, objec
     return {"path": relative_path, "bytes": path.stat().st_size, "sha256": sha256(path)}
 
 
+def is_generated_runtime_path(relative_path: Path) -> bool:
+    return (
+        any(part in GENERATED_DIRECTORY_NAMES for part in relative_path.parts[:-1])
+        or relative_path.name in GENERATED_FILE_NAMES
+        or relative_path.suffix in GENERATED_FILE_SUFFIXES
+    )
+
+
 def runtime_source_records(repository: Path) -> list[dict[str, object]]:
     relative_paths = set(RUNTIME_INPUT_FILES)
     for root_name in RUNTIME_INPUT_ROOTS:
@@ -66,7 +86,10 @@ def runtime_source_records(repository: Path) -> list[dict[str, object]]:
             if path.is_dir() and not path.is_symlink():
                 continue
             require(path.is_file() and not path.is_symlink(), f"runtime input tree contains a non-regular entry: {path}")
-            relative_paths.add(path.relative_to(repository).as_posix())
+            relative_path = path.relative_to(repository)
+            if is_generated_runtime_path(relative_path):
+                continue
+            relative_paths.add(relative_path.as_posix())
     return [regular_file_record(repository, name) for name in sorted(relative_paths)]
 
 

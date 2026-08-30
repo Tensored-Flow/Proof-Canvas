@@ -1,5 +1,10 @@
 /** @jest-environment node */
 
+jest.mock("../assetContent.server", () => {
+  const actual = jest.requireActual<typeof import("../assetContent.server")>("../assetContent.server");
+  return { ...actual, validateAssetContent: jest.fn(actual.validateAssetContent) };
+});
+
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
@@ -26,18 +31,96 @@ import {
   validateProofCanvasBackup,
 } from "../backup.server";
 import {
+  authenticateSessionToken,
+  issueSession,
+  reserveOwnerLoginAdmission,
+} from "../auth.server";
+import {
   assertProofCanvasDatabaseReady,
   assertProofCanvasPersistenceIntegrity,
   databaseMigrationManifest,
   INSTANCE_LEASE_FILENAME,
   openProofCanvasDatabase,
 } from "../database.server";
+import { validateAssetContent } from "../assetContent.server";
+import {
+  DETERMINISTIC_AUDIO_FIXTURE,
+  createCantorDemoProject,
+} from "../demo";
+import { ProjectPackageError } from "../projectPackage";
 import { ProjectRepositoryError, SqliteProjectRepository } from "../repository.server";
-import { PROOFCANVAS_PROJECT_MAX_BYTES, ProjectDocumentSchema, canonicalProjectJson, cloneSerializable } from "../schema";
+import {
+  PROOFCANVAS_PROJECT_MAX_BYTES,
+  ProjectDocumentSchema,
+  canonicalProjectJson,
+  cloneSerializable,
+  projectDurationSeconds,
+} from "../schema";
 
 const temporaryDirectories: string[] = [];
 const leaseWorkers: LeaseWorker[] = [];
 const BACKUP_SNAPSHOT_PREFIX = "proofcanvas-backup-snapshot-";
+const ONE_PIXEL_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
+const THREE_BY_TWO_JPEG = Buffer.from(
+  "/9j/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAACAAMDAREAAhEBAxEB/8QAFAABAAAAAAAAAAAAAAAAAAAABv/EABQQAQAAAAAAAAAAAAAAAAAAAAD/xAAVAQEBAAAAAAAAAAAAAAAAAAAGCP/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AFZGiJ//2Q==",
+  "base64",
+);
+const THREE_BY_TWO_WEBP = Buffer.from("UklGRh4AAABXRUJQVlA4TBEAAAAvAkAAEAfQ43IUtYCBiOh/AAA=", "base64");
+
+function validatedPng(filename = "dot.png") {
+  return validateAssetContent({ filename, bytes: ONE_PIXEL_PNG, claimedMimeType: "image/png" });
+}
+
+function validatedJpeg(filename = "photo.jpg") {
+  return validateAssetContent({ filename, bytes: THREE_BY_TWO_JPEG, claimedMimeType: "image/jpeg" });
+}
+
+function validatedWebp(filename = "diagram.webp") {
+  return validateAssetContent({ filename, bytes: THREE_BY_TWO_WEBP, claimedMimeType: "image/webp" });
+}
+
+function validatedSvg(filename = "dot.svg") {
+  const bytes = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1" viewBox="0 0 1 1"><rect x="0" y="0" width="1" height="1" fill="black"/></svg>', "utf8");
+  return validateAssetContent({ filename, bytes, claimedMimeType: "image/svg+xml" });
+}
+
+function validatedWav(filename = "voice.wav", dataBytes = 1_001, sampleRate = 44_100) {
+  const format = Buffer.alloc(16);
+  format.writeUInt16LE(1, 0);
+  format.writeUInt16LE(1, 2);
+  format.writeUInt32LE(sampleRate, 4);
+  format.writeUInt32LE(sampleRate, 8);
+  format.writeUInt16LE(1, 12);
+  format.writeUInt16LE(8, 14);
+  const chunk = (type: string, data: Buffer) => {
+    const header = Buffer.alloc(8);
+    header.write(type, 0, "ascii");
+    header.writeUInt32LE(data.length, 4);
+    return Buffer.concat([header, data, data.length & 1 ? Buffer.from([0]) : Buffer.alloc(0)]);
+  };
+  const body = Buffer.concat([
+    Buffer.from("WAVE", "ascii"),
+    chunk("fmt ", format),
+    chunk("data", Buffer.alloc(dataBytes, 0x80)),
+  ]);
+  const header = Buffer.alloc(8);
+  header.write("RIFF", 0, "ascii");
+  header.writeUInt32LE(body.length, 4);
+  return validateAssetContent({
+    filename,
+    bytes: Buffer.concat([header, body]),
+    claimedMimeType: "audio/wav",
+  });
+}
+
+function expectDeterministicFixtureBytes(bytes: Uint8Array): void {
+  expect(bytes.byteLength).toBe(DETERMINISTIC_AUDIO_FIXTURE.metadata.size);
+  expect(createHash("sha256").update(bytes).digest("hex"))
+    .toBe(DETERMINISTIC_AUDIO_FIXTURE.metadata.sha256);
+}
 
 function temporaryDirectory(): string {
   const directory = mkdtempSync(join(tmpdir(), "proofcanvas-repository-test-"));
@@ -59,6 +142,30 @@ function harness(directory = temporaryDirectory()) {
     randomId: (prefix) => `${prefix}-${(++ids).toString(16).padStart(24, "0")}`,
   });
   return { directory, path, database, repository };
+}
+
+/** Keep migration-specific tests anchored to the frozen historical sample. */
+function replaceWithCompatibilitySample(
+  database: Database.Database,
+  repository: SqliteProjectRepository,
+  projectId: string,
+) {
+  const current = repository.getProject(projectId);
+  const candidate = cloneSerializable(createCantorDemoProject());
+  candidate.metadata = cloneSerializable(current.document.metadata);
+  const document = ProjectDocumentSchema.parse(candidate);
+  database.prepare(`UPDATE projects SET
+    title = ?, document_json = ?, shot_count = ?, object_count = ?, duration_seconds = ?
+    WHERE id = ?`)
+    .run(
+      document.metadata.title,
+      canonicalProjectJson(document),
+      document.shots.length,
+      document.shots.reduce((sum, shot) => sum + shot.objects.length, 0),
+      projectDurationSeconds(document),
+      projectId,
+    );
+  return document;
 }
 
 function canonicalLegacyJson(value: unknown): string {
@@ -88,6 +195,8 @@ function schemaV3Json(document: unknown, mutate?: (candidate: Record<string, unk
 
 function downgradeDatabaseSchemaToV1(database: Database.Database): void {
   database.exec(`
+    DROP TABLE project_asset_refs;
+    DROP TABLE asset_blobs;
     DROP TRIGGER legacy_document_archive_no_update;
     DROP TRIGGER legacy_document_archive_no_delete;
     DROP TABLE legacy_document_archive;
@@ -98,7 +207,19 @@ function downgradeDatabaseSchemaToV1(database: Database.Database): void {
 }
 
 function downgradeDatabaseSchemaToV2(database: Database.Database): void {
-  database.prepare("DELETE FROM schema_migrations WHERE version = 3").run();
+  database.exec(`
+    DROP TABLE project_asset_refs;
+    DROP TABLE asset_blobs;
+    DELETE FROM schema_migrations WHERE version >= 3;
+  `);
+}
+
+function downgradeDatabaseSchemaToV3(database: Database.Database): void {
+  database.exec(`
+    DROP TABLE project_asset_refs;
+    DROP TABLE asset_blobs;
+    DELETE FROM schema_migrations WHERE version = 4;
+  `);
 }
 
 interface LeaseWorker {
@@ -275,6 +396,7 @@ test("runs checksummed STRICT migrations and required durability pragmas on reop
     { version: 1, name: "private-owner-project-store", checksum: "313de39642d6ae4c4df0a2f1ab06366ee1c236ce8468c69eaae0cd3f8e2f4c9d" },
     { version: 2, name: "loss-aware-v3-timeline-and-recovery-archive", checksum: "2f7cdbbadcd1b0c22e948b0c0111b9bf6756b8c054554b21e209f7add91fe348" },
     { version: 3, name: "v4-native-shapes-and-target-sets", checksum: "606fc320ece7945f18f960c596205be2ceef744e191af0539fcda785a306d292" },
+    { version: 4, name: "content-addressed-project-assets", checksum: "cd22bb218886cbbe310d5fa4426c8ea7d5f69deb294ab597ce600e3d881b8534" },
   ]);
   expect(first.database.pragma("journal_mode", { simple: true })).toBe("wal");
   expect(first.database.pragma("foreign_keys", { simple: true })).toBe(1);
@@ -292,8 +414,76 @@ test("runs checksummed STRICT migrations and required durability pragmas on reop
   first.database.close();
 
   const reopened = openProofCanvasDatabase({ path: first.path });
-  expect(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({ count: 3 });
+  expect(reopened.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({ count: 4 });
   reopened.close();
+});
+
+test("migration 4 preserves historical asset tuples as explicit missing content", () => {
+  const first = harness();
+  const created = first.repository.createProject({
+    kind: "blank",
+    title: "Legacy asset metadata",
+    mutationId: "mutation-create-legacy-assets",
+  });
+  const durable = first.repository.getProject(created.value.projectId);
+  const content = validatedPng("legacy.png");
+  const document = ProjectDocumentSchema.parse({
+    ...cloneSerializable(durable.document),
+    assets: [{
+      id: "asset-legacy-png",
+      filename: content.filename,
+      mimeType: content.mimeType,
+      size: content.size,
+      sha256: content.sha256,
+      width: content.width,
+      height: content.height,
+      provenance: "legacy-import",
+    }],
+  });
+  first.database.prepare("UPDATE projects SET document_json = ? WHERE id = ?")
+    .run(canonicalProjectJson(document), durable.id);
+  downgradeDatabaseSchemaToV3(first.database);
+  first.database.close();
+
+  const reopened = openProofCanvasDatabase({ path: first.path });
+  const repository = new SqliteProjectRepository(reopened);
+  expect(reopened.prepare("SELECT strict FROM pragma_table_list WHERE name = 'asset_blobs'").get()).toEqual({ strict: 1 });
+  expect(reopened.prepare("SELECT strict FROM pragma_table_list WHERE name = 'project_asset_refs'").get()).toEqual({ strict: 1 });
+  expect(reopened.prepare("SELECT project_id, asset_id, expected_sha256, blob_sha256 FROM project_asset_refs").get()).toEqual({
+    project_id: durable.id,
+    asset_id: "asset-legacy-png",
+    expected_sha256: content.sha256,
+    blob_sha256: null,
+  });
+  expect(repository.listProjectAssets(durable.id)).toEqual([
+    expect.objectContaining({ id: "asset-legacy-png", available: false }),
+  ]);
+  expect(() => repository.getProjectAsset({ projectId: durable.id, assetId: "asset-legacy-png" }))
+    .toThrow(expect.objectContaining({ status: 409, code: "asset_content_missing" }));
+  expect(() => repository.exportProjectPackage(durable.id))
+    .toThrow(expect.objectContaining({ status: 409, code: "asset_content_missing" }));
+  expect(() => assertProofCanvasPersistenceIntegrity(reopened)).not.toThrow();
+  reopened.close();
+});
+
+test("rolls back migration 4 tables and receipt when historical asset metadata cannot be validated", () => {
+  const first = harness();
+  const created = first.repository.createProject({
+    kind: "blank",
+    title: "Invalid asset migration",
+    mutationId: "mutation-create-invalid-asset-v4",
+  });
+  first.database.prepare("UPDATE projects SET document_json = 'not-json' WHERE id = ?").run(created.value.projectId);
+  downgradeDatabaseSchemaToV3(first.database);
+  first.database.close();
+
+  expect(() => openProofCanvasDatabase({ path: first.path })).toThrow(/not a valid ProjectDocument/);
+  const raw = new Database(first.path, { readonly: true });
+  expect(raw.prepare("SELECT version FROM schema_migrations ORDER BY version").all())
+    .toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
+  expect(raw.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name IN ('asset_blobs', 'project_asset_refs')").get())
+    .toEqual({ count: 0 });
+  raw.close();
 });
 
 test("accepts unique-target canonical V3 rows in historical migration 2 before advancing them to V4", () => {
@@ -317,7 +507,7 @@ test("accepts unique-target canonical V3 rows in historical migration 2 before a
   first.database.close();
 
   const reopened = openProofCanvasDatabase({ path: first.path });
-  expect(reopened.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
+  expect(reopened.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }]);
   expect((reopened.prepare("SELECT document_json FROM projects WHERE id = ?").get(created.value.projectId) as { document_json: string }).document_json)
     .toBe(expectedProjectV4);
   expect((reopened.prepare("SELECT document_json FROM checkpoints WHERE id = ?").get(checkpoint.value.checkpointId) as { document_json: string }).document_json)
@@ -435,6 +625,7 @@ test("rolls back migration 3 atomically when any ready V3 row is noncanonical", 
 test("migrates V2 duplicate target sets while preserving exact immutable project and checkpoint archives", () => {
   const first = harness();
   const created = first.repository.createProject({ kind: "sample", title: "V2 target set", mutationId: "mutation-create-v2-target-set" });
+  replaceWithCompatibilitySample(first.database, first.repository, created.value.projectId);
   const checkpoint = first.repository.createCheckpoint({
     projectId: created.value.projectId,
     expectedRevision: created.value.revision,
@@ -553,7 +744,7 @@ test("migrates lossless V2 rows and independently quarantines lossy projects and
 
   const reopened = openProofCanvasDatabase({ path: first.path });
   const repository = new SqliteProjectRepository(reopened);
-  expect(reopened.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
+  expect(reopened.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }, { version: 4 }]);
   expect(repository.getProject(ready.id).document.schemaVersion).toBe(4);
   const exactArchives = new Map((reopened.prepare(`SELECT owner_type, owner_id, document_json, migration_status, reason
     FROM legacy_document_archive ORDER BY owner_type, owner_id`).all() as Array<{
@@ -720,6 +911,7 @@ test("atomically rejects schema-v2 rows whose metadata, counters, or checkpoint 
 test("rolls back migration before oversized V2 bytes can be laundered by tick normalization", () => {
   const first = harness();
   const created = first.repository.createProject({ kind: "sample", title: "Oversized legacy", mutationId: "mutation-create-oversized-v2" });
+  replaceWithCompatibilitySample(first.database, first.repository, created.value.projectId);
   const durable = first.repository.getProject(created.value.projectId);
   const candidate = cloneSerializable(durable.document) as unknown as Record<string, unknown>;
   candidate.schemaVersion = 2;
@@ -755,6 +947,76 @@ test("fails closed on an unknown newer migration and a changed known checksum", 
   expect(() => openProofCanvasDatabase({ path: changed.path })).toThrow(/checksum does not match/);
 });
 
+test("creates the five-shot sample with its deterministic WAV bound atomically and globally deduplicated", () => {
+  const first = harness();
+  const created = first.repository.createProject({
+    kind: "sample",
+    title: "Complete sample",
+    mutationId: "mutation-create-complete-sample",
+  });
+  const durable = first.repository.getProject(created.value.projectId);
+  expect(durable.document.shots).toHaveLength(5);
+  expect(durable.durationSeconds).toBe(52);
+  expect(durable.document.assets).toEqual([DETERMINISTIC_AUDIO_FIXTURE.metadata]);
+  expect(first.repository.listProjectAssets(durable.id)).toEqual([
+    { ...DETERMINISTIC_AUDIO_FIXTURE.metadata, available: true },
+  ]);
+  expectDeterministicFixtureBytes(first.repository.getProjectAsset({
+    projectId: durable.id,
+    assetId: DETERMINISTIC_AUDIO_FIXTURE.metadata.id,
+  }).bytes);
+  expect(first.repository.createProject({
+    kind: "sample",
+    title: "Complete sample",
+    mutationId: "mutation-create-complete-sample",
+  })).toEqual({ ...created, replayed: true });
+
+  const second = first.repository.createProject({
+    kind: "sample",
+    title: "Second complete sample",
+    mutationId: "mutation-create-second-complete-sample",
+  });
+  expect(first.database.prepare("SELECT COUNT(*) AS count FROM asset_blobs").get()).toEqual({ count: 1 });
+  expect(first.database.prepare("SELECT COUNT(*) AS count FROM project_asset_refs").get()).toEqual({ count: 2 });
+  expectDeterministicFixtureBytes(first.repository.getProjectAsset({
+    projectId: second.value.projectId,
+    assetId: DETERMINISTIC_AUDIO_FIXTURE.metadata.id,
+  }).bytes);
+  expect(() => assertProofCanvasPersistenceIntegrity(first.database)).not.toThrow();
+  first.database.close();
+
+  const reopened = openProofCanvasDatabase({ path: first.path });
+  expectDeterministicFixtureBytes(new SqliteProjectRepository(reopened).getProjectAsset({
+    projectId: created.value.projectId,
+    assetId: DETERMINISTIC_AUDIO_FIXTURE.metadata.id,
+  }).bytes);
+  reopened.close();
+});
+
+test("rolls back the sample project, deterministic blob, reference, and mutation if binding fails", () => {
+  const { database, repository } = harness();
+  database.exec(`CREATE TRIGGER reject_sample_asset_ref
+    BEFORE INSERT ON project_asset_refs
+    WHEN NEW.asset_id = '${DETERMINISTIC_AUDIO_FIXTURE.metadata.id}'
+    BEGIN SELECT RAISE(ABORT, 'sample fixture binding rejected'); END;`);
+  expect(() => repository.createProject({
+    kind: "sample",
+    title: "Rolled back sample",
+    mutationId: "mutation-create-rollback-sample",
+  })).toThrow(/sample fixture binding rejected/);
+  for (const table of ["projects", "asset_blobs", "project_asset_refs", "project_mutations"]) {
+    expect(database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()).toEqual({ count: 0 });
+  }
+  database.exec("DROP TRIGGER reject_sample_asset_ref");
+  expect(repository.createProject({
+    kind: "sample",
+    title: "Rolled back sample",
+    mutationId: "mutation-create-rollback-sample",
+  }).replayed).toBe(false);
+  expect(() => assertProofCanvasPersistenceIntegrity(database)).not.toThrow();
+  database.close();
+});
+
 test("creates revision one and makes CAS saves idempotent across two connections", () => {
   const first = harness();
   const created = first.repository.createProject({ kind: "blank", title: "Topology", mutationId: "mutation-create-topology-001" });
@@ -779,15 +1041,425 @@ test("creates revision one and makes CAS saves idempotent across two connections
   first.database.close();
 });
 
+test("uploads assets atomically with CAS, replay, global deduplication, and restart persistence", () => {
+  const first = harness();
+  const primary = first.repository.createProject({ kind: "blank", title: "Primary assets", mutationId: "mutation-create-assets-primary" });
+  const secondary = first.repository.createProject({ kind: "blank", title: "Secondary assets", mutationId: "mutation-create-assets-second" });
+  const png = validatedPng();
+  const uploaded = first.repository.uploadProjectAsset({
+    projectId: primary.value.projectId,
+    expectedRevision: 1,
+    mutationId: "mutation-upload-primary-png",
+    content: png,
+  });
+  expect(uploaded).toMatchObject({ replayed: false, value: { revision: 2, asset: {
+    filename: "dot.png",
+    mimeType: "image/png",
+    size: ONE_PIXEL_PNG.length,
+    sha256: png.sha256,
+    width: 1,
+    height: 1,
+    provenance: "uploaded",
+  } } });
+  expect(first.repository.uploadProjectAsset({
+    projectId: primary.value.projectId,
+    expectedRevision: 1,
+    mutationId: "mutation-upload-primary-png",
+    content: png,
+  })).toEqual({ ...uploaded, replayed: true });
+  expect(() => first.repository.uploadProjectAsset({
+    projectId: primary.value.projectId,
+    expectedRevision: 2,
+    mutationId: "mutation-upload-primary-png",
+    content: png,
+  })).toThrow(expect.objectContaining({ code: "idempotency_conflict", status: 409 }));
+
+  const beforeRejected = {
+    blobs: first.database.prepare("SELECT COUNT(*) AS count FROM asset_blobs").get(),
+    refs: first.database.prepare("SELECT COUNT(*) AS count FROM project_asset_refs").get(),
+  };
+  expect(() => first.repository.uploadProjectAsset({
+    projectId: primary.value.projectId,
+    expectedRevision: 1,
+    mutationId: "mutation-upload-stale-svg",
+    content: validatedSvg(),
+  })).toThrow(expect.objectContaining({ code: "revision_conflict", status: 409, currentRevision: 2 }));
+  expect(first.database.prepare("SELECT COUNT(*) AS count FROM asset_blobs").get()).toEqual(beforeRejected.blobs);
+  expect(first.database.prepare("SELECT COUNT(*) AS count FROM project_asset_refs").get()).toEqual(beforeRejected.refs);
+
+  const secondaryUpload = first.repository.uploadProjectAsset({
+    projectId: secondary.value.projectId,
+    expectedRevision: 1,
+    mutationId: "mutation-upload-secondary-png",
+    content: validatedPng("same-bytes.png"),
+  });
+  expect(secondaryUpload.value.asset.sha256).toBe(uploaded.value.asset.sha256);
+  expect(secondaryUpload.value.asset.id).not.toBe(uploaded.value.asset.id);
+  expect(first.database.prepare("SELECT COUNT(*) AS count FROM asset_blobs").get()).toEqual({ count: 1 });
+  expect(first.database.prepare("SELECT COUNT(*) AS count FROM project_asset_refs").get()).toEqual({ count: 2 });
+  expect(first.repository.listProjectAssets(primary.value.projectId)).toEqual([
+    expect.objectContaining({ id: uploaded.value.asset.id, available: true }),
+  ]);
+  expect(first.repository.getProjectAsset({ projectId: primary.value.projectId, assetId: uploaded.value.asset.id }).bytes)
+    .toEqual(ONE_PIXEL_PNG);
+  expect(() => first.repository.getProjectAsset({ projectId: secondary.value.projectId, assetId: uploaded.value.asset.id }))
+    .toThrow(expect.objectContaining({ code: "asset_not_found", status: 404 }));
+
+  const invented = cloneSerializable(first.repository.getProject(primary.value.projectId).document);
+  invented.assets[0].filename = "changed.png";
+  expect(() => first.repository.saveProject({
+    projectId: primary.value.projectId,
+    expectedRevision: 2,
+    mutationId: "mutation-save-invented-asset",
+    document: invented,
+  })).toThrow(expect.objectContaining({ code: "invalid_project", status: 400 }));
+  expect(() => assertProofCanvasPersistenceIntegrity(first.database)).not.toThrow();
+  first.database.close();
+
+  const reopened = openProofCanvasDatabase({ path: first.path });
+  const repository = new SqliteProjectRepository(reopened);
+  expect(repository.getProjectAsset({ projectId: primary.value.projectId, assetId: uploaded.value.asset.id }).bytes)
+    .toEqual(ONE_PIXEL_PNG);
+  expect(() => assertProofCanvasPersistenceIntegrity(reopened)).not.toThrow();
+  reopened.close();
+});
+
+test("persists decoder-validated JPEG and WebP bytes behind project-local reads across restart", () => {
+  const first = harness();
+  const created = first.repository.createProject({
+    kind: "blank",
+    title: "Decoded image assets",
+    mutationId: "mutation-create-decoded-images",
+  });
+  const jpeg = first.repository.uploadProjectAsset({
+    projectId: created.value.projectId,
+    expectedRevision: 1,
+    mutationId: "mutation-upload-decoded-jpeg",
+    content: validatedJpeg(),
+  });
+  const webp = first.repository.uploadProjectAsset({
+    projectId: created.value.projectId,
+    expectedRevision: 2,
+    mutationId: "mutation-upload-decoded-webp",
+    content: validatedWebp(),
+  });
+  expect(first.repository.listProjectAssets(created.value.projectId)).toEqual([
+    expect.objectContaining({ id: jpeg.value.asset.id, mimeType: "image/jpeg", width: 3, height: 2, available: true }),
+    expect.objectContaining({ id: webp.value.asset.id, mimeType: "image/webp", width: 3, height: 2, available: true }),
+  ]);
+  expect(first.repository.getProjectAsset({ projectId: created.value.projectId, assetId: jpeg.value.asset.id }).bytes)
+    .toEqual(THREE_BY_TWO_JPEG);
+  expect(first.repository.getProjectAsset({ projectId: created.value.projectId, assetId: webp.value.asset.id }).bytes)
+    .toEqual(THREE_BY_TWO_WEBP);
+  expect(() => assertProofCanvasPersistenceIntegrity(first.database)).not.toThrow();
+  first.database.close();
+
+  const reopened = openProofCanvasDatabase({ path: first.path });
+  const repository = new SqliteProjectRepository(reopened);
+  expect(repository.getProjectAsset({ projectId: created.value.projectId, assetId: jpeg.value.asset.id }).bytes)
+    .toEqual(THREE_BY_TWO_JPEG);
+  expect(repository.getProjectAsset({ projectId: created.value.projectId, assetId: webp.value.asset.id }).bytes)
+    .toEqual(THREE_BY_TWO_WEBP);
+  expect(() => assertProofCanvasPersistenceIntegrity(reopened)).not.toThrow();
+  reopened.close();
+});
+
+test("fails before blob insertion when a project reaches its bounded retained-reference budget", () => {
+  const { database, repository } = harness();
+  const created = repository.createProject({ kind: "blank", title: "Bounded refs", mutationId: "mutation-create-bounded-refs" });
+  const insert = database.prepare(`INSERT INTO project_asset_refs(
+    project_id, asset_id, expected_sha256, blob_sha256, created_at
+  ) VALUES (?, ?, ?, NULL, ?)`);
+  database.transaction(() => {
+    for (let index = 0; index < 1_024; index += 1) {
+      insert.run(
+        created.value.projectId,
+        `asset-retained-${index.toString(16)}`,
+        createHash("sha256").update(String(index)).digest("hex"),
+        created.value.updatedAt,
+      );
+    }
+  }).immediate();
+  expect(() => repository.uploadProjectAsset({
+    projectId: created.value.projectId,
+    expectedRevision: 1,
+    mutationId: "mutation-upload-over-ref-limit",
+    content: validatedPng(),
+  })).toThrow(expect.objectContaining({ code: "asset_storage_limit", status: 413 }));
+  expect(database.prepare("SELECT COUNT(*) AS count FROM asset_blobs").get()).toEqual({ count: 0 });
+  expect(database.prepare("SELECT COUNT(*) AS count FROM project_asset_refs").get()).toEqual({ count: 1_024 });
+  expect(repository.getProject(created.value.projectId).revision).toBe(1);
+  database.close();
+});
+
+test("retains content authority across checkpoint recovery and duplication while hiding deleted projects", () => {
+  const { database, repository } = harness();
+  const created = repository.createProject({ kind: "blank", title: "Asset lifecycle", mutationId: "mutation-create-asset-life" });
+  const uploaded = repository.uploadProjectAsset({
+    projectId: created.value.projectId,
+    expectedRevision: 1,
+    mutationId: "mutation-upload-asset-life",
+    content: validatedPng(),
+  });
+  const checkpoint = repository.createCheckpoint({
+    projectId: created.value.projectId,
+    expectedRevision: 2,
+    mutationId: "mutation-checkpoint-assets",
+    label: "Asset retained",
+  });
+  const duplicate = repository.duplicateProject({
+    projectId: created.value.projectId,
+    expectedRevision: 3,
+    mutationId: "mutation-duplicate-assets",
+    title: "Asset duplicate",
+  });
+  expect(repository.getProjectAsset({ projectId: duplicate.value.projectId, assetId: uploaded.value.asset.id }).bytes)
+    .toEqual(ONE_PIXEL_PNG);
+  repository.deleteProject({
+    projectId: duplicate.value.projectId,
+    expectedRevision: 1,
+    mutationId: "mutation-delete-asset-copy",
+  });
+  expect(() => repository.listProjectAssets(duplicate.value.projectId))
+    .toThrow(expect.objectContaining({ code: "project_not_found", status: 404 }));
+
+  repository.deleteProjectAsset({
+    projectId: created.value.projectId,
+    assetId: uploaded.value.asset.id,
+    expectedRevision: 3,
+    mutationId: "mutation-delete-unused-asset",
+  });
+  expect(repository.listProjectAssets(created.value.projectId)).toEqual([]);
+  expect(database.prepare("SELECT COUNT(*) AS count FROM asset_blobs").get()).toEqual({ count: 1 });
+  expect(database.prepare("SELECT COUNT(*) AS count FROM project_asset_refs").get()).toEqual({ count: 2 });
+  const recovered = repository.recoverCheckpoint({
+    projectId: created.value.projectId,
+    checkpointId: checkpoint.value.checkpointId,
+    expectedRevision: 4,
+    mutationId: "mutation-recover-asset-life",
+  });
+  expect(recovered.value.revision).toBe(5);
+  expect(repository.getProjectAsset({ projectId: created.value.projectId, assetId: uploaded.value.asset.id }).bytes)
+    .toEqual(ONE_PIXEL_PNG);
+  expect(() => assertProofCanvasPersistenceIntegrity(database)).not.toThrow();
+  database.close();
+});
+
+test("keeps exact audio duration authority while exposing schema-canonical timeline metadata", () => {
+  const { database, repository } = harness();
+  const created = repository.createProject({ kind: "blank", title: "Audio duration", mutationId: "mutation-create-audio-duration" });
+  const content = validatedWav();
+  expect(content.duration).toBe(1_001 / 44_100);
+  const uploaded = repository.uploadProjectAsset({
+    projectId: created.value.projectId,
+    expectedRevision: 1,
+    mutationId: "mutation-upload-audio-duration",
+    content,
+  });
+  expect(uploaded.value.asset.duration).not.toBe(content.duration);
+  expect((database.prepare("SELECT duration_seconds FROM asset_blobs WHERE sha256 = ?").get(content.sha256) as { duration_seconds: number }).duration_seconds)
+    .toBe(content.duration);
+  expect(repository.getProjectAsset({ projectId: created.value.projectId, assetId: uploaded.value.asset.id }).bytes)
+    .toEqual(Buffer.from(content.contentBytes));
+  expect(() => assertProofCanvasPersistenceIntegrity(database)).not.toThrow();
+  database.close();
+});
+
+test("exports and idempotently imports a complete package as a fresh durable project", () => {
+  const first = harness();
+  const created = first.repository.createProject({ kind: "sample", title: "Portable proof", mutationId: "mutation-create-package-source" });
+  const uploaded = first.repository.uploadProjectAsset({
+    projectId: created.value.projectId,
+    expectedRevision: 1,
+    mutationId: "mutation-upload-package-source",
+    content: validatedPng(),
+  });
+  const wav = validatedWav();
+  const uploadedAudio = first.repository.uploadProjectAsset({
+    projectId: created.value.projectId,
+    expectedRevision: 2,
+    mutationId: "mutation-upload-package-audio",
+    content: wav,
+  });
+  const source = first.repository.getProject(created.value.projectId);
+  const built = first.repository.exportProjectPackage(source.id);
+  expect(built.manifest.source).toEqual({ projectId: source.id, revision: 3 });
+  expect(built.sha256).toMatch(/^[a-f0-9]{64}$/);
+  expect(built.bytes.byteLength).toBeGreaterThan(ONE_PIXEL_PNG.length);
+
+  const validator = validateAssetContent as jest.MockedFunction<typeof validateAssetContent>;
+  validator.mockClear();
+  const imported = first.repository.importProjectPackage({
+    mutationId: "mutation-import-package-roundtrip",
+    archiveBytes: built.bytes,
+  });
+  expect(validator).toHaveBeenCalledTimes(3);
+  expect(imported).toMatchObject({
+    replayed: false,
+    value: {
+      revision: 1,
+      sourceProjectId: source.id,
+      sourceRevision: 3,
+      packageSha256: built.sha256,
+    },
+  });
+  expect(imported.value.projectId).not.toBe(source.id);
+  const restored = first.repository.getProject(imported.value.projectId);
+  expect(restored.document.metadata).toEqual({
+    ...source.document.metadata,
+    id: imported.value.projectId,
+    createdAt: imported.value.updatedAt,
+    updatedAt: imported.value.updatedAt,
+  });
+  expect({ ...restored.document, metadata: undefined }).toEqual({ ...source.document, metadata: undefined });
+  expect(first.repository.getProjectAsset({ projectId: restored.id, assetId: uploaded.value.asset.id }).bytes)
+    .toEqual(ONE_PIXEL_PNG);
+  expect(first.repository.getProjectAsset({ projectId: restored.id, assetId: uploadedAudio.value.asset.id }).bytes)
+    .toEqual(Buffer.from(wav.contentBytes));
+  expect(first.database.prepare("SELECT COUNT(*) AS count FROM asset_blobs").get()).toEqual({ count: 3 });
+  expect(first.database.prepare("SELECT COUNT(*) AS count FROM project_asset_refs").get()).toEqual({ count: 6 });
+  expect(first.repository.importProjectPackage({
+    mutationId: "mutation-import-package-roundtrip",
+    archiveBytes: built.bytes,
+  })).toEqual({ ...imported, replayed: true });
+
+  first.repository.renameProject({
+    projectId: source.id,
+    expectedRevision: 3,
+    mutationId: "mutation-rename-package-source",
+    title: "Changed source",
+  });
+  const changedPackage = first.repository.exportProjectPackage(source.id);
+  expect(() => first.repository.importProjectPackage({
+    mutationId: "mutation-import-package-roundtrip",
+    archiveBytes: changedPackage.bytes,
+  })).toThrow(expect.objectContaining({ code: "idempotency_conflict", status: 409 }));
+  expect(() => assertProofCanvasPersistenceIntegrity(first.database)).not.toThrow();
+  first.database.close();
+
+  const reopened = openProofCanvasDatabase({ path: first.path });
+  expect(new SqliteProjectRepository(reopened).getProjectAsset({
+    projectId: imported.value.projectId,
+    assetId: uploaded.value.asset.id,
+  }).bytes).toEqual(ONE_PIXEL_PNG);
+  expect(() => assertProofCanvasPersistenceIntegrity(reopened)).not.toThrow();
+  reopened.close();
+});
+
+test("rejects a corrupt package before its IMMEDIATE import transaction leaves any durable row", () => {
+  const { database, repository } = harness();
+  const created = repository.createProject({ kind: "blank", title: "Package rollback", mutationId: "mutation-create-package-rollback" });
+  repository.uploadProjectAsset({
+    projectId: created.value.projectId,
+    expectedRevision: 1,
+    mutationId: "mutation-upload-package-rollback",
+    content: validatedPng(),
+  });
+  const built = repository.exportProjectPackage(created.value.projectId);
+  const corrupt = Buffer.from(built.bytes);
+  corrupt[corrupt.length - 23] ^= 1;
+  const before = {
+    projects: database.prepare("SELECT COUNT(*) AS count FROM projects").get(),
+    blobs: database.prepare("SELECT COUNT(*) AS count FROM asset_blobs").get(),
+    refs: database.prepare("SELECT COUNT(*) AS count FROM project_asset_refs").get(),
+    mutations: database.prepare("SELECT COUNT(*) AS count FROM project_mutations").get(),
+  };
+  expect(() => repository.importProjectPackage({
+    mutationId: "mutation-import-corrupt-package",
+    archiveBytes: corrupt,
+  })).toThrow(ProjectPackageError);
+  expect(database.prepare("SELECT COUNT(*) AS count FROM projects").get()).toEqual(before.projects);
+  expect(database.prepare("SELECT COUNT(*) AS count FROM asset_blobs").get()).toEqual(before.blobs);
+  expect(database.prepare("SELECT COUNT(*) AS count FROM project_asset_refs").get()).toEqual(before.refs);
+  expect(database.prepare("SELECT COUNT(*) AS count FROM project_mutations").get()).toEqual(before.mutations);
+  database.close();
+});
+
+test("refuses deletion while an authored object uses the asset and leaves no partial mutation", () => {
+  const { database, repository } = harness();
+  const created = repository.createProject({ kind: "sample", title: "Asset in use", mutationId: "mutation-create-asset-used" });
+  const uploaded = repository.uploadProjectAsset({
+    projectId: created.value.projectId,
+    expectedRevision: 1,
+    mutationId: "mutation-upload-asset-used",
+    content: validatedPng(),
+  });
+  const document = cloneSerializable(repository.getProject(created.value.projectId).document);
+  const imageObject = cloneSerializable(document.shots[0].objects[0]);
+  imageObject.id = "object-uploaded-image";
+  imageObject.type = "image";
+  imageObject.name = "Uploaded image";
+  imageObject.properties = { assetId: uploaded.value.asset.id };
+  document.shots[0].objects.push(imageObject);
+  const saved = repository.saveProject({
+    projectId: created.value.projectId,
+    expectedRevision: 2,
+    mutationId: "mutation-save-asset-used",
+    document,
+  });
+  expect(saved.value.revision).toBe(3);
+  const beforeMutations = database.prepare("SELECT COUNT(*) AS count FROM project_mutations").get();
+  expect(() => repository.deleteProjectAsset({
+    projectId: created.value.projectId,
+    assetId: uploaded.value.asset.id,
+    expectedRevision: 3,
+    mutationId: "mutation-delete-asset-used",
+  })).toThrow(expect.objectContaining({ code: "asset_in_use", status: 409 }));
+  expect(repository.getProject(created.value.projectId).revision).toBe(3);
+  expect(database.prepare("SELECT COUNT(*) AS count FROM project_mutations").get()).toEqual(beforeMutations);
+  expect(repository.getProjectAsset({ projectId: created.value.projectId, assetId: uploaded.value.asset.id }).bytes)
+    .toEqual(ONE_PIXEL_PNG);
+  database.close();
+});
+
+test("full integrity rejects corrupted content, unreferenced blobs, and missing document coverage", () => {
+  const corrupted = harness();
+  const created = corrupted.repository.createProject({ kind: "blank", title: "Corrupt asset", mutationId: "mutation-create-corrupt-asset" });
+  const uploaded = corrupted.repository.uploadProjectAsset({
+    projectId: created.value.projectId,
+    expectedRevision: 1,
+    mutationId: "mutation-upload-corrupt-asset",
+    content: validatedPng(),
+  });
+  const changed = Buffer.from(ONE_PIXEL_PNG);
+  changed[changed.length - 1] ^= 1;
+  corrupted.database.prepare("UPDATE asset_blobs SET content = ? WHERE sha256 = ?").run(changed, uploaded.value.asset.sha256);
+  expect(() => assertProofCanvasPersistenceIntegrity(corrupted.database)).toThrow(/content authority is invalid/);
+  corrupted.database.close();
+
+  const orphaned = harness();
+  const orphanProject = orphaned.repository.createProject({ kind: "blank", title: "Orphan asset", mutationId: "mutation-create-orphan-asset" });
+  const svg = validatedSvg();
+  orphaned.database.prepare(`INSERT INTO asset_blobs(
+    sha256, mime_type, byte_size, width, height, duration_seconds, content, created_at
+  ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`)
+    .run(svg.sha256, svg.mimeType, svg.size, svg.width, svg.height, Buffer.from(svg.contentBytes), orphanProject.value.updatedAt);
+  expect(() => assertProofCanvasPersistenceIntegrity(orphaned.database)).toThrow(/is unreferenced/);
+  orphaned.database.close();
+
+  const uncovered = harness();
+  const coveredProject = uncovered.repository.createProject({ kind: "blank", title: "Missing reference", mutationId: "mutation-create-missing-ref" });
+  const coveredUpload = uncovered.repository.uploadProjectAsset({
+    projectId: coveredProject.value.projectId,
+    expectedRevision: 1,
+    mutationId: "mutation-upload-missing-ref",
+    content: validatedPng(),
+  });
+  uncovered.database.prepare("DELETE FROM project_asset_refs WHERE project_id = ?").run(coveredProject.value.projectId);
+  uncovered.database.prepare("DELETE FROM asset_blobs WHERE sha256 = ?").run(coveredUpload.value.asset.sha256);
+  expect(() => assertProofCanvasPersistenceIntegrity(uncovered.database)).toThrow(/missing its project-scoped storage reference/);
+  uncovered.database.close();
+});
+
 test("persists derived dashboard metadata and validates documents only when reading the document", () => {
   const { database, repository } = harness();
   const created = repository.createProject({ kind: "sample", title: "Cantor", mutationId: "mutation-create-sample-0001" });
   expect(repository.listProjects()).toEqual([expect.objectContaining({
     id: created.value.projectId,
     revision: 1,
-    shotCount: 2,
-    objectCount: 32,
-    durationSeconds: 28,
+    shotCount: 5,
+    objectCount: 66,
+    durationSeconds: 52,
     thumbnail: null,
   })]);
   database.prepare("UPDATE projects SET document_json = 'not-json' WHERE id = ?").run(created.value.projectId);
@@ -912,6 +1584,7 @@ test("physically rewrites canonical duration counters on every existing-row muta
 test("preserves legacy V2 easing in checkpoints but blocks copying or reintroducing it after repair", () => {
   const source = harness();
   const created = source.repository.createProject({ kind: "sample", title: "Legacy V2 easing", mutationId: "mutation-create-legacy-v2-easing" });
+  replaceWithCompatibilitySample(source.database, source.repository, created.value.projectId);
   const initialV3 = source.repository.getProject(created.value.projectId);
   const emphasisId = "animation-limit-emphasis";
   const legacyRaw = schemaV2Json(initialV3.document, (candidate) => {
@@ -1304,6 +1977,12 @@ test("readiness fails closed when a required table or index is dropped", () => {
 test("creates a validated online backup and restores it only while the destination is offline", async () => {
   const source = harness();
   const created = source.repository.createProject({ kind: "blank", title: "Backed up", mutationId: "mutation-create-backup-0001" });
+  const uploaded = source.repository.uploadProjectAsset({
+    projectId: created.value.projectId,
+    expectedRevision: 1,
+    mutationId: "mutation-upload-backup-asset",
+    content: validatedPng(),
+  });
   const onlineReader = openProofCanvasDatabase({ path: source.path, readonly: true });
   const backup = await createOnlineBackup({ database: onlineReader, dataDirectory: source.directory, now: new Date("2026-08-24T13:00:00.000Z") });
   onlineReader.close();
@@ -1316,8 +1995,59 @@ test("creates a validated online backup and restores it only while the destinati
   const restored = restoreOfflineBackup(backup.path, { dataDirectory: destination, now: new Date("2026-08-24T14:00:00.000Z") });
   expect(restored.previousPath).toBeNull();
   const restoredDatabase = openProofCanvasDatabase({ path: restored.restoredPath });
-  expect(new SqliteProjectRepository(restoredDatabase).getProject(created.value.projectId).title).toBe("Backed up");
+  const restoredRepository = new SqliteProjectRepository(restoredDatabase);
+  expect(restoredRepository.getProject(created.value.projectId).title).toBe("Backed up");
+  expect(restoredRepository.getProjectAsset({ projectId: created.value.projectId, assetId: uploaded.value.asset.id }).bytes)
+    .toEqual(ONE_PIXEL_PNG);
   restoredDatabase.close();
+});
+
+test("restore invalidates snapshotted authentication state while preserving owner project content", async () => {
+  const source = harness();
+  const created = source.repository.createProject({
+    kind: "blank",
+    title: "Owner content survives auth sanitization",
+    mutationId: "mutation-create-auth-sanitize",
+  });
+  const uploaded = source.repository.uploadProjectAsset({
+    projectId: created.value.projectId,
+    expectedRevision: 1,
+    mutationId: "mutation-upload-auth-sanitize",
+    content: validatedPng("restore-auth.png"),
+  });
+  const configuration = {
+    appOrigin: "http://127.0.0.1:3000",
+    ownerPasswordHash: "unused-by-session-auth",
+    sessionSecret: Buffer.alloc(32, 0x5a),
+    secureCookies: false,
+  };
+  const now = Date.parse("2026-08-24T12:00:00.000Z");
+  const issued = issueSession(source.database, configuration, now);
+  reserveOwnerLoginAdmission(source.database, now + 1);
+  expect(source.database.prepare("SELECT COUNT(*) AS count FROM sessions").get()).toEqual({ count: 1 });
+  expect(source.database.prepare("SELECT COUNT(*) AS count FROM auth_rate_limits").get()).toEqual({ count: 1 });
+
+  const backup = await createOnlineBackup({ database: source.database, dataDirectory: source.directory });
+  const snapshotted = openProofCanvasDatabase({ path: backup.path, readonly: true });
+  expect(snapshotted.prepare("SELECT COUNT(*) AS count FROM sessions").get()).toEqual({ count: 1 });
+  expect(snapshotted.prepare("SELECT COUNT(*) AS count FROM auth_rate_limits").get()).toEqual({ count: 1 });
+  expect(authenticateSessionToken(issued.token, snapshotted, configuration, now + 2)).toMatchObject({ tokenHash: issued.tokenHash });
+  snapshotted.close();
+  source.database.close();
+
+  const destination = temporaryDirectory();
+  const receipt = restoreOfflineBackup(backup.path, { dataDirectory: destination });
+  const restored = openProofCanvasDatabase({ path: receipt.restoredPath });
+  expect(restored.prepare("SELECT COUNT(*) AS count FROM sessions").get()).toEqual({ count: 0 });
+  expect(restored.prepare("SELECT COUNT(*) AS count FROM auth_rate_limits").get()).toEqual({ count: 0 });
+  expect(() => authenticateSessionToken(issued.token, restored, configuration, now + 2))
+    .toThrow(expect.objectContaining({ code: "unauthorized", status: 401 }));
+  const repository = new SqliteProjectRepository(restored);
+  expect(repository.getProject(created.value.projectId).title).toBe("Owner content survives auth sanitization");
+  expect(repository.getProjectAsset({ projectId: created.value.projectId, assetId: uploaded.value.asset.id }).bytes)
+    .toEqual(ONE_PIXEL_PNG);
+  expect(() => assertProofCanvasPersistenceIntegrity(restored)).not.toThrow();
+  restored.close();
 });
 
 test("validates standalone backups from readonly storage without changing source files or sidecars", async () => {
@@ -1478,6 +2208,55 @@ test("publishes the validated immutable snapshot even when the source symlink is
   for (const suffix of ["-wal", "-shm", "-journal"]) {
     expect(existsSync(`${restored.restoredPath}${suffix}`)).toBe(false);
   }
+});
+
+test("offline maintenance can keep full-size validation snapshots on the persistent data volume", async () => {
+  const source = harness();
+  const created = source.repository.createProject({ kind: "blank", title: "Volume snapshot", mutationId: "mutation-create-volume-snapshot" });
+  const backup = await createOnlineBackup({ database: source.database, dataDirectory: source.directory });
+  source.database.close();
+  const destinationDirectory = temporaryDirectory();
+  let observedPrivateSnapshot = false;
+
+  const restored = restoreOfflineBackup(backup.path, {
+    dataDirectory: destinationDirectory,
+    privateSnapshotRoot: destinationDirectory,
+    __testFault(boundary) {
+      if (boundary !== "source-snapshotted") return;
+      const snapshots = readdirSync(destinationDirectory).filter((name) => name.startsWith(BACKUP_SNAPSHOT_PREFIX));
+      expect(snapshots).toHaveLength(1);
+      expect(statSync(join(destinationDirectory, snapshots[0])).mode & 0o777).toBe(0o500);
+      observedPrivateSnapshot = true;
+    },
+  });
+
+  expect(observedPrivateSnapshot).toBe(true);
+  expect(readdirSync(destinationDirectory).filter((name) => name.startsWith(BACKUP_SNAPSHOT_PREFIX))).toEqual([]);
+  const installed = openProofCanvasDatabase({ path: restored.restoredPath });
+  expect(new SqliteProjectRepository(installed).getProject(created.value.projectId).title).toBe("Volume snapshot");
+  installed.close();
+});
+
+test("online backup validates its full-size private snapshot on the persistent data volume", async () => {
+  const source = harness();
+  source.repository.createProject({ kind: "blank", title: "Online volume snapshot", mutationId: "mutation-create-online-volume-snapshot" });
+  let observedPrivateSnapshot = false;
+
+  const backup = await createOnlineBackup({
+    database: source.database,
+    dataDirectory: source.directory,
+    __testSnapshotObserver(snapshot) {
+      expect(relative(source.directory, snapshot.directory)).not.toMatch(/^\.\.(?:\/|$)/);
+      expect(statSync(snapshot.directory).mode & 0o777).toBe(0o500);
+      expect(statSync(snapshot.path).mode & 0o777).toBe(0o400);
+      observedPrivateSnapshot = true;
+    },
+  });
+
+  expect(observedPrivateSnapshot).toBe(true);
+  expect(backup.path.startsWith(join(source.directory, "backups"))).toBe(true);
+  expect(readdirSync(source.directory).filter((name) => name.startsWith(BACKUP_SNAPSHOT_PREFIX))).toEqual([]);
+  source.database.close();
 });
 
 test("offline restore refuses every supported writable destination connection until the final close", async () => {

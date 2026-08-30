@@ -84,6 +84,22 @@ test('routes tracked field edits to a playhead key, untracked edits to base pose
   expect(canvasObject()).toHaveAttribute('transform', expect.stringContaining(' 234)'))
 })
 
+test('publishes custom outgoing interpolation through the integrated keyframe inspector', () => {
+  render(<ProofCanvasEditor initialProject={timelineProject()}/>)
+
+  fireEvent.click(screen.getByRole('button', { name: 'x keyframe at 1 seconds' }))
+  expect(editor()).toHaveAttribute('data-selection-kind', 'keyframes')
+  const interpolation = screen.getByRole('combobox', { name: 'Outgoing interpolation' })
+  expect(interpolation).toHaveValue('linear')
+  fireEvent.change(interpolation, { target: { value: 'custom-bezier' } })
+
+  expect(editor()).toHaveAttribute('data-selection-kind', 'keyframes')
+  expect(screen.getByRole('status', { name: 'Editor status' })).toHaveTextContent('Set keyframe interpolation')
+  expect(screen.getByRole('spinbutton', { name: 'X1' })).toHaveValue(0.25)
+  fireEvent.blur(screen.getByRole('spinbutton', { name: 'X1' }), { target: { value: '0.22' } })
+  expect(screen.getByRole('spinbutton', { name: 'X1' })).toHaveValue(0.22)
+})
+
 test('edits and clears exact lifetimes atomically, rejects dependent keys, and disables mutation during playback', () => {
   const requestFrame = jest.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 91)
   const cancelFrame = jest.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {})

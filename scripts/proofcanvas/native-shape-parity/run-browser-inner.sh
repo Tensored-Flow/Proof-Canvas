@@ -14,7 +14,12 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-node_modules/.bin/tsx scripts/proofcanvas/native-shape-parity/seed-and-compile.ts "$PROOFCANVAS_PARITY_EVIDENCE_DIR"
+# The seed imports the production repository, including modules guarded by the
+# `server-only` package. Match Next's server resolution condition while keeping
+# the guard effective for accidental client/default-runtime imports.
+node --conditions=react-server --import tsx \
+  scripts/proofcanvas/native-shape-parity/seed-and-compile.ts \
+  "$PROOFCANVAS_PARITY_EVIDENCE_DIR"
 
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
   -subj "/CN=127.0.0.1" -addext "subjectAltName=IP:127.0.0.1" \

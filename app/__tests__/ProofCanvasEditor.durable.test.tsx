@@ -47,6 +47,18 @@ function openRenderDialog() {
   fireEvent.click(screen.getByRole('button', { name: 'Render or export' }))
 }
 
+function openOwnerMenu() {
+  if (screen.getByLabelText('Owner menu').getAttribute('aria-expanded') === 'true') return
+  fireEvent.click(screen.getByLabelText('Owner menu'))
+}
+
+function projectJsonFile(document: ProjectDocument, name = 'project.json') {
+  const contents = canonicalProjectJson(document)
+  const file = new File([contents], name, { type: 'application/json' })
+  Object.defineProperty(file, 'text', { configurable: true, value: jest.fn().mockResolvedValue(contents) })
+  return file
+}
+
 function addMath() {
   fireEvent.click(screen.getByRole('tab', { name: 'Math' }))
   fireEvent.click(screen.getByRole('button', { name: 'Add math' }))
@@ -91,6 +103,88 @@ afterEach(() => {
   document.cookie = 'proofcanvas-csrf=; Max-Age=0; Path=/'
   jest.clearAllTimers()
   jest.useRealTimers()
+})
+
+test('does not expose the local sample reset action in a durable owner workspace', () => {
+  renderDurable()
+
+  openOwnerMenu()
+
+  expect(screen.queryByRole('button', { name: 'Reset sample project' })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Open project recovery' })).toBeInTheDocument()
+  expect(screen.getByRole('application', { name: 'ProofCanvas editor' })).toHaveAttribute('data-history-past-count', '0')
+  expect(fetchMock).not.toHaveBeenCalled()
+})
+
+test('refuses cross-project JSON before durable history or autosave can change', async () => {
+  const imported = cloneSerializable(durableDocument('Cross-project import'))
+  imported.metadata.id = OTHER_PROJECT_ID
+  renderDurable(durableDocument('Server project'))
+
+  fireEvent.change(screen.getByLabelText('Import project JSON'), {
+    target: { files: [projectJsonFile(ProjectDocumentSchema.parse(imported), 'other-project.json')] },
+  })
+  await settle()
+  await advance(1_000)
+
+  expect(screen.getByRole('alert')).toHaveTextContent(/different project.*dashboard \.proofcanvas import/i)
+  expect(screen.getByRole('textbox', { name: 'Project title' })).toHaveValue('Server project')
+  expect(screen.getByRole('application', { name: 'ProofCanvas editor' })).toHaveAttribute('data-project-id', PROJECT_ID)
+  expect(screen.getByRole('application', { name: 'ProofCanvas editor' })).toHaveAttribute('data-history-past-count', '0')
+  expect(window.localStorage.getItem(`proofcanvas_recovery_${PROJECT_ID}`)).toBeNull()
+  expect(fetchMock).not.toHaveBeenCalled()
+})
+
+test('refuses JSON that changes durable asset authority before history or autosave can change', async () => {
+  const imported = cloneSerializable(durableDocument('Asset-changing import'))
+  imported.assets = [{
+    id: 'asset-import-refusal',
+    filename: 'unbundled.png',
+    mimeType: 'image/png',
+    size: 128,
+    sha256: 'a'.repeat(64),
+    width: 320,
+    height: 180,
+    provenance: 'uploaded',
+  }]
+  renderDurable(durableDocument('Server project'))
+
+  fireEvent.change(screen.getByLabelText('Import project JSON'), {
+    target: { files: [projectJsonFile(ProjectDocumentSchema.parse(imported), 'changed-assets.json')] },
+  })
+  await settle()
+  await advance(1_000)
+
+  expect(screen.getByRole('alert')).toHaveTextContent(/cannot change durable asset authority.*dashboard \.proofcanvas import/i)
+  expect(screen.getByRole('textbox', { name: 'Project title' })).toHaveValue('Server project')
+  expect(screen.getByRole('application', { name: 'ProofCanvas editor' })).toHaveAttribute('data-history-past-count', '0')
+  expect(window.localStorage.getItem(`proofcanvas_recovery_${PROJECT_ID}`)).toBeNull()
+  expect(fetchMock).not.toHaveBeenCalled()
+})
+
+test('imports same-project JSON when durable asset authority is unchanged', async () => {
+  const imported = durableDocument('Same durable project import')
+  fetchMock.mockResolvedValue(jsonResponse(200, { ok: true, project: { projectId: PROJECT_ID, revision: 2 } }))
+  renderDurable(durableDocument('Server project'))
+
+  fireEvent.change(screen.getByLabelText('Import project JSON'), {
+    target: { files: [projectJsonFile(imported, 'same-project.json')] },
+  })
+  await settle()
+
+  expect(screen.getByRole('textbox', { name: 'Project title' })).toHaveValue('Same durable project import')
+  expect(screen.getByRole('application', { name: 'ProofCanvas editor' })).toHaveAttribute('data-project-id', PROJECT_ID)
+  expect(screen.getByRole('application', { name: 'ProofCanvas editor' })).toHaveAttribute('data-history-past-count', '1')
+  expect(fetchMock).not.toHaveBeenCalled()
+
+  await advance(800)
+  await settle()
+
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(fetchMock).toHaveBeenCalledWith(`/api/projects/${PROJECT_ID}`, expect.objectContaining({ method: 'PUT' }))
+  const request = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+  expect(request.document.metadata).toMatchObject({ id: PROJECT_ID, title: 'Same durable project import' })
+  expect(request.document.assets).toEqual([])
 })
 
 test('offers only a matching project-scoped browser recovery and never applies it automatically', async () => {

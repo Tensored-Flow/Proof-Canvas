@@ -96,10 +96,38 @@ describe('ProofCanvas editor client', () => {
     expect(screen.queryByRole('dialog', { name: 'AI command drawer' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Project settings' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeInTheDocument()
-    expect(screen.queryByRole('tab', { name: 'Media' })).not.toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Media' })).toBeInTheDocument()
     expect(screen.getByRole('tablist', { name: 'Shots' })).toBeInTheDocument()
     expect(screen.getByRole('tabpanel')).toHaveAttribute('data-shot-id', 'shot-cantor-construction')
     expect(container.querySelector('[data-object-id="object-removal-first"]')).not.toBeInTheDocument()
+  })
+
+  it('provides editor-only canvas zoom, a reversible focus mode, and safe fitted portrait conversion', () => {
+    render(<ProofCanvasEditor />)
+    const scene = screen.getByRole('region', { name: 'Scene canvas' })
+    expect(scene).toHaveAttribute('data-editor-zoom', '1')
+    fireEvent.change(screen.getByRole('combobox', { name: 'Editor canvas zoom' }), { target: { value: '1.5' } })
+    expect(scene).toHaveAttribute('data-editor-zoom', '1.5')
+    expect(scene).toHaveAttribute('data-editor-zoomed', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Focus canvas' }))
+    expect(editor()).toHaveAttribute('data-canvas-focus', 'true')
+    expect(editor()).toHaveAttribute('data-left-collapsed', 'true')
+    expect(editor()).toHaveAttribute('data-right-collapsed', 'true')
+    expect(editor()).toHaveAttribute('data-timeline-collapsed', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Restore editor panels' }))
+    expect(editor()).toHaveAttribute('data-canvas-focus', 'false')
+    expect(editor()).toHaveAttribute('data-left-collapsed', 'false')
+    expect(editor()).toHaveAttribute('data-right-collapsed', 'false')
+    expect(editor()).toHaveAttribute('data-timeline-collapsed', 'false')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Project settings' }))
+    expect(screen.getByRole('radio', { name: /Fit all content/ })).toBeChecked()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Aspect ratio' }), { target: { value: '9:16' } })
+    expect(screen.getByRole('combobox', { name: 'Aspect ratio' })).toHaveValue('9:16')
+    expect(screen.getByText('All static object bounds are inside the current frame')).toBeInTheDocument()
+    expect(editor()).toHaveStyle('--pc-timeline-height: 260px')
+    expect(scene).toHaveAttribute('data-editor-zoom', '1')
   })
 
   it('keeps the visible range, canvas, output, and timeline line on one playback clock', () => {
@@ -435,7 +463,7 @@ describe('ProofCanvas editor client', () => {
     fireEvent.change(x, { target: { value: '999999' } })
     fireEvent.blur(x)
 
-    expect(x).toHaveValue(300)
+    expect(x).toHaveValue(360)
     expect(editor()).toHaveAttribute('data-history-past-count', '0')
     expect(screen.getByRole('status', { name: 'Editor status' })).toHaveTextContent('X position must be between')
 
@@ -444,6 +472,23 @@ describe('ProofCanvas editor client', () => {
     fireEvent.blur(fontSize)
     expect(fontSize).toHaveValue(38)
     expect(editor()).toHaveAttribute('data-history-past-count', '0')
+  })
+
+  it('authors deep per-object typography through exact inspector controls', () => {
+    const { container } = render(<ProofCanvasEditor />)
+    fireEvent.click(screen.getByRole('treeitem', { name: /Uncountable, Yet Zero Length/ }))
+
+    const family = screen.getByRole('textbox', { name: 'Font family' })
+    fireEvent.change(family, { target: { value: 'Courier New, monospace' } })
+    fireEvent.blur(family)
+    fireEvent.change(screen.getByRole('combobox', { name: 'Font weight' }), { target: { value: '800' } })
+    fireEvent.change(screen.getByRole('combobox', { name: 'Text alignment' }), { target: { value: 'center' } })
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Rough emphasis' }))
+
+    const text = container.querySelector<HTMLElement>('[data-object-id="object-title"] .pc-canvas-text')!
+    expect(text).toHaveStyle({ fontFamily: 'Courier New, monospace', fontWeight: '800', textAlign: 'center' })
+    expect(text).toHaveAttribute('data-rough-emphasis', 'true')
+    expect(editor()).toHaveAttribute('data-history-past-count', '4')
   })
 
   it('exposes keyboard-operable resize and rotate handles', () => {
@@ -498,16 +543,16 @@ describe('ProofCanvas editor client', () => {
     const title = screen.getByRole('treeitem', { name: /Uncountable, Yet Zero Length/ })
     fireEvent.click(title)
     const x = screen.getByRole('spinbutton', { name: 'X position' })
-    expect(x).toHaveValue(300)
+    expect(x).toHaveValue(360)
 
     fireEvent.keyDown(title, { key: 'ArrowDown' })
     expect(screen.getByRole('treeitem', { name: /A quiet paradox/ })).toHaveAttribute('aria-selected', 'true')
-    expect(x).toHaveValue(300)
+    expect(x).toHaveValue(360)
     expect(editor()).toHaveAttribute('data-history-past-count', '0')
 
     fireEvent.click(title)
     fireEvent.keyDown(screen.getByRole('group', { name: /canvas at 1.2 seconds/ }), { key: 'ArrowRight' })
-    expect(screen.getByRole('spinbutton', { name: 'X position' })).toHaveValue(301)
+    expect(screen.getByRole('spinbutton', { name: 'X position' })).toHaveValue(361)
     expect(editor()).toHaveAttribute('data-history-past-count', '1')
   })
 
@@ -574,10 +619,10 @@ describe('ProofCanvas editor client', () => {
   it('uses standard wrapped arrow selection and focus in both style radiogroups', async () => {
     render(<ProofCanvasEditor />)
     const canvasStyles = screen.getByRole('radiogroup', { name: 'Active output style' })
-    fireEvent.keyDown(within(canvasStyles).getByRole('radio', { name: 'Editorial Ink' }), { key: 'ArrowRight' })
+    fireEvent.keyDown(within(canvasStyles).getByRole('radio', { name: 'Editorial Ink' }), { key: 'ArrowLeft' })
     await waitFor(() => expect(within(canvasStyles).getByRole('radio', { name: 'Raw Manim' })).toHaveFocus())
     expect(within(canvasStyles).getByRole('radio', { name: 'Raw Manim' })).toBeChecked()
-    fireEvent.keyDown(within(canvasStyles).getByRole('radio', { name: 'Raw Manim' }), { key: 'ArrowDown' })
+    fireEvent.keyDown(within(canvasStyles).getByRole('radio', { name: 'Raw Manim' }), { key: 'ArrowRight' })
     await waitFor(() => expect(within(canvasStyles).getByRole('radio', { name: 'Editorial Ink' })).toHaveFocus())
     expect(within(canvasStyles).getByRole('radio', { name: 'Editorial Ink' })).toBeChecked()
 
@@ -586,7 +631,7 @@ describe('ProofCanvas editor client', () => {
     fireEvent.keyDown(within(libraryStyles).getByRole('radio', { name: /Editorial Ink/ }), { key: 'ArrowLeft' })
     await waitFor(() => expect(within(libraryStyles).getByRole('radio', { name: /Raw Manim/ })).toHaveFocus())
     expect(within(libraryStyles).getByRole('radio', { name: /Raw Manim/ })).toHaveAttribute('aria-checked', 'true')
-    fireEvent.keyDown(within(libraryStyles).getByRole('radio', { name: /Raw Manim/ }), { key: 'ArrowUp' })
+    fireEvent.keyDown(within(libraryStyles).getByRole('radio', { name: /Raw Manim/ }), { key: 'ArrowDown' })
     await waitFor(() => expect(within(libraryStyles).getByRole('radio', { name: /Editorial Ink/ })).toHaveFocus())
     expect(within(libraryStyles).getByRole('radio', { name: /Editorial Ink/ })).toHaveAttribute('aria-checked', 'true')
     expect(editor()).toHaveAttribute('data-history-past-count', '4')
@@ -723,7 +768,7 @@ describe('ProofCanvas editor client', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Insert Callout' }))
     expect(screen.getAllByRole('treeitem', { name: /^Callout;/ }).find((item) => item.getAttribute('aria-level') === '1')).toBeInTheDocument()
     expect(editor()).toHaveAttribute('data-history-past-count', '3')
-    expect(screen.queryByRole('tab', { name: 'Media' })).not.toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Media' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Add raster image' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Add SVG' })).not.toBeInTheDocument()
   })
@@ -735,9 +780,9 @@ describe('ProofCanvas editor client', () => {
     fireEvent.click(screen.getByRole('treeitem', { name: /^Title & subtitle;/ }))
 
     const moveTarget = () => container.querySelector<SVGRectElement>('[data-group-move-target="group-mathematical-title"]')!
-    expect(Number(moveTarget().getAttribute('width'))).toBe(420)
+    expect(Number(moveTarget().getAttribute('width'))).toBe(460)
     fireEvent.click(screen.getByRole('radio', { name: 'Raw Manim' }))
-    expect(Number(moveTarget().getAttribute('width'))).toBe(420)
+    expect(Number(moveTarget().getAttribute('width'))).toBe(460)
   })
 
   it('labels inherited visibility and omits the dead group-opacity control', () => {
@@ -776,7 +821,7 @@ describe('ProofCanvas editor client', () => {
       'Rectangle', 'Rounded rectangle', 'Circle', 'Dot / point', 'Line', 'Arrow',
       'Brace', 'Bracket', 'Highlight box', 'Underline', 'Cross-out',
     ]) expect(screen.getByRole('treeitem', { name: new RegExp(`^${name.replace('/', '\\/')};`) })).toBeInTheDocument()
-    expect(screen.queryByRole('tab', { name: 'Media' })).not.toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Media' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Add raster image' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Add SVG' })).not.toBeInTheDocument()
 
@@ -1052,13 +1097,21 @@ describe('ProofCanvas editor client', () => {
     expect(diagnostics).toHaveTextContent(/object object-image/)
   })
 
-  it('keeps rejected Python inspectable without downloading it', async () => {
+  it('keeps Python with unsupported visual transport inspectable without downloading it', async () => {
     const rejected = cloneSerializable(createCantorDemoProject())
     rejected.metadata.id = 'project-rejected-export'
     rejected.metadata.title = 'Rejected export fixture'
     rejected.shots[1].animations = []
-    rejected.assets.push({ id: 'asset-rejected-audio', filename: 'rejected.wav', mimeType: 'audio/wav', size: 32, sha256: 'c'.repeat(64), duration: 1, provenance: 'uploaded' })
-    rejected.shots[1].audioClips = [{ id: 'audio-rejected-export', assetId: 'asset-rejected-audio', name: 'Rejected audio', start: 0, duration: 1, sourceStart: 0, sourceEnd: 1, volume: 1, muted: false, solo: false }]
+    rejected.shots[1].objects.push({
+      id: 'object-rejected-image',
+      type: 'image',
+      name: 'Rejected image',
+      locked: false,
+      visible: true,
+      transform: { x: 480, y: 270, width: 120, height: 80, rotation: 0, scaleX: 1, scaleY: 1 },
+      style: {},
+      properties: { source: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' },
+    })
     render(<ProofCanvasEditor />)
     const file = new File([canonicalProjectJson(rejected)], 'rejected.proofcanvas.json', { type: 'application/json' })
     Object.defineProperty(file, 'text', { configurable: true, value: jest.fn().mockResolvedValue(canonicalProjectJson(rejected)) })
@@ -1067,9 +1120,22 @@ describe('ProofCanvas editor client', () => {
     openRenderDialog()
     fireEvent.click(screen.getByRole('button', { name: 'Export Manim Python' }))
     expect(screen.getByRole('dialog', { name: /Manim Python/ })).toHaveTextContent('from manim import')
-    expect(screen.getByRole('region', { name: 'Compiler diagnostics' })).toHaveTextContent('AUDIO_CLIP_RENDER_UNSUPPORTED')
+    expect(screen.getByRole('region', { name: 'Compiler diagnostics' })).toHaveTextContent('ASSET_RENDER_TRANSPORT_UNSUPPORTED')
     expect(createObjectURL).not.toHaveBeenCalled()
     expect(anchorClick).not.toHaveBeenCalled()
+  })
+
+  it('downloads readable visual Manim source while labelling external audio muxing', async () => {
+    const audible = cloneSerializable(createCantorDemoProject())
+    audible.assets.push({ id: 'asset-python-audio', filename: 'narration.wav', mimeType: 'audio/wav', size: 32, sha256: 'c'.repeat(64), duration: 1, provenance: 'uploaded' })
+    audible.shots[0].audioClips = [{ id: 'audio-python-export', assetId: 'asset-python-audio', name: 'Narration', start: 0, duration: 1, sourceStart: 0, sourceEnd: 1, volume: 1, muted: false, solo: false }]
+    render(<ProofCanvasEditor initialProject={ProjectDocumentSchema.parse(audible)} />)
+    openRenderDialog()
+    fireEvent.click(screen.getByRole('button', { name: 'Export Manim Python' }))
+    expect(screen.getByRole('region', { name: 'Compiler diagnostics' })).toHaveTextContent('AUDIO_EXTERNAL_MUX_NOT_EMBEDDED')
+    expect(screen.getByRole('dialog', { name: /Manim Python/ })).toHaveTextContent('Audio is muxed separately by ProofCanvas')
+    expect(createObjectURL).toHaveBeenCalledTimes(1)
+    expect(anchorClick).toHaveBeenCalledTimes(1)
   })
 
   it('exposes a genuine completed render as an inspectable video and download', async () => {
@@ -1114,4 +1180,107 @@ describe('ProofCanvas editor client', () => {
     expect(fetchMock).toHaveBeenCalledTimes(4)
     expect(screen.getByLabelText('Rendered Manim preview')).toBeInTheDocument()
   }, 8000)
+
+  it('cancels an active render with CSRF protection and keeps a retryable receipt', async () => {
+    const id = 'AbCdEfGhIjKlMnOpQrStUvWx'
+    const sourceSha256 = 'a'.repeat(64)
+    const csrfToken = 'c'.repeat(43)
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/auth/session') return jsonResponse(200, { ok: true, csrfToken })
+      if (url === `/api/proofcanvas/render/${id}` && init?.method === 'DELETE') {
+        return jsonResponse(200, { ok: true, job: { id, status: 'cancelled', quality: 'preview', sourceSha256, error: { code: 'render-cancelled', message: 'Render cancelled.' }, video: null } })
+      }
+      if (url === '/api/proofcanvas/render' && init?.method === 'POST') {
+        return jsonResponse(202, { ok: true, job: { id, status: 'pending', quality: 'preview', sourceSha256, error: null, video: null } })
+      }
+      return jsonResponse(503, { ok: false, code: 'unexpected_request', message: 'Unexpected test request.' })
+    })
+    render(<ProofCanvasEditor />)
+
+    openRenderDialog()
+    fireEvent.click(screen.getByRole('button', { name: 'Render MP4' }))
+    const renderStatus = await screen.findByRole('region', { name: 'Render status' })
+    expect(renderStatus).toHaveAttribute('data-render-status', 'pending')
+    expect(within(renderStatus).getByRole('progressbar', { name: 'Manim render progress' })).toHaveAttribute('aria-valuetext', 'Waiting in the bounded render queue')
+    fireEvent.click(within(renderStatus).getByRole('button', { name: 'Cancel render' }))
+
+    await waitFor(() => expect(renderStatus).toHaveAttribute('data-render-status', 'cancelled'))
+    expect(within(renderStatus).getByText(/cancelled before publication/)).toBeInTheDocument()
+    expect(within(renderStatus).getByRole('button', { name: 'Retry preview render' })).toBeEnabled()
+    expect(fetchMock).toHaveBeenLastCalledWith(`/api/proofcanvas/render/${id}`, expect.objectContaining({
+      method: 'DELETE',
+      headers: { 'X-ProofCanvas-CSRF': csrfToken },
+    }))
+  })
+
+  it('retries a failed render with the same quality', async () => {
+    const firstId = 'AbCdEfGhIjKlMnOpQrStUvWx'
+    const secondId = 'ZyXwVuTsRqPoNmLkJiHgFeDc'
+    const sourceSha256 = 'a'.repeat(64)
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(202, { ok: true, job: { id: firstId, status: 'failed', quality: 'production', sourceSha256, error: { code: 'render-failed', message: 'Manim failed safely.' }, video: null } }))
+      .mockResolvedValueOnce(jsonResponse(202, { ok: true, job: { id: secondId, status: 'succeeded', quality: 'production', sourceSha256, error: null, video: { sha256: 'b'.repeat(64), bytes: 1024 } } }))
+    render(<ProofCanvasEditor />)
+
+    openRenderDialog()
+    fireEvent.change(screen.getByLabelText('Render quality'), { target: { value: 'production' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Render MP4' }))
+    const renderStatus = await screen.findByRole('region', { name: 'Render status' })
+    expect(renderStatus).toHaveAttribute('data-render-status', 'failed')
+    fireEvent.click(within(renderStatus).getByRole('button', { name: 'Retry production render' }))
+
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Render status' })).toHaveAttribute('data-render-job-id', secondId))
+    expect(screen.getByRole('region', { name: 'Render status' })).toHaveAttribute('data-render-status', 'succeeded')
+    const submitBodies = fetchMock.mock.calls.map(([, init]) => init && JSON.parse(String((init as RequestInit).body)))
+    expect(submitBodies).toEqual([
+      expect.objectContaining({ quality: 'production' }),
+      expect.objectContaining({ quality: 'production' }),
+    ])
+  })
+
+  it('downloads a hash-bound PNG still at the current sequence playhead', async () => {
+    const id = 'AbCdEfGhIjKlMnOpQrStUvWx'
+    const sourceSha256 = 'a'.repeat(64)
+    const stillSha256 = 'd'.repeat(64)
+    const stillBlob = new Blob([new Uint8Array(64)], { type: 'image/png' })
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(202, {
+        ok: true,
+        job: {
+          id,
+          status: 'succeeded',
+          quality: 'preview',
+          sourceSha256,
+          error: null,
+          output: { width: 1280, height: 720, fps: 30, expectedDurationSeconds: 53.33333333 },
+          video: { sha256: 'b'.repeat(64), bytes: 1024, width: 1280, height: 720, fps: 30, durationSeconds: 53.33333333, videoCodec: 'h264', audioCodec: 'aac', videoStreams: 1, audioStreams: 1, decodedFrames: 1600, decodedAudioSamples: 2560000 },
+        },
+      }))
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({
+          'Content-Type': 'image/png',
+          'Content-Length': String(stillBlob.size),
+          'X-ProofCanvas-Source-SHA256': sourceSha256,
+          'X-ProofCanvas-Still-SHA256': stillSha256,
+          'X-ProofCanvas-Still-Time': '6.8',
+        }),
+        blob: jest.fn().mockResolvedValue(stillBlob),
+      })
+    render(<ProofCanvasEditor />)
+
+    openRenderDialog()
+    fireEvent.click(screen.getByRole('button', { name: 'Render MP4' }))
+    const renderStatus = await screen.findByRole('region', { name: 'Render status' })
+    expect(within(renderStatus).getByText('1280×720 · 30 fps')).toBeInTheDocument()
+    expect(within(renderStatus).getByText('H264 video · AAC audio')).toBeInTheDocument()
+    fireEvent.click(within(renderStatus).getByRole('button', { name: 'Download still at playhead' }))
+
+    await waitFor(() => expect(anchorClick).toHaveBeenCalledTimes(1))
+    expect(fetchMock).toHaveBeenLastCalledWith(`/api/proofcanvas/render/${id}/still?time=6.8`, { cache: 'no-store' })
+    expect(createObjectURL).toHaveBeenCalledWith(stillBlob)
+    expect(screen.getByRole('status', { name: 'Editor status' })).toHaveTextContent('Still PNG exported at 6.800 seconds')
+  })
 })

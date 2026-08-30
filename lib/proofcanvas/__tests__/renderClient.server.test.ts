@@ -1,6 +1,7 @@
 jest.mock("server-only", () => ({}), { virtual: true });
 
 import { createCantorDemoProject } from "@/lib/proofcanvas/demo";
+import { validateAssetContent } from "@/lib/proofcanvas/assetContent.server";
 import { PROOFCANVAS_RENDER_SOURCE_MAX_BYTES, PROOFCANVAS_SCHEMA_LIMITS, ProjectDocumentSchema, cloneSerializable } from "@/lib/proofcanvas/schema";
 import {
   MAX_SELECTED_RENDER_DURATION_SECONDS,
@@ -10,9 +11,29 @@ import {
   fetchRenderVideo,
   getRenderJob,
   readBoundedJson,
+  referencedRenderAssetIds,
   renderSourceBytes,
   submitRender,
 } from "@/lib/proofcanvas/renderClient.server";
+
+function canonicalWav(seconds = 1): Uint8Array {
+  const sampleRate = 8_000;
+  const samples = sampleRate * seconds;
+  const result = Buffer.alloc(44 + samples * 2);
+  result.write("RIFF", 0, "ascii");
+  result.writeUInt32LE(result.length - 8, 4);
+  result.write("WAVEfmt ", 8, "ascii");
+  result.writeUInt32LE(16, 16);
+  result.writeUInt16LE(1, 20);
+  result.writeUInt16LE(1, 22);
+  result.writeUInt32LE(sampleRate, 24);
+  result.writeUInt32LE(sampleRate * 2, 28);
+  result.writeUInt16LE(2, 32);
+  result.writeUInt16LE(16, 34);
+  result.write("data", 36, "ascii");
+  result.writeUInt32LE(samples * 2, 40);
+  return result;
+}
 
 test("source transport guard shares the compiler limit and rejects 524289 bytes before fetch", () => {
   expect(renderSourceBytes("x".repeat(PROOFCANVAS_RENDER_SOURCE_MAX_BYTES))).toHaveLength(PROOFCANVAS_RENDER_SOURCE_MAX_BYTES);
@@ -20,7 +41,7 @@ test("source transport guard shares the compiler limit and rejects 524289 bytes 
   expect(global.fetch).not.toHaveBeenCalled();
 });
 
-test("fails closed on authored audio and audio tracks before renderer fetch", async () => {
+test("fails closed when authored audio has no trusted content transport", async () => {
   const project = cloneSerializable(createCantorDemoProject());
   const shot = project.shots[0];
   project.assets.push({ id: "asset-audio", filename: "tone.wav", mimeType: "audio/wav", size: 16, sha256: "a".repeat(64), duration: 2, provenance: "uploaded" });
@@ -29,7 +50,7 @@ test("fails closed on authored audio and audio tracks before renderer fetch", as
     { id: "keyframe-audio-a", time: 0, value: 1, interpolation: { kind: "linear" } },
     { id: "keyframe-audio-b", time: 2, value: 0.5, interpolation: { kind: "linear" } },
   ] });
-  await expect(submitRender({ project: ProjectDocumentSchema.parse(project), quality: "preview" })).rejects.toEqual(expect.objectContaining({ status: 422, code: "compile_rejected" }));
+  await expect(submitRender({ project: ProjectDocumentSchema.parse(project), quality: "preview" })).rejects.toEqual(expect.objectContaining({ status: 422, code: "asset_content_missing" }));
   expect(global.fetch).not.toHaveBeenCalled();
 });
 
@@ -97,13 +118,16 @@ afterAll(() => {
   process.env = ORIGINAL_ENV;
 });
 
-test("compiles one requested shot locally and submits only generated source plus its SHA", async () => {
+test("compiles one requested shot locally and submits the empty strict media envelope", async () => {
   (global.fetch as jest.Mock).mockImplementation(async (_url: string, init: RequestInit) => {
     const payload = JSON.parse(String(init.body));
     expect(payload).toEqual({
       source: expect.stringContaining("class GeneratedScene"),
       sourceSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
       quality: "preview",
+      output: { width: 1280, height: 720, fps: 30, expectedDurationSeconds: expect.any(Number) },
+      assets: [],
+      audio: { durationSeconds: 21, clips: [] },
     });
     expect(JSON.stringify(payload)).not.toContain("schemaVersion");
     expect(payload.source).toContain("The construction");
@@ -115,6 +139,7 @@ test("compiles one requested shot locally and submits only generated source plus
       job: {
         id: "abcdefghijklmnopqrstuvwx",
         quality: "preview",
+        output: payload.output,
         sourceSha256: payload.sourceSha256,
         status: "pending",
         createdAt: 1000,
@@ -135,6 +160,112 @@ test("compiles one requested shot locally and submits only generated source plus
 
   expect(job.status).toBe("pending");
   expect(global.fetch).toHaveBeenCalledWith("http://renderer.example:8080/v1/render", expect.any(Object));
+});
+
+test("transports hash-addressed PNG and WAV bytes with a bounded deterministic audio plan", async () => {
+  const project = cloneSerializable(createCantorDemoProject());
+  const shot = project.shots[0];
+  const pngBytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+  const png = validateAssetContent({ filename: "pixel.png", bytes: pngBytes, claimedMimeType: "image/png" });
+  const wavBytes = canonicalWav();
+  const wav = validateAssetContent({ filename: "tone.wav", bytes: wavBytes, claimedMimeType: "audio/wav" });
+  project.assets.push(
+    { id: "asset-render-pixel", filename: png.filename, mimeType: png.mimeType, size: png.size, sha256: png.sha256, width: png.width, height: png.height, provenance: "uploaded" },
+    { id: "asset-render-tone", filename: wav.filename, mimeType: wav.mimeType, size: wav.size, sha256: wav.sha256, duration: wav.duration, provenance: "uploaded" },
+  );
+  shot.objects.push({
+    id: "object-render-pixel",
+    type: "image",
+    name: "Trusted pixel",
+    locked: false,
+    visible: true,
+    transform: { x: 480, y: 270, width: 160, height: 90, rotation: 0, scaleX: 1, scaleY: 1 },
+    style: { opacity: 0.75 },
+    properties: { assetId: "asset-render-pixel", fit: "contain", preserveAspectRatio: true },
+  });
+  shot.audioClips.push({
+    id: "audio-render-tone",
+    assetId: "asset-render-tone",
+    name: "Tone",
+    start: 0.5,
+    duration: 1,
+    sourceStart: 0,
+    sourceEnd: 1,
+    volume: 0.8,
+    muted: false,
+    solo: false,
+    fadeIn: 0.1,
+    fadeOut: 0.2,
+  });
+  shot.propertyTracks.push({
+    id: "track-render-tone-volume",
+    target: { kind: "audio", audioClipId: "audio-render-tone" },
+    property: "volume",
+    keyframes: [
+      { id: "keyframe-render-tone-a", time: 0.5, value: 0.8, interpolation: { kind: "linear" } },
+      { id: "keyframe-render-tone-b", time: 1.5, value: 0.4, interpolation: { kind: "hold" } },
+    ],
+  });
+  const parsed = ProjectDocumentSchema.parse(project);
+  expect(referencedRenderAssetIds(parsed, shot.id)).toEqual(["asset-render-pixel", "asset-render-tone"]);
+
+  (global.fetch as jest.Mock).mockImplementation(async (_url: string, init: RequestInit) => {
+    const payload = JSON.parse(String(init.body));
+    expect(payload.assets.map(({ path }: { path: string }) => path)).toEqual([
+      `assets/${png.sha256}.png`,
+      `assets/${wav.sha256}.wav`,
+    ].sort());
+    expect(payload.assets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: `assets/${png.sha256}.png`, mimeType: "image/png", sha256: png.sha256, bytes: png.size, contentBase64: pngBytes.toString("base64") }),
+      expect.objectContaining({ path: `assets/${wav.sha256}.wav`, mimeType: "audio/wav", sha256: wav.sha256, bytes: wav.size, contentBase64: Buffer.from(wavBytes).toString("base64") }),
+    ]));
+    expect(payload.source).toContain(`ImageMobject("assets/${png.sha256}.png")`);
+    expect(payload.source).not.toContain("ASSET_RENDER_TRANSPORT_UNSUPPORTED");
+    expect(payload.output).toEqual({ width: 1280, height: 720, fps: 30, expectedDurationSeconds: expect.any(Number) });
+    expect(payload.audio).toEqual({
+      durationSeconds: 21,
+      clips: [{
+        assetPath: `assets/${wav.sha256}.wav`,
+        start: 0.5,
+        duration: 1,
+        sourceStart: 0,
+        sourceEnd: 1,
+        volume: 0.8,
+        fadeIn: 0.1,
+        fadeOut: 0.2,
+        keyframes: [
+          { time: 0, value: 0.8, interpolation: "linear" },
+          { time: 1, value: 0.4, interpolation: "hold" },
+        ],
+      }],
+    });
+    return jsonResponse(202, {
+      ok: true,
+      job: {
+        id: "abcdefghijklmnopqrstuvwx",
+        quality: "preview",
+        output: payload.output,
+        sourceSha256: payload.sourceSha256,
+        status: "pending",
+        createdAt: 1000,
+        updatedAt: 1000,
+        startedAt: null,
+        completedAt: null,
+        error: null,
+        video: null,
+      },
+    });
+  });
+
+  await expect(submitRender({
+    project: parsed,
+    shotId: shot.id,
+    quality: "preview",
+    assets: [
+      { asset: parsed.assets.find(({ id }) => id === "asset-render-tone")!, bytes: wavBytes },
+      { asset: parsed.assets.find(({ id }) => id === "asset-render-pixel")!, bytes: pngBytes },
+    ],
+  })).resolves.toMatchObject({ status: "pending" });
 });
 
 test("returns a typed 503 before network access when renderer configuration is absent", async () => {
@@ -181,6 +312,7 @@ test("rejects an overlong whole-project render but permits one selected shot", a
       job: {
         id: "abcdefghijklmnopqrstuvwx",
         quality: "preview",
+        output: payload.output,
         sourceSha256: payload.sourceSha256,
         status: "pending",
         createdAt: 1000,
@@ -318,6 +450,7 @@ test("rejects inconsistent source metadata from the isolated service", async () 
     job: {
       id: "abcdefghijklmnopqrstuvwx",
       quality: "preview",
+      output: { width: 1280, height: 720, fps: 30, expectedDurationSeconds: 1 },
       sourceSha256: "0".repeat(64),
       status: "pending",
       createdAt: 1000,

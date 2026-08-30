@@ -1,6 +1,6 @@
 import type { ProjectDocument, SceneObject, SceneOperation, Shot, StylePack } from "./schema";
 import { effectiveLockOwner, effectiveVisibilityOwner } from "./operations";
-import { styledTransform } from "./styles";
+import { resolvedObjectColor, styledTransform } from "./styles";
 import { addTimelineTimes, compareTimelineTimes, logicalFrameFor } from "./frame";
 
 export type CritiqueSeverity = "info" | "warning" | "error";
@@ -124,7 +124,7 @@ function critiqueShot(project: ProjectDocument, shot: Shot, style: StylePack, op
       issues.push(issue("unreadable-text", "warning", [left.id], `${left.name} is below the 16 px prototype readability floor.`, "Increase its font size or remove nonessential copy."));
     }
     if (left.type === "text" || left.type === "math") {
-      const foreground = left.style.color ?? style.colors.ink;
+      const foreground = resolvedObjectColor(left, style);
       if (contrast(foreground, style.colors.background) < 4.5) {
         issues.push(issue("insufficient-contrast", "error", [left.id], `${left.name} does not reach 4.5:1 contrast against the scene background.`, "Use the ink or muted-ink semantic role with sufficient measured contrast."));
       }

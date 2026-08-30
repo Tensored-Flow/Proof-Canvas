@@ -1,6 +1,6 @@
 {
   "name": "proof-canvas",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "A structured, style-first editor for mathematical animation and deterministic Manim export.",
   "repository": {
@@ -18,11 +18,14 @@
     "test:unit": "jest --runInBand",
     "test:e2e": "bash scripts/proofcanvas/run-e2e-docker.sh && npm run artifacts",
     "test:renderer": "docker build --target proofcanvas-render-test -t proofcanvas-render:test services/proofcanvas-render && docker run --rm --init proofcanvas-render:test /opt/venv/bin/python -m pytest -q /app/tests && docker build -t proofcanvas-render:local services/proofcanvas-render",
+    "test:runtime-maintenance": "bash scripts/proofcanvas/test-runtime-maintenance.sh",
+    "test:parity": "bash scripts/proofcanvas/native-shape-parity/run.sh",
     "typecheck": "tsc --noEmit",
-    "artifacts": "tsx scripts/proofcanvas/generate-artifacts.ts",
+    "artifacts": "npm run stress:benchmark && tsx scripts/proofcanvas/generate-artifacts.ts",
     "artifacts:prepare-render": "tsx scripts/proofcanvas/generate-artifacts.ts --prepare-render",
     "artifacts:verify": "tsx scripts/proofcanvas/verify-artifacts.ts",
     "render": "npm run artifacts:prepare-render && bash scripts/proofcanvas/render-example.sh && npm run artifacts",
+    "stress:benchmark": "tsx scripts/proofcanvas/benchmark-stress.ts",
     "auth:hash-password": "tsx scripts/proofcanvas/hash-password.ts",
     "db:backup": "tsx scripts/proofcanvas/backup.ts",
     "db:restore": "tsx scripts/proofcanvas/restore.ts"
@@ -36,6 +39,7 @@
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "server-only": "^0.0.1",
+    "sharp": "0.35.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {

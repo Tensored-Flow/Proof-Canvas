@@ -1,16 +1,16 @@
 'use client'
 
 import katex from 'katex'
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { previewShotAtTime } from '@/lib/proofcanvas/preview'
 import { addTimelineTimes, compareTimelineTimes, logicalFrameFor, type LogicalFrame } from '@/lib/proofcanvas/frame'
 import { analyzeMathProperties, texContentSegments, type MathMode } from '@/lib/proofcanvas/latex'
 import { applyOperations, effectiveLockOwner } from '@/lib/proofcanvas/operations'
 import { analyzeGraphExpression } from '@/lib/proofcanvas/graphExpression'
-import { objectTypeSupportsStyleProperty, resolveDashedLinePattern, type ProjectDocument, type SceneObject, type Shot, type StylePack } from '@/lib/proofcanvas/schema'
+import { assetVisualSettingsFor, objectTypeSupportsStyleProperty, resolveDashedLinePattern, type AssetMetadata, type ProjectDocument, type SceneObject, type Shot, type StylePack } from '@/lib/proofcanvas/schema'
 import { freeformCubicSegments, isLinearShapeType, resolveArrowPreviewGeometry, resolveShapeDimensions, resolveShapeGeometry, resolveShapePaint } from '@/lib/proofcanvas/shapeGeometry'
 import { PROOFCANVAS_SHAPE_PRESET_MIME, shapePresetById, type ShapePresetId } from '@/lib/proofcanvas/shapePresets'
-import { resolvedGraphStroke, styledDisplayTransform, styledTransform } from '@/lib/proofcanvas/styles'
+import { resolvedGraphStroke, resolvedObjectColor, styledDisplayTransform, styledTransform } from '@/lib/proofcanvas/styles'
 import { PROOFCANVAS_SEMANTIC_COMPONENT_MIME, semanticComponentById, type SemanticComponentId } from '@/lib/proofcanvas/components'
 
 type Gesture = {
@@ -339,7 +339,8 @@ export function resolveCanvasKeyboardTransformIntent(
   }
 }
 
-function RenderObject({ object, style, selected, effectivelyLocked, temporallyTransformed, tipLengthLimit, interactive = true, onPointerDown }: { object: ReturnType<typeof previewShotAtTime>['objects'][number]; style: StylePack; selected: boolean; effectivelyLocked: boolean; temporallyTransformed: boolean; tipLengthLimit: number; interactive?: boolean; onPointerDown?(event: ReactPointerEvent<SVGElement>, object: SceneObject): void }) {
+function RenderObject({ object, style, selected, effectivelyLocked, temporallyTransformed, tipLengthLimit, asset, projectId, interactive = true, onPointerDown }: { object: ReturnType<typeof previewShotAtTime>['objects'][number]; style: StylePack; selected: boolean; effectivelyLocked: boolean; temporallyTransformed: boolean; tipLengthLimit: number; asset?: AssetMetadata; projectId?: string; interactive?: boolean; onPointerDown?(event: ReactPointerEvent<SVGElement>, object: SceneObject): void }) {
+  const renderInstanceId = useId().replace(/[^A-Za-z0-9_-]/g, '')
   const transform = styledTransform(object, style)
   const { width, height } = resolveShapeDimensions({ transform })
   const opacity = object.preview.opacity
@@ -369,7 +370,7 @@ function RenderObject({ object, style, selected, effectivelyLocked, temporallyTr
     case 'math':
       return (
         <foreignObject {...common} x={-width / 2} y={-height / 2} width={width} height={height}>
-          <div className={`pc-canvas-text pc-${object.type}`} style={{ color: objectTypeSupportsStyleProperty(object, 'fill') ? object.style.fill ?? object.style.color ?? style.colors.ink : object.style.color ?? style.colors.ink, fontSize: object.style.fontSize ?? 22, fontWeight: object.style.fontWeight, textAlign: object.style.textAlign ?? 'left', fontFamily: object.type === 'math' ? style.typography.math : style.typography.statement }}>
+          <div className={`pc-canvas-text pc-${object.type}`} data-rough-emphasis={object.style.roughEmphasis ? 'true' : undefined} style={{ color: objectTypeSupportsStyleProperty(object, 'fill') ? object.style.fill ?? resolvedObjectColor(object, style) : resolvedObjectColor(object, style), fontSize: object.style.fontSize ?? 22, fontWeight: object.style.fontWeight, textAlign: object.style.textAlign ?? 'left', fontFamily: object.style.fontFamily ?? (object.type === 'math' ? style.typography.math : style.typography.statement) }}>
             {object.type === 'math' ? <MathHtml content={object.properties.content} renderer={object.properties.renderer} mode={object.properties.mode} /> : String(object.properties.content ?? '')}
           </div>
         </foreignObject>
@@ -452,7 +453,41 @@ function RenderObject({ object, style, selected, effectivelyLocked, temporallyTr
       /></g>
     }
     case 'image':
-    case 'svg': return <image {...common} href={String(object.properties.source ?? '')} x={-width / 2} y={-height / 2} width={width} height={height} preserveAspectRatio="xMidYMid meet"/>
+    case 'svg': {
+      const settings = assetVisualSettingsFor(object)
+      const assetId = typeof object.properties.assetId === 'string' ? object.properties.assetId : null
+      const href = assetId && projectId
+        ? `/api/projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(assetId)}`
+        : String(object.properties.source ?? '')
+      const preserveAspectRatio = !settings.preserveAspectRatio || settings.fit === 'fill'
+        ? 'none'
+        : settings.fit === 'cover' ? 'xMidYMid slice' : 'xMidYMid meet'
+      const sourceWidth = asset?.width ?? width
+      const sourceHeight = asset?.height ?? height
+      const crop = settings.crop ?? { x: 0, y: 0, width: 1, height: 1 }
+      const viewBox = `${crop.x * sourceWidth} ${crop.y * sourceHeight} ${crop.width * sourceWidth} ${crop.height * sourceHeight}`
+      const mask = settings.mask ?? { kind: 'none' as const }
+      const clipId = `pc-asset-mask-${renderInstanceId}`
+      const clip = mask.kind === 'circle'
+        ? <circle cx={0} cy={0} r={Math.min(width, height) / 2}/>
+        : mask.kind === 'rounded-rectangle'
+          ? <rect x={-width / 2} y={-height / 2} width={width} height={height} rx={Math.min(mask.radius, width / 2, height / 2)}/>
+          : null
+      return <g {...common} data-asset-id={assetId ?? undefined} data-asset-fit={settings.fit} data-asset-mask={mask.kind}>
+        {clip && <defs><clipPath id={clipId} clipPathUnits="userSpaceOnUse">{clip}</clipPath></defs>}
+        <svg
+          x={-width / 2}
+          y={-height / 2}
+          width={width}
+          height={height}
+          viewBox={viewBox}
+          preserveAspectRatio={preserveAspectRatio}
+          overflow="hidden"
+          clipPath={clip ? `url(#${clipId})` : undefined}
+          pointerEvents="none"
+        ><image href={href} x={0} y={0} width={sourceWidth} height={sourceHeight} preserveAspectRatio="none"/></svg>
+      </g>
+    }
     case 'group': return null
   }
 }
@@ -461,19 +496,21 @@ export interface CanvasThumbnailProps {
   aspectRatio: ProjectDocument['settings']['aspectRatio']
   shot: Shot
   previewStyle: StylePack
+  projectId?: string
+  assets?: readonly AssetMetadata[]
   /** Stable content signature supplied by the storyboard, excluding playhead and selection. */
   visualRevision: string
 }
 
 /** Passive, memoized local-zero preview sharing CanvasStage's object renderer. */
-export const CanvasThumbnail = memo(function CanvasThumbnail({ aspectRatio, shot, previewStyle }: CanvasThumbnailProps) {
+export const CanvasThumbnail = memo(function CanvasThumbnail({ aspectRatio, shot, previewStyle, projectId, assets = [] }: CanvasThumbnailProps) {
   const frame = useMemo(() => logicalFrameFor(aspectRatio), [aspectRatio])
   const preview = useMemo(() => previewShotAtTime(shot, 0), [shot])
   const visibleObjects = preview.objects.filter((object) => object.preview.opacity > 0.001)
   return <svg className="pc-shot-thumbnail" viewBox={`0 0 ${frame.width} ${frame.height}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true" focusable="false" data-thumbnail-shot-id={shot.id} data-thumbnail-time="0">
     <rect width={frame.width} height={frame.height} fill={previewStyle.colors.background}/>
     <g transform={`translate(${frame.centerX} ${frame.centerY}) scale(${preview.camera.zoom}) rotate(${-preview.camera.rotation}) translate(${-preview.camera.x} ${-preview.camera.y})`}>
-      {visibleObjects.map((object) => <RenderObject key={object.id} object={object} style={previewStyle} selected={false} effectivelyLocked={false} temporallyTransformed={false} tipLengthLimit={0.35 * frame.width / frame.manimWidth} interactive={false}/>) }
+      {visibleObjects.map((object) => <RenderObject key={object.id} object={object} style={previewStyle} selected={false} effectivelyLocked={false} temporallyTransformed={false} tipLengthLimit={0.35 * frame.width / frame.manimWidth} asset={typeof object.properties.assetId === 'string' ? assets.find(({ id }) => id === object.properties.assetId) : undefined} projectId={projectId} interactive={false}/>) }
     </g>
   </svg>
 }, (previous, next) => previous.visualRevision === next.visualRevision)
@@ -785,6 +822,7 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, pro
   const primaryMutationFamilyIds = primary ? familyIds(primary.id) : new Set<string>()
   const primaryFamilyLocked = [...primaryMutationFamilyIds].some((id) => Boolean(effectiveLockOwner(shot, id)))
   const primaryTemporallyTransformed = [...primaryMutationFamilyIds].some((id) => temporalPoseIds.has(id))
+  const primarySelectionReadonly = primaryFamilyLocked || primaryTemporallyTransformed
   const primaryWidth = primaryTransform ? (primaryTransform.width ?? 60) * Math.abs(primaryTransform.scaleX) : 0
   const primaryHeight = primaryTransform ? (primaryTransform.height ?? 30) * Math.abs(primaryTransform.scaleY) : 0
   const motionExceptionCount = shot.animations.filter(({ easing }) => easing !== previewStyle.motion.easing).length
@@ -794,7 +832,7 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, pro
         <g data-pc-camera-transform transform={`translate(${frame.centerX} ${frame.centerY}) scale(${preview.camera.zoom}) rotate(${-preview.camera.rotation}) translate(${-preview.camera.x} ${-preview.camera.y})`}>
           {guides.x !== undefined && <line className="pc-snap-guide" data-guide-axis="x" x1={guides.x} x2={guides.x} y1={0} y2={frame.height}/>}
           {guides.y !== undefined && <line className="pc-snap-guide" data-guide-axis="y" x1={0} x2={frame.width} y1={guides.y} y2={guides.y}/>}
-          {visibleObjects.map((object) => <RenderObject key={object.id} object={object} style={previewStyle} selected={selectedIds.includes(object.id)} effectivelyLocked={Boolean(effectiveLockOwner(shot, object))} temporallyTransformed={temporalPoseIds.has(object.id)} tipLengthLimit={0.35 * frame.width / frame.manimWidth} interactive={authoringEnabled} onPointerDown={beginGesture}/>) }
+          {visibleObjects.map((object) => <RenderObject key={object.id} object={object} style={previewStyle} selected={selectedIds.includes(object.id)} effectivelyLocked={Boolean(effectiveLockOwner(shot, object))} temporallyTransformed={temporalPoseIds.has(object.id)} tipLengthLimit={0.35 * frame.width / frame.manimWidth} asset={typeof object.properties.assetId === 'string' ? project.assets.find(({ id }) => id === object.properties.assetId) : undefined} projectId={project.metadata.id} interactive={authoringEnabled} onPointerDown={beginGesture}/>) }
           {authoringEnabled && primary?.type === 'group' && primaryTransform && <rect
             data-group-move-target={primary.id}
             aria-hidden="true"
@@ -808,13 +846,31 @@ export default function CanvasStage({ project, shot, playhead, previewStyle, pro
             style={{ cursor: primaryFamilyLocked || primaryTemporallyTransformed ? 'not-allowed' : 'move' }}
             onPointerDown={(event) => beginGesture(event, primary)}
           />}
-          {authoringEnabled && primary && primaryTransform && !primaryFamilyLocked && !primaryTemporallyTransformed && <g className="pc-selection-handles" transform={`translate(${primaryTransform.x} ${primaryTransform.y}) rotate(${primaryTransform.rotation})`}>
-            <rect x={-primaryWidth / 2} y={-primaryHeight / 2} width={primaryWidth} height={primaryHeight}/>
-            {primary.type !== 'circle' && <circle className="pc-rotate-handle" cx={0} cy={-primaryHeight / 2 - 22} r={7} role="button" tabIndex={0} aria-label="Rotate selected object; use left and right arrow keys" onKeyDown={(event) => transformWithKeyboard(event, 'rotate')} onPointerDown={(event) => beginGesture(event, primary, 'rotate')}/>}
-            <rect className="pc-resize-handle" x={primaryWidth / 2 - 6} y={primaryHeight / 2 - 6} width={12} height={12} role="button" tabIndex={0} aria-label="Resize selected object; use arrow keys" onKeyDown={(event) => transformWithKeyboard(event, 'resize')} onPointerDown={(event) => beginGesture(event, primary, 'resize')}/>
+          {authoringEnabled && primary && primaryTransform && <g className="pc-selection-handles" data-readonly={primarySelectionReadonly ? 'true' : 'false'} transform={`translate(${primaryTransform.x} ${primaryTransform.y}) rotate(${primaryTransform.rotation})`}>
+            <rect className="pc-selection-halo" x={-primaryWidth / 2} y={-primaryHeight / 2} width={primaryWidth} height={primaryHeight}/>
+            <rect className="pc-selection-outline" x={-primaryWidth / 2} y={-primaryHeight / 2} width={primaryWidth} height={primaryHeight}/>
+            {!primarySelectionReadonly && primary.type !== 'circle' && <circle className="pc-rotate-handle" cx={0} cy={-primaryHeight / 2 - 22} r={7} role="button" tabIndex={0} aria-label="Rotate selected object; use left and right arrow keys" onKeyDown={(event) => transformWithKeyboard(event, 'rotate')} onPointerDown={(event) => beginGesture(event, primary, 'rotate')}/>}
+            {!primarySelectionReadonly && <rect className="pc-resize-handle" x={primaryWidth / 2 - 6} y={primaryHeight / 2 - 6} width={12} height={12} role="button" tabIndex={0} aria-label="Resize selected object; use arrow keys" onKeyDown={(event) => transformWithKeyboard(event, 'resize')} onPointerDown={(event) => beginGesture(event, primary, 'resize')}/>}
+            {primaryFamilyLocked && <g className="pc-selection-lock-badge" transform={`translate(${primaryWidth / 2 - 2} ${-primaryHeight / 2 + 2})`} aria-hidden="true"><circle r={10}/><text x="0" y="4" textAnchor="middle">⌑</text></g>}
           </g>}
         </g>
       </svg>
+      <div className="pc-canvas-captions" aria-live={authoringEnabled ? 'off' : 'polite'}>
+        {shot.captionClips.filter((caption) => compareTimelineTimes(playhead, caption.start) >= 0 && compareTimelineTimes(playhead, caption.end) < 0).map((caption) => <div
+          key={caption.id}
+          className="pc-canvas-caption-cue"
+          data-caption-id={caption.id}
+          data-caption-position={caption.style.position ?? previewStyle.caption?.position ?? 'bottom'}
+          style={{
+            '--pc-caption-size': caption.style.fontSize ?? previewStyle.caption?.fontSize ?? 34,
+            '--pc-caption-frame-height': frame.height,
+            '--pc-caption-width': `${(previewStyle.caption?.maxWidth ?? 0.84) * 100}%`,
+            '--pc-caption-family': previewStyle.caption?.fontFamily ?? 'var(--font-sans), sans-serif',
+            color: caption.style.color ?? previewStyle.caption?.color ?? '#ffffff',
+            background: caption.style.background ?? previewStyle.caption?.background ?? '#1a1a1a',
+          } as CSSProperties}
+        >{caption.text}</div>)}
+      </div>
       <div className="pc-stage-caption"><span>{previewStyle.name}</span><span>{previewStyle.layout.tendency.replace('-', ' ')} · {previewStyle.motion.easing} default{motionExceptionCount ? ` · ${motionExceptionCount} timeline exception${motionExceptionCount === 1 ? '' : 's'}` : ''}</span><span>{Math.round(preview.camera.zoom * 100)}% camera</span></div>
     </div>
   )

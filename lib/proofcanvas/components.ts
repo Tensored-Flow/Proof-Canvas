@@ -115,7 +115,7 @@ function textStyle(
   const fontSize = Math.min(256, Math.max(1, Number((size * style.typography.bodyScale).toFixed(4))));
   return {
     fontSize,
-    fontFamily: style.typography.statement,
+    fontFamily: options.annotation ? style.annotation.fontFamily ?? style.typography.statement : style.typography.statement,
     textAlign: options.align ?? (style.layout.tendency === "centred" ? "center" : "left"),
     ...(options.weight === undefined ? {} : { fontWeight: options.weight }),
     ...(options.annotation ? { roughEmphasis: style.annotation.treatment === "marginal-hand" } : {}),
@@ -148,7 +148,7 @@ function componentLeaves(componentId: SemanticComponentId, context: ComponentFac
   switch (componentId) {
     case "mathematical-title":
       return [
-        object(context, "title", "text", "Title", 0, -28, 420, 52, { content: "A structure worth seeing" }, { semanticRole: "title", style: titleStyle(style, 32) }),
+        object(context, "title", "text", "Title", 0, -28, 460, 52, { content: "A structure worth seeing" }, { semanticRole: "title", style: titleStyle(style, 26) }),
         object(context, "subtitle", "math", "Mathematical subtitle", -24, 30, 372, 38, { content: "f(x) \\to 0" }, { semanticRole: "subtitle", style: mathStyle(style, 24) }),
       ];
     case "definition-block":

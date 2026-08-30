@@ -110,6 +110,10 @@ function fsyncDirectory(path: string): void {
   try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
 }
 
+function removeSqliteSidecars(path: string): void {
+  for (const suffix of ["-wal", "-shm", "-journal"]) rmSync(`${path}${suffix}`, { force: true });
+}
+
 function pathsReferToSameFile(left: string, right: string): boolean {
   if (resolve(left) === resolve(right)) return true;
   try {
@@ -152,10 +156,18 @@ function removePrivateBackupSnapshot(snapshot: Pick<PrivateBackupSnapshot, "dire
   if (errors.length > 1) throw new AggregateError(errors, "Private ProofCanvas backup snapshot cleanup failed");
 }
 
-function createValidatedPrivateBackupSnapshot(path: string): PrivateBackupSnapshot {
+function createValidatedPrivateBackupSnapshot(
+  path: string,
+  privateSnapshotRoot = tmpdir(),
+  testObserver?: (snapshot: Readonly<PrivateBackupSnapshot>) => void,
+): PrivateBackupSnapshot {
+  if (testObserver && process.env.NODE_ENV !== "test") throw new Error("Backup snapshot observation is test-only");
   const regular = statSync(path, { throwIfNoEntry: true });
   if (!regular?.isFile()) throw new Error("ProofCanvas backup must be a regular file");
-  const directory = mkdtempSync(join(tmpdir(), "proofcanvas-backup-snapshot-"));
+  mkdirSync(privateSnapshotRoot, { recursive: true, mode: 0o700 });
+  const root = statSync(privateSnapshotRoot, { throwIfNoEntry: true });
+  if (!root?.isDirectory()) throw new Error("ProofCanvas backup snapshot root must be a directory");
+  const directory = mkdtempSync(join(resolve(privateSnapshotRoot), "proofcanvas-backup-snapshot-"));
   chmodSync(directory, 0o700);
   const privateCopy = join(directory, DATABASE_FILENAME);
   try {
@@ -168,7 +180,9 @@ function createValidatedPrivateBackupSnapshot(path: string): PrivateBackupSnapsh
     const sha256 = fileSha256Sync(privateCopy);
     chmodSync(privateCopy, 0o400);
     chmodSync(directory, 0o500);
-    return { directory, path: privateCopy, bytes, sha256 };
+    const snapshot = { directory, path: privateCopy, bytes, sha256 };
+    testObserver?.(snapshot);
+    return snapshot;
   } catch (error) {
     try {
       removePrivateBackupSnapshot({ directory });
@@ -179,8 +193,44 @@ function createValidatedPrivateBackupSnapshot(path: string): PrivateBackupSnapsh
   }
 }
 
-export function validateProofCanvasBackup(path: string): void {
-  const snapshot = createValidatedPrivateBackupSnapshot(path);
+function sanitizeStagedRestoreDatabase(path: string, lease: ReturnType<typeof acquireInstanceLease>): void {
+  let database: Database.Database | undefined;
+  try {
+    database = openProofCanvasDatabaseWithMaintenanceLease(path, lease);
+    database.transaction(() => {
+      // A restored database may contain still-valid owner credentials from the
+      // backup instant. Authentication state is installation/runtime state,
+      // not owner project content, and must never be rolled back into service.
+      database!.prepare("DELETE FROM sessions").run();
+      database!.prepare("DELETE FROM auth_rate_limits").run();
+      assertProofCanvasPersistenceIntegrity(database!);
+    }).immediate();
+    const checkpoint = database.pragma("wal_checkpoint(TRUNCATE)") as Array<{ busy: number }>;
+    if (checkpoint.some(({ busy }) => busy !== 0)) throw new Error("Staged restore WAL could not be checkpointed");
+    const journalMode = database.pragma("journal_mode = DELETE", { simple: true });
+    if (journalMode !== "delete") throw new Error("Staged restore journal could not be consolidated");
+  } finally {
+    if (database?.open) database.close();
+  }
+  removeSqliteSidecars(path);
+  fsyncFile(path);
+
+  // Re-open the durable main file without writable sidecars so publication is
+  // gated on the exact database inode that rename() will install.
+  const durable = openProofCanvasDatabase({ path, readonly: true });
+  try {
+    assertProofCanvasPersistenceIntegrity(durable);
+  } finally {
+    durable.close();
+  }
+  fsyncFile(path);
+}
+
+export function validateProofCanvasBackup(path: string, options: {
+  privateSnapshotRoot?: string;
+  __testSnapshotObserver?: (snapshot: Readonly<PrivateBackupSnapshot>) => void;
+} = {}): void {
+  const snapshot = createValidatedPrivateBackupSnapshot(path, options.privateSnapshotRoot, options.__testSnapshotObserver);
   try {
     // Creation fully validates the exact immutable snapshot.
   } finally {
@@ -192,6 +242,7 @@ export async function createOnlineBackup(options: {
   database?: Database.Database;
   dataDirectory?: string;
   now?: Date;
+  __testSnapshotObserver?: (snapshot: Readonly<PrivateBackupSnapshot>) => void;
 } = {}): Promise<BackupReceipt> {
   const database = options.database ?? proofCanvasDatabase();
   const dataDirectory = resolve(options.dataDirectory ?? proofCanvasDataDirectory());
@@ -204,7 +255,13 @@ export async function createOnlineBackup(options: {
   const temporary = join(backupDirectory, `.${filename}.partial`);
   try {
     await database.backup(temporary);
-    validateProofCanvasBackup(temporary);
+    // Production backups may legitimately be several GiB. Keep the private
+    // migration/validation copy on the same provisioned local-locking volume
+    // instead of depending on a small container /tmp filesystem.
+    validateProofCanvasBackup(temporary, {
+      privateSnapshotRoot: dataDirectory,
+      __testSnapshotObserver: options.__testSnapshotObserver,
+    });
     chmodSync(temporary, 0o600);
     fsyncFile(temporary);
     renameSync(temporary, destination);
@@ -224,6 +281,7 @@ export async function createOnlineBackup(options: {
  */
 export function restoreOfflineBackup(sourcePath: string, options: {
   dataDirectory?: string;
+  privateSnapshotRoot?: string;
   now?: Date;
   __testFault?: (boundary: RestoreBoundary) => void;
 } = {}): { restoredPath: string; previousPath: string | null } {
@@ -236,7 +294,7 @@ export function restoreOfflineBackup(sourcePath: string, options: {
   const existingTarget = statSync(requestedTarget, { throwIfNoEntry: false });
   if (existingTarget && !existingTarget.isFile()) throw new Error("ProofCanvas database target must be a regular file");
   if (existingTarget && existingTarget.nlink !== 1) throw new Error("ProofCanvas database hard links are unsupported");
-  const snapshot = createValidatedPrivateBackupSnapshot(source);
+  const snapshot = createValidatedPrivateBackupSnapshot(source, options.privateSnapshotRoot);
   let dataDirectory = requestedDataDirectory;
   let target = requestedTarget;
   let lease: ReturnType<typeof acquireInstanceLease> | undefined;
@@ -263,6 +321,7 @@ export function restoreOfflineBackup(sourcePath: string, options: {
     if (statSync(staged).size !== snapshot.bytes || fileSha256Sync(staged) !== snapshot.sha256) {
       throw new Error("Staged restore does not match the validated private backup snapshot");
     }
+    sanitizeStagedRestoreDatabase(staged, lease);
     fault("staged-validated");
     if (existsSync(target)) {
       const current = openProofCanvasDatabaseWithMaintenanceLease(target, lease);
@@ -287,7 +346,7 @@ export function restoreOfflineBackup(sourcePath: string, options: {
       if (statSync(target).size !== statSync(preRestorePartial).size || fileSha256Sync(target) !== fileSha256Sync(preRestorePartial)) {
         throw new Error("Pre-restore database copy could not be verified");
       }
-      validateProofCanvasBackup(preRestorePartial);
+      validateProofCanvasBackup(preRestorePartial, { privateSnapshotRoot: options.privateSnapshotRoot });
       renameSync(preRestorePartial, previousPath);
       preRestorePartial = null;
       fsyncDirectory(backupDirectory);
@@ -309,7 +368,10 @@ export function restoreOfflineBackup(sourcePath: string, options: {
   const finalizerErrors: unknown[] = [];
   try { fault("finalize"); } catch (error) { finalizerErrors.push(error); }
   if (staged) {
-    try { rmSync(staged, { force: true }); } catch (error) { finalizerErrors.push(error); }
+    try {
+      rmSync(staged, { force: true });
+      removeSqliteSidecars(staged);
+    } catch (error) { finalizerErrors.push(error); }
   }
   if (preRestorePartial) {
     try { rmSync(preRestorePartial, { force: true }); } catch (error) { finalizerErrors.push(error); }

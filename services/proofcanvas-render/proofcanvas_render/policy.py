@@ -10,6 +10,7 @@ MAX_SOURCE_BYTES = 512 * 1024
 SOURCE_SHA_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,95}$")
 HEX_COLOR_PATTERN = re.compile(r"^#[0-9a-fA-F]{6}$")
+ASSET_PATH_PATTERN = re.compile(r"^assets/[0-9a-f]{64}\.(?:png|jpg|webp|svg)$")
 FORBIDDEN_LATEX_COMMANDS = frozenset(
     {"catcode", "csname", "def", "include", "input", "newcommand", "openin", "openout", "read", "renewcommand", "special", "usepackage", "write"}
 )
@@ -96,15 +97,18 @@ ALLOWED_CONSTRUCTORS = frozenset(
         "FadeOut",
         "Group",
         "Indicate",
+        "ImageMobject",
         "Line",
         "MathTex",
         "Polygon",
+        "proofcanvas_image",
         "Tex",
         "max",
         "min",
         "Rectangle",
         "RoundedRectangle",
         "Succession",
+        "SVGMobject",
         "Text",
         "Transform",
         "VGroup",
@@ -256,13 +260,16 @@ MOBJECT_CONSTRUCTORS = frozenset(
         "DoubleArrow",
         "Ellipse",
         "Group",
+        "ImageMobject",
         "Line",
         "MathTex",
         "Polygon",
+        "proofcanvas_image",
         "Rectangle",
         "RoundedRectangle",
         "Tex",
         "Text",
+        "SVGMobject",
         "VGroup",
         "VMobject",
     }
@@ -299,7 +306,7 @@ ANIMATION_CONSTRUCTORS = frozenset(
     {"AnimationGroup", "Create", "FadeIn", "FadeOut", "Indicate", "Succession", "Transform", "Wait", "Write"}
 )
 RESERVED_CONSTRUCT_BINDINGS = ALLOWED_CONSTRUCTORS | ALLOWED_CONSTANT_NAMES | frozenset(
-    {"MovingCameraScene", "config", "math", "proofcanvas_cubic_bezier", "rate_functions", "self", "x"}
+    {"MovingCameraScene", "config", "math", "np", "proofcanvas_cubic_bezier", "proofcanvas_image", "rate_functions", "self", "x"}
 )
 PROOFCANVAS_CUBIC_BEZIER_HELPER = """def proofcanvas_cubic_bezier(x, x1, y1, x2, y2):
     x = min(1.0, max(0.0, x))
@@ -320,6 +327,38 @@ PROOFCANVAS_CUBIC_BEZIER_HELPER = """def proofcanvas_cubic_bezier(x, x1, y1, x2,
     return 3.0 * inverse * inverse * candidate * y1 + 3.0 * inverse * candidate * candidate * y2 + candidate * candidate * candidate
 """
 PROOFCANVAS_CUBIC_BEZIER_HELPER_AST = ast.parse(PROOFCANVAS_CUBIC_BEZIER_HELPER).body[0]
+PROOFCANVAS_IMAGE_HELPER = '''def proofcanvas_image(path, crop_x, crop_y, crop_width, crop_height, fit, preserve, target_width, target_height, mask, radius):
+    image = Image.open(path).convert("RGBA")
+    source_width, source_height = image.size
+    left = max(0, min(source_width - 1, int(math.floor(crop_x * source_width))))
+    top = max(0, min(source_height - 1, int(math.floor(crop_y * source_height))))
+    right = max(left + 1, min(source_width, int(math.ceil((crop_x + crop_width) * source_width))))
+    bottom = max(top + 1, min(source_height, int(math.ceil((crop_y + crop_height) * source_height))))
+    image = image.crop((left, top, right, bottom))
+    if preserve and fit != "fill":
+        scale = min(target_width / image.width, target_height / image.height) if fit == "contain" else max(target_width / image.width, target_height / image.height)
+        resized_width = max(1, int(round(image.width * scale)))
+        resized_height = max(1, int(round(image.height * scale)))
+        image = image.resize((resized_width, resized_height), Image.Resampling.LANCZOS)
+        canvas = Image.new("RGBA", (target_width, target_height), (0, 0, 0, 0))
+        canvas.alpha_composite(image, ((target_width - resized_width) // 2, (target_height - resized_height) // 2))
+        image = canvas
+    else:
+        image = image.resize((target_width, target_height), Image.Resampling.LANCZOS)
+    if mask != "none":
+        alpha = Image.new("L", image.size, 0)
+        draw = ImageDraw.Draw(alpha)
+        if mask == "circle":
+            diameter = min(target_width, target_height)
+            offset_x = (target_width - diameter) // 2
+            offset_y = (target_height - diameter) // 2
+            draw.ellipse((offset_x, offset_y, offset_x + diameter, offset_y + diameter), fill=255)
+        else:
+            draw.rounded_rectangle((0, 0, target_width - 1, target_height - 1), radius=radius, fill=255)
+        image.putalpha(ImageChops.multiply(image.getchannel("A"), alpha))
+    return ImageMobject(np.array(image))
+'''
+PROOFCANVAS_IMAGE_HELPER_AST = ast.parse(PROOFCANVAS_IMAGE_HELPER).body[0]
 
 
 def _attribute_parts(node: ast.Attribute) -> list[str]:
@@ -652,12 +691,26 @@ def _is_exact_cubic_bezier_helper(node: ast.stmt) -> bool:
     )
 
 
+def _is_exact_image_helper(node: ast.stmt) -> bool:
+    return isinstance(node, ast.FunctionDef) and ast.dump(node, include_attributes=False) == ast.dump(PROOFCANVAS_IMAGE_HELPER_AST, include_attributes=False)
+
+
 def _validate_structure(tree: ast.Module) -> None:
-    if len(tree.body) not in {3, 4}:
-        raise SourcePolicyError("Generated source must contain two imports, one optional exact compiler helper, and one scene class")
+    if not 3 <= len(tree.body) <= 7:
+        raise SourcePolicyError("Generated source has an unsupported top-level structure")
     manim_import, math_import = tree.body[:2]
     scene_class = tree.body[-1]
-    helpers = tree.body[2:-1]
+    middle = tree.body[2:-1]
+    image_imports = middle[:2] if len(middle) >= 2 and isinstance(middle[0], ast.Import) and isinstance(middle[1], ast.ImportFrom) else []
+    if image_imports:
+        numpy_import, pillow_import = image_imports
+        if not (
+            len(numpy_import.names) == 1 and numpy_import.names[0].name == "numpy" and numpy_import.names[0].asname == "np"
+            and pillow_import.module == "PIL" and pillow_import.level == 0
+            and [(name.name, name.asname) for name in pillow_import.names] == [("Image", None), ("ImageChops", None), ("ImageDraw", None)]
+        ):
+            raise SourcePolicyError("Generated source has unsupported image helper imports")
+    helpers = middle[len(image_imports):]
     if not (
         isinstance(manim_import, ast.ImportFrom)
         and manim_import.module == "manim"
@@ -674,8 +727,10 @@ def _validate_structure(tree: ast.Module) -> None:
         and math_import.names[0].asname is None
     ):
         raise SourcePolicyError("Generated source has an unsupported standard-library import")
-    if helpers and (len(helpers) != 1 or not _is_exact_cubic_bezier_helper(helpers[0])):
+    if any(not (_is_exact_cubic_bezier_helper(helper) or _is_exact_image_helper(helper)) for helper in helpers) or len(helpers) != len({getattr(helper, "name", "") for helper in helpers}):
         raise SourcePolicyError("Generated source has an altered or unsupported compiler helper")
+    if bool(image_imports) != any(_is_exact_image_helper(helper) for helper in helpers):
+        raise SourcePolicyError("Generated source image imports and helper disagree")
     if not (
         isinstance(scene_class, ast.ClassDef)
         and scene_class.name == "GeneratedScene"
@@ -1592,7 +1647,30 @@ def _validate_nodes(tree: ast.Module) -> None:
     def validate_object_constructor(root: ast.Call, methods: list[tuple[str, ast.Call]], known_objects: set[str]) -> tuple[str, int]:
         assert isinstance(root.func, ast.Name)
         constructor = root.func.id
-        if constructor == "Text":
+        if constructor == "proofcanvas_image":
+            if root.keywords or len(root.args) != 11:
+                raise SourcePolicyError("Trusted image preprocessing arguments are malformed")
+            path = root.args[0]
+            if not isinstance(path, ast.Constant) or not isinstance(path.value, str) or not re.fullmatch(r"assets/[0-9a-f]{64}\.(?:png|jpg|webp)", path.value):
+                raise SourcePolicyError("Trusted image preprocessing path is invalid")
+            crop_values = [bounded_number(argument, 0, 1, "Trusted image crop is outside bounds") for argument in root.args[1:5]]
+            crop_x, crop_y, crop_width, crop_height = crop_values
+            if crop_width < 0.001 or crop_height < 0.001 or crop_x + crop_width > 1 or crop_y + crop_height > 1:
+                raise SourcePolicyError("Trusted image crop is outside bounds")
+            fit, preserve, target_width, target_height, mask, radius = root.args[5:]
+            if not isinstance(fit, ast.Constant) or fit.value not in {"contain", "cover", "fill"}:
+                raise SourcePolicyError("Trusted image fit is invalid")
+            if not isinstance(preserve, ast.Constant) or not isinstance(preserve.value, bool):
+                raise SourcePolicyError("Trusted image aspect flag is invalid")
+            for dimension, label in ((target_width, "width"), (target_height, "height")):
+                if not isinstance(dimension, ast.Constant) or isinstance(dimension.value, bool) or not isinstance(dimension.value, int) or not 1 <= dimension.value <= 4096:
+                    raise SourcePolicyError(f"Trusted image target {label} is outside bounds")
+            if not isinstance(mask, ast.Constant) or mask.value not in {"none", "circle", "rounded-rectangle"}:
+                raise SourcePolicyError("Trusted image mask is invalid")
+            radius_value = bounded_number(radius, 0, 2048, "Trusted image radius is outside bounds")
+            if (mask.value != "rounded-rectangle" and radius_value != 0) or (mask.value == "rounded-rectangle" and radius_value > min(target_width.value, target_height.value) / 2):
+                raise SourcePolicyError("Trusted image radius disagrees with its mask")
+        elif constructor == "Text":
             validate_text_constructor(root)
         elif constructor in {"MathTex", "Tex"}:
             if (
@@ -1685,6 +1763,17 @@ def _validate_nodes(tree: ast.Module) -> None:
             bounded_number(root.keywords[3].value, MIN_DIRECT_MANIM_DIMENSION, MAX_DIRECT_MANIM_DIMENSION, "Axes y_length is outside the compiler bounds")
             if not (isinstance(root.keywords[4].value, ast.Constant) and root.keywords[4].value.value is False):
                 raise SourcePolicyError("Axes tips are outside the exact compiler dialect")
+        elif constructor in {"ImageMobject", "SVGMobject"}:
+            expected_suffixes = (".png", ".jpg", ".webp") if constructor == "ImageMobject" else (".svg",)
+            if (
+                root.keywords
+                or len(root.args) != 1
+                or not isinstance(root.args[0], ast.Constant)
+                or not isinstance(root.args[0].value, str)
+                or not ASSET_PATH_PATTERN.fullmatch(root.args[0].value)
+                or not root.args[0].value.endswith(expected_suffixes)
+            ):
+                raise SourcePolicyError(f"{constructor} path is outside the trusted asset protocol")
         elif constructor in {"Group", "VGroup"}:
             if root.keywords or not root.args or len(root.args) > MAX_OBJECTS_PER_SHOT:
                 raise SourcePolicyError("Compiler group arguments are outside the exact dialect")

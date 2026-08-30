@@ -211,6 +211,7 @@ test("captures the exact persisted native-shape fixture through the real CanvasS
       display: style.display,
       visibility: style.visibility,
       opacity: Number(style.opacity),
+      localWidth: element.getBBox().width,
       screenWidth: bounds.width,
       dashCount: Number(element.getAttribute("data-dash-count")),
       segmentCount: visibleSegments.length,
@@ -223,7 +224,10 @@ test("captures the exact persisted native-shape fixture through the real CanvasS
     visibility: "visible",
     opacity: 1,
   }));
-  expect(dashedVisibility.screenWidth).toBeGreaterThan(100);
+  expect(dashedVisibility.localWidth).toBe(180);
+  const expectedDashedScreenWidth = dashedVisibility.localWidth * stageBox!.width / 960;
+  expect(dashedVisibility.screenWidth).toBeGreaterThan(expectedDashedScreenWidth * 0.95);
+  expect(dashedVisibility.screenWidth).toBeLessThan(expectedDashedScreenWidth * 1.05);
   expect(dashedVisibility.dashCount).toBeGreaterThan(1);
   expect(dashedVisibility.segmentCount).toBeGreaterThanOrEqual(1);
   expect(dashedVisibility.paintedSegments).toBe(dashedVisibility.segmentCount);
@@ -360,6 +364,19 @@ test("captures the exact persisted native-shape fixture through the real CanvasS
     projectSchemaVersion: 4,
     initialObjectCount,
     authoredObjectCount,
+    qualificationBoundary: {
+      renderedBaseFixture: {
+        objectCount: initialObjectCount,
+        projectSha256,
+        browserStageCaptured: true,
+        genuineManimFrameCaptured: true,
+      },
+      postBaseAuthoringJourney: {
+        objectCount: authoredObjectCount,
+        purpose: "manual controls, refusal states, responsive layout, and persistence evidence",
+        renderQualified: false,
+      },
+    },
     paletteCount: palettePresetIds.length,
     palettePresetIds,
     insertionModes: ["click", "drag-and-drop"],

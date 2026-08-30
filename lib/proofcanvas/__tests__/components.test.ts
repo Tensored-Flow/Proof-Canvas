@@ -221,7 +221,10 @@ describe("editable semantic components", () => {
           expect(root.transform.x).toBeGreaterThanOrEqual(24);
           expect(root.transform.x).toBeLessThanOrEqual(frame.width - 24);
           for (const leaf of leaves) {
-            if (leaf.type === "text") expect(leaf.style.fontFamily).toBe(style.typography.statement);
+            if (leaf.type === "text") {
+              const annotation = ["annotation", "focus-callout", "marginal-note"].includes(leaf.semanticRole ?? "");
+              expect(leaf.style.fontFamily).toBe(annotation ? style.annotation.fontFamily ?? style.typography.statement : style.typography.statement);
+            }
             if (leaf.type === "math") {
               expect(leaf.style.fontFamily).toBe(style.typography.math);
               expect(leaf.properties).toMatchObject({ renderer: "mathtex", mode: "display" });

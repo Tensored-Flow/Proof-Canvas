@@ -10,7 +10,8 @@ from pathlib import Path
 import pytest
 
 import proofcanvas_render.jobs as jobs_module
-from proofcanvas_render.jobs import JOB_TTL_SECONDS, MAX_LOG_BYTES, QueueFullError, RenderQueue, VideoUnavailableError, _process_group_exists, _wait_with_bounded_log
+from proofcanvas_render.jobs import JOB_TTL_SECONDS, MAX_LOG_BYTES, JobNotCancellableError, QueueFullError, RenderCancelledError, RenderQueue, VideoUnavailableError, _process_group_exists, _validate_video_stream, _wait_with_bounded_log
+from proofcanvas_render.media import RenderOutput
 from proofcanvas_render.policy import validate_generated_source
 
 
@@ -71,6 +72,111 @@ def test_queue_allows_one_running_and_one_pending(tmp_path: Path, generated_sour
     finally:
         release.set()
         queue.shutdown()
+
+
+def test_pending_and_running_jobs_cancel_idempotently_and_release_capacity(tmp_path: Path, generated_source: str, generated_sha: str) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def runner(source, quality, job_dir, cancel_event):
+        started.set()
+        while not release.wait(0.01):
+            if cancel_event.is_set():
+                raise RenderCancelledError("cancelled")
+        video = job_dir / "proofcanvas-output.mp4"
+        video.write_bytes(_mp4_bytes())
+        return video, hashlib.sha256(_mp4_bytes()).hexdigest(), len(_mp4_bytes())
+
+    queue = RenderQueue(root=tmp_path, runner=runner)
+    validated = validate_generated_source(generated_source, generated_sha)
+    try:
+        first = queue.submit(validated, "preview")
+        assert started.wait(1)
+        second = queue.submit(validated, "preview")
+        assert queue.cancel(second.id).status == "cancelled"
+        assert queue.cancel(second.id).error_code == "render-cancelled"
+        replacement = queue.submit(validated, "preview")
+        assert queue.get(replacement.id).status == "pending"
+        assert queue.cancel(first.id).status == "cancelled"
+        _wait_for(queue, first.id, "cancelled")
+        release.set()
+        _wait_for(queue, replacement.id, "succeeded")
+        with pytest.raises(JobNotCancellableError):
+            queue.cancel(replacement.id)
+    finally:
+        release.set()
+        queue.shutdown()
+
+
+def test_cancellation_kills_a_running_process_group() -> None:
+    event = threading.Event()
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    process_group_id = process.pid
+    timer = threading.Timer(0.05, event.set)
+    timer.start()
+    try:
+        with pytest.raises(RenderCancelledError):
+            _wait_with_bounded_log(process, 5, termination_grace_seconds=0.1, cancel_event=event)
+        assert not _process_group_exists(process_group_id)
+    finally:
+        timer.cancel()
+
+
+def test_completed_video_exports_a_hash_bound_decoded_png_still(tmp_path: Path, generated_source: str, generated_sha: str) -> None:
+    def runner(source, quality, job_dir):
+        video = job_dir / "proofcanvas-output.mp4"
+        completed = subprocess.run(
+            [
+                "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "lavfi", "-i", "color=c=black:s=854x480:r=15:d=2",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", str(video),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=30,
+        )
+        assert completed.returncode == 0
+        data = video.read_bytes()
+        return video, hashlib.sha256(data).hexdigest(), len(data)
+
+    queue = RenderQueue(root=tmp_path, runner=runner)
+    try:
+        job = queue.submit(validate_generated_source(generated_source, generated_sha), "preview")
+        _wait_for(queue, job.id, "succeeded")
+        still = queue.still(job.id, 0.5)
+        assert still.content.startswith(b"\x89PNG\r\n\x1a\n")
+        assert still.sha256 == hashlib.sha256(still.content).hexdigest()
+        assert still.source_sha256 == generated_sha
+        assert 0.43 <= still.time_seconds <= 0.5
+    finally:
+        queue.shutdown()
+
+
+def test_full_decode_rejects_a_truncated_correct_profile_video(tmp_path: Path) -> None:
+    video = tmp_path / "truncated.mp4"
+    completed = subprocess.run(
+        [
+            "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "color=c=black:s=854x480:r=15",
+            "-frames:v", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", str(video),
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+        timeout=30,
+    )
+    assert completed.returncode == 0
+    with pytest.raises(RuntimeError, match="authored timeline"):
+        _validate_video_stream(video, RenderOutput(854, 480, 15, 2))
 
 
 def test_failed_job_is_sanitized(tmp_path: Path, generated_source: str, generated_sha: str) -> None:

@@ -12,6 +12,8 @@ secrets/
 *.pem
 *.key
 *.crt
+*.p12
+*.pfx
 
 # Python environments and caches
 .venv/
@@ -21,6 +23,7 @@ __pycache__/
 .pytest_cache/
 
 # Browser and render scratch
+.proofcanvas-data/
 .proofcanvas-evidence/
 test-results/
 playwright-report/

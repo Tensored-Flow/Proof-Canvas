@@ -2,18 +2,22 @@ import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  existsSync,
   lstatSync,
   mkdirSync,
   realpathSync,
   statSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   LEGACY_FLOAT_TIMELINE_SCHEMA_VERSION,
+  AssetMetadataSchema,
   canonicalProjectJson,
   classifyLegacyV2ProjectDocument,
   parseProjectDocument,
   projectDurationSeconds,
+  type AssetMetadata,
   type ProjectDocument,
 } from "./schema";
 import { PROOFCANVAS_TIMELINE_TICK_SECONDS, canonicalTimelineTime, sumTimelineTimes } from "./frame";
@@ -21,6 +25,12 @@ import { PROOFCANVAS_TIMELINE_TICK_SECONDS, canonicalTimelineTime, sumTimelineTi
 export const DATABASE_FILENAME = "proofcanvas.sqlite3";
 export const INSTANCE_LEASE_FILENAME = ".proofcanvas-instance-lease.sqlite3";
 export const SQLITE_BUSY_TIMEOUT_MS = 5_000;
+export const PROOFCANVAS_ASSET_STORAGE_LIMITS = Object.freeze({
+  retainedRefsPerProject: 1_024,
+  blobBytesPerProject: 128 * 1024 * 1024,
+  blobsPerInstallation: 4_096,
+  blobBytesPerInstallation: 4 * 1024 * 1024 * 1024,
+});
 
 type SqliteDatabase = Database.Database;
 
@@ -144,6 +154,51 @@ const MIGRATIONS: readonly Migration[] = [{
   sql: "",
   dataTransformVersion: "stable-target-set-v3-to-v4-r2",
   apply: applyV4NativeShapeAndTargetSetMigration,
+}, {
+  version: 4,
+  name: "content-addressed-project-assets",
+  sql: `
+    CREATE TABLE asset_blobs (
+      sha256 TEXT PRIMARY KEY
+        CHECK(length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
+      mime_type TEXT NOT NULL
+        CHECK(mime_type IN ('image/png', 'image/jpeg', 'image/webp', 'image/svg+xml', 'audio/wav', 'audio/mpeg', 'audio/mp4')),
+      byte_size INTEGER NOT NULL CHECK(byte_size BETWEEN 1 AND 67108864),
+      width INTEGER CHECK(width IS NULL OR width BETWEEN 1 AND 16384),
+      height INTEGER CHECK(height IS NULL OR height BETWEEN 1 AND 16384),
+      duration_seconds REAL CHECK(duration_seconds IS NULL OR (duration_seconds > 0 AND duration_seconds <= 7200)),
+      content BLOB NOT NULL CHECK(length(content) = byte_size),
+      created_at TEXT NOT NULL,
+      CHECK(
+        (mime_type = 'image/svg+xml' AND byte_size <= 2097152)
+        OR (mime_type IN ('image/png', 'image/jpeg', 'image/webp') AND byte_size <= 33554432)
+        OR mime_type IN ('audio/wav', 'audio/mpeg', 'audio/mp4')
+      ),
+      CHECK(
+        (mime_type LIKE 'image/%' AND width IS NOT NULL AND height IS NOT NULL AND duration_seconds IS NULL
+          AND width <= CAST(67108864 / height AS INTEGER))
+        OR (mime_type LIKE 'audio/%' AND width IS NULL AND height IS NULL)
+      )
+    ) STRICT;
+
+    CREATE TABLE project_asset_refs (
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+      asset_id TEXT NOT NULL CHECK(length(asset_id) BETWEEN 1 AND 96),
+      expected_sha256 TEXT NOT NULL
+        CHECK(length(expected_sha256) = 64 AND expected_sha256 NOT GLOB '*[^0-9a-f]*'),
+      blob_sha256 TEXT REFERENCES asset_blobs(sha256) ON DELETE RESTRICT,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(project_id, asset_id, expected_sha256),
+      CHECK(blob_sha256 IS NULL OR blob_sha256 = expected_sha256)
+    ) STRICT;
+
+    CREATE INDEX project_asset_refs_project_asset_idx
+      ON project_asset_refs(project_id, asset_id, expected_sha256);
+    CREATE INDEX project_asset_refs_blob_idx
+      ON project_asset_refs(blob_sha256, project_id, asset_id);
+  `,
+  dataTransformVersion: "metadata-only-assets-to-explicit-missing-refs-r1",
+  apply: applyContentAddressedAssetStorageMigration,
 }];
 
 const MIGRATION_TABLE_SQL = `
@@ -537,6 +592,31 @@ function applyV4NativeShapeAndTargetSetMigration(database: SqliteDatabase): void
     const migrated = migrateReadyV3DocumentToV4(row.document_json, `Checkpoint ${row.id}`);
     if (migrated !== row.document_json) updateCheckpoint.run(migrated, row.id);
   }
+}
+
+/**
+ * Historical documents could already carry portable asset metadata, but no
+ * trusted byte store existed before migration 4. Preserve every current and
+ * checkpoint tuple as an explicit missing-content reference. No historical
+ * metadata is ever promoted to available content without byte validation.
+ */
+function applyContentAddressedAssetStorageMigration(database: SqliteDatabase, appliedAt: string): void {
+  const insert = database.prepare(`INSERT OR IGNORE INTO project_asset_refs(
+    project_id, asset_id, expected_sha256, blob_sha256, created_at
+  ) VALUES (?, ?, ?, NULL, ?)`);
+  const seedDocument = (projectId: string, raw: string, label: string): void => {
+    const document = assertCanonicalDocument(raw, label);
+    if (document.metadata.id !== projectId) throw new Error(`${label} project identity diverges while seeding asset references`);
+    for (const asset of document.assets) insert.run(projectId, asset.id, asset.sha256, appliedAt);
+  };
+
+  const projects = database.prepare(`SELECT id, document_json FROM projects
+    WHERE document_state = 'ready' ORDER BY id`).all() as Array<{ id: string; document_json: string }>;
+  for (const row of projects) seedDocument(row.id, row.document_json, `Project ${row.id}`);
+
+  const checkpoints = database.prepare(`SELECT id, project_id, document_json FROM checkpoints
+    WHERE document_state = 'ready' ORDER BY id`).all() as Array<{ id: string; project_id: string; document_json: string }>;
+  for (const row of checkpoints) seedDocument(row.project_id, row.document_json, `Checkpoint ${row.id}`);
 }
 
 export function proofCanvasDataDirectory(environment: NodeJS.ProcessEnv = process.env): string {
@@ -940,6 +1020,28 @@ interface PersistedLegacyArchiveRow {
   archived_at: string;
 }
 
+interface PersistedAssetBlobMetadataRow {
+  sha256: string;
+  mime_type: string;
+  byte_size: number;
+  width: number | null;
+  height: number | null;
+  duration_seconds: number | null;
+  created_at: string;
+}
+
+interface PersistedAssetBlobRow extends PersistedAssetBlobMetadataRow {
+  content: Buffer;
+}
+
+interface PersistedProjectAssetRefRow {
+  project_id: string;
+  asset_id: string;
+  expected_sha256: string;
+  blob_sha256: string | null;
+  created_at: string;
+}
+
 let expectedSchemaCatalogCache: SchemaCatalogRow[] | undefined;
 
 function canonicalSchemaSql(sql: string): string {
@@ -990,6 +1092,104 @@ function assertCanonicalDocument(raw: string, field: string): ProjectDocument {
   }
   if (canonicalProjectJson(document) !== raw) persistenceFailure(`${field} is not canonical JSON`);
   return document;
+}
+
+function integrityFilenameForMime(mimeType: string): string {
+  switch (mimeType) {
+    case "image/png": return "asset.png";
+    case "image/jpeg": return "asset.jpg";
+    case "image/webp": return "asset.webp";
+    case "image/svg+xml": return "asset.svg";
+    case "audio/wav": return "asset.wav";
+    case "audio/mpeg": return "asset.mp3";
+    case "audio/mp4": return "asset.m4a";
+    default: return "asset.bin";
+  }
+}
+
+type PersistedAssetContentValidator = (input: {
+  filename: string;
+  bytes: Uint8Array;
+  declaredSize?: number;
+  claimedMimeType?: string;
+  expectedSha256?: string;
+}) => {
+  mimeType: string;
+  size: number;
+  width?: number;
+  height?: number;
+  duration?: number;
+};
+
+let persistedAssetContentValidator: PersistedAssetContentValidator | undefined;
+
+/**
+ * The asset validator is intentionally marked `server-only` for Next.js. The
+ * same database integrity routine also runs from direct Node/tsx maintenance
+ * commands, where the marker package deliberately throws under its default
+ * export condition. Load the validator lazily and, for only that load, resolve
+ * the marker to its package-provided empty implementation. This keeps the
+ * validator single-sourced while leaving normal module resolution untouched.
+ */
+function validatePersistedAssetContent(
+  input: Parameters<PersistedAssetContentValidator>[0],
+): ReturnType<PersistedAssetContentValidator> {
+  if (!persistedAssetContentValidator) {
+    const nodeModule = require("node:module") as {
+      registerHooks(hooks: {
+        resolve(
+          specifier: string,
+          context: unknown,
+          nextResolve: (specifier: string, context: unknown) => { url: string },
+        ): { url: string; shortCircuit?: boolean };
+      }): { deregister(): void };
+    };
+    // Do not use require.resolve here: webpack rewrites it to a numeric module
+    // ID in the production bundle. ProofCanvas maintenance commands and the
+    // runtime both execute from the application root that owns node_modules.
+    const emptyServerOnlyMarker = join(process.cwd(), "node_modules", "server-only", "empty.js");
+    if (!existsSync(emptyServerOnlyMarker)) persistenceFailure("server-only maintenance marker is unavailable");
+    const hook = nodeModule.registerHooks({
+      resolve(specifier, context, nextResolve) {
+        if (specifier === "server-only") {
+          return { url: pathToFileURL(emptyServerOnlyMarker).href, shortCircuit: true };
+        }
+        return nextResolve(specifier, context);
+      },
+    });
+    try {
+      const module = require("./assetContent.server") as {
+        validateAssetContent?: PersistedAssetContentValidator;
+      };
+      if (typeof module.validateAssetContent !== "function") {
+        persistenceFailure("asset content validator is unavailable");
+      }
+      persistedAssetContentValidator = module.validateAssetContent;
+    } finally {
+      hook.deregister();
+    }
+  }
+  return persistedAssetContentValidator(input);
+}
+
+function assetAuthorityMatchesBlob(
+  asset: AssetMetadata,
+  blob: PersistedAssetBlobMetadataRow,
+): boolean {
+  let canonicalBlobDuration: number | null = null;
+  if (blob.duration_seconds !== null) {
+    try {
+      canonicalBlobDuration = canonicalTimelineTime(blob.duration_seconds);
+    } catch {
+      return false;
+    }
+  }
+  return asset.sha256 === blob.sha256
+    && asset.mimeType === blob.mime_type
+    && asset.size === blob.byte_size
+    && (asset.width ?? null) === blob.width
+    && (asset.height ?? null) === blob.height
+    && (asset.duration ?? null) === canonicalBlobDuration;
 }
 
 function assertLegacyArchiveRow(row: PersistedLegacyArchiveRow): ReturnType<typeof classifyLegacyV2ProjectDocument> {
@@ -1138,6 +1338,10 @@ function assertProofCanvasPersistenceRows(database: SqliteDatabase): void {
   }
   const projectRows = database.prepare("SELECT * FROM projects ORDER BY id").all() as PersistedProjectRow[];
   const projects = new Map(projectRows.map((row) => [row.id, { row, document: assertProjectRow(row, archives) }]));
+  const assetDocuments: Array<{ projectId: string; label: string; document: ProjectDocument }> = [];
+  for (const [projectId, project] of projects) {
+    if (project.document) assetDocuments.push({ projectId, label: `project ${projectId}`, document: project.document });
+  }
   const checkpointRows = database.prepare("SELECT id, project_id, revision, label, document_json, created_at, document_state FROM checkpoints ORDER BY id").all() as PersistedCheckpointRow[];
   const checkpoints = new Map<string, PersistedCheckpointRow>();
   for (const row of checkpointRows) {
@@ -1167,6 +1371,7 @@ function assertProofCanvasPersistenceRows(database: SqliteDatabase): void {
       if (document.metadata.id !== row.project_id || document.metadata.createdAt !== project.row.created_at) {
         persistenceFailure(`checkpoint ${row.id} metadata diverges from its project`);
       }
+      assetDocuments.push({ projectId: row.project_id, label: `checkpoint ${row.id}`, document });
       const archive = archives.get(`checkpoint:${row.id}`);
       if (archive) {
         const classification = assertLegacyArchiveRow(archive);
@@ -1181,6 +1386,101 @@ function assertProofCanvasPersistenceRows(database: SqliteDatabase): void {
       persistenceFailure(`checkpoint ${row.id} has an invalid document state`);
     }
     checkpoints.set(row.id, row);
+  }
+
+  const blobRows = database.prepare(`SELECT
+    sha256, mime_type, byte_size, width, height, duration_seconds, content, created_at
+    FROM asset_blobs ORDER BY sha256`).iterate() as IterableIterator<PersistedAssetBlobRow>;
+  const blobs = new Map<string, PersistedAssetBlobMetadataRow>();
+  let installationBlobCount = 0;
+  let installationBlobBytes = 0;
+  for (const row of blobRows) {
+    installationBlobCount += 1;
+    if (installationBlobCount > PROOFCANVAS_ASSET_STORAGE_LIMITS.blobsPerInstallation) {
+      persistenceFailure("asset blob count exceeds the installation limit");
+    }
+    if (!Buffer.isBuffer(row.content)) persistenceFailure(`asset blob ${row.sha256} content is not a BLOB`);
+    assertIsoTimestamp(row.created_at, `asset blob ${row.sha256} created_at`);
+    let validated: ReturnType<PersistedAssetContentValidator>;
+    try {
+      validated = validatePersistedAssetContent({
+        filename: integrityFilenameForMime(row.mime_type),
+        bytes: row.content,
+        declaredSize: row.byte_size,
+        claimedMimeType: row.mime_type,
+        expectedSha256: row.sha256,
+      });
+    } catch {
+      return persistenceFailure(`asset blob ${row.sha256} content authority is invalid`);
+    }
+    if (
+      validated.mimeType !== row.mime_type
+      || validated.size !== row.byte_size
+      || (validated.width ?? null) !== row.width
+      || (validated.height ?? null) !== row.height
+      || (validated.duration ?? null) !== row.duration_seconds
+    ) persistenceFailure(`asset blob ${row.sha256} metadata diverges from its content`);
+    installationBlobBytes += row.byte_size;
+    if (!Number.isSafeInteger(installationBlobBytes) || installationBlobBytes > PROOFCANVAS_ASSET_STORAGE_LIMITS.blobBytesPerInstallation) {
+      persistenceFailure("asset blob bytes exceed the installation limit");
+    }
+    const { content: _content, ...metadata } = row;
+    blobs.set(row.sha256, metadata);
+  }
+
+  const refRows = database.prepare(`SELECT
+    project_id, asset_id, expected_sha256, blob_sha256, created_at
+    FROM project_asset_refs ORDER BY project_id, asset_id, expected_sha256`).all() as PersistedProjectAssetRefRow[];
+  const refs = new Map<string, PersistedProjectAssetRefRow>();
+  const referencedBlobHashes = new Set<string>();
+  const refsPerProject = new Map<string, number>();
+  const availableHashesPerProject = new Map<string, Set<string>>();
+  const refKey = (projectId: string, assetId: string, sha256: string) => `${projectId}\u0000${assetId}\u0000${sha256}`;
+  for (const row of refRows) {
+    if (!projects.has(row.project_id)) persistenceFailure(`asset reference ${row.project_id}:${row.asset_id} references a missing project`);
+    if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/i.test(row.asset_id) || row.asset_id.length > 96) {
+      persistenceFailure(`asset reference ${row.project_id}:${row.asset_id} has an invalid asset ID`);
+    }
+    if (!/^[a-f0-9]{64}$/.test(row.expected_sha256)) persistenceFailure(`asset reference ${row.project_id}:${row.asset_id} has an invalid expected hash`);
+    if (row.blob_sha256 !== null && row.blob_sha256 !== row.expected_sha256) persistenceFailure(`asset reference ${row.project_id}:${row.asset_id} has a divergent blob hash`);
+    assertIsoTimestamp(row.created_at, `asset reference ${row.project_id}:${row.asset_id} created_at`);
+    const key = refKey(row.project_id, row.asset_id, row.expected_sha256);
+    if (refs.has(key)) persistenceFailure(`duplicate asset reference ${row.project_id}:${row.asset_id}:${row.expected_sha256}`);
+    refs.set(key, row);
+    const count = (refsPerProject.get(row.project_id) ?? 0) + 1;
+    if (count > PROOFCANVAS_ASSET_STORAGE_LIMITS.retainedRefsPerProject) persistenceFailure(`project ${row.project_id} exceeds the retained asset-reference limit`);
+    refsPerProject.set(row.project_id, count);
+    if (row.blob_sha256 !== null) {
+      const blob = blobs.get(row.blob_sha256);
+      if (!blob) persistenceFailure(`asset reference ${row.project_id}:${row.asset_id} references a missing blob`);
+      referencedBlobHashes.add(row.blob_sha256);
+      const hashes = availableHashesPerProject.get(row.project_id) ?? new Set<string>();
+      hashes.add(row.blob_sha256);
+      availableHashesPerProject.set(row.project_id, hashes);
+    }
+  }
+  for (const hash of blobs.keys()) {
+    if (!referencedBlobHashes.has(hash)) persistenceFailure(`asset blob ${hash} is unreferenced`);
+  }
+  for (const [projectId, hashes] of availableHashesPerProject) {
+    const bytes = [...hashes].reduce((sum, hash) => sum + blobs.get(hash)!.byte_size, 0);
+    if (!Number.isSafeInteger(bytes) || bytes > PROOFCANVAS_ASSET_STORAGE_LIMITS.blobBytesPerProject) {
+      persistenceFailure(`project ${projectId} exceeds the retained asset-byte limit`);
+    }
+  }
+
+  for (const { projectId, label, document } of assetDocuments) {
+    for (const assetCandidate of document.assets) {
+      const parsed = AssetMetadataSchema.safeParse(assetCandidate);
+      if (!parsed.success) persistenceFailure(`${label} has invalid asset metadata`);
+      const asset = parsed.data;
+      const ref = refs.get(refKey(projectId, asset.id, asset.sha256));
+      if (!ref) persistenceFailure(`${label} asset ${asset.id} is missing its project-scoped storage reference`);
+      if (ref.blob_sha256 !== null) {
+        const blob = blobs.get(ref.blob_sha256);
+        if (!blob || !assetAuthorityMatchesBlob(asset, blob)) persistenceFailure(`${label} asset ${asset.id} metadata diverges from its content blob`);
+      }
+    }
   }
 
   for (const archive of archives.values()) {
@@ -1212,6 +1512,9 @@ function assertProofCanvasPersistenceRows(database: SqliteDatabase): void {
     delete: ["projectId", "revision", "updatedAt", "deletedAt"],
     checkpoint: ["projectId", "revision", "updatedAt", "checkpointId"],
     recover: ["projectId", "revision", "updatedAt", "checkpointId", "preRestoreCheckpointId"],
+    "asset-upload": ["projectId", "revision", "updatedAt", "asset"],
+    "asset-delete": ["projectId", "revision", "updatedAt", "assetId"],
+    "package-import": ["projectId", "revision", "updatedAt", "sourceProjectId", "sourceRevision", "packageSha256"],
   };
   const projectReceipts = new Map<string, Array<{ action: string; revision: number; updatedAt: string }>>();
   for (const row of mutations) {
@@ -1242,6 +1545,31 @@ function assertProofCanvasPersistenceRows(database: SqliteDatabase): void {
       assertIsoTimestamp(receipt.deletedAt, `mutation ${row.mutation_id} response deletedAt`);
       if (projects.get(receipt.projectId)!.row.deleted_at !== receipt.deletedAt) persistenceFailure(`mutation ${row.mutation_id} delete receipt diverges from its project`);
     }
+    if (row.action === "asset-upload") {
+      const parsedAsset = AssetMetadataSchema.safeParse(receipt.asset);
+      if (!parsedAsset.success) persistenceFailure(`mutation ${row.mutation_id} has invalid uploaded asset metadata`);
+      const ref = refs.get(refKey(receipt.projectId as string, parsedAsset.data.id, parsedAsset.data.sha256));
+      if (!ref || ref.blob_sha256 !== parsedAsset.data.sha256) persistenceFailure(`mutation ${row.mutation_id} uploaded asset reference is missing`);
+      const blob = blobs.get(parsedAsset.data.sha256);
+      if (!blob || !assetAuthorityMatchesBlob(parsedAsset.data, blob)) persistenceFailure(`mutation ${row.mutation_id} uploaded asset authority diverges from its blob`);
+    }
+    if (row.action === "asset-delete") {
+      if (typeof receipt.assetId !== "string" || !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/i.test(receipt.assetId) || receipt.assetId.length > 96) {
+        persistenceFailure(`mutation ${row.mutation_id} has an invalid deleted asset ID`);
+      }
+      const retained = refRows.some((ref) => ref.project_id === receipt.projectId && ref.asset_id === receipt.assetId);
+      if (!retained) persistenceFailure(`mutation ${row.mutation_id} deleted asset reference is not retained`);
+    }
+    if (row.action === "package-import") {
+      if (receipt.revision !== 1) persistenceFailure(`mutation ${row.mutation_id} import receipt is not revision one`);
+      if (typeof receipt.sourceProjectId !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/.test(receipt.sourceProjectId) || receipt.sourceProjectId.length > 128) {
+        persistenceFailure(`mutation ${row.mutation_id} has an invalid package source project ID`);
+      }
+      assertPositiveInteger(receipt.sourceRevision, `mutation ${row.mutation_id} package source revision`);
+      if (typeof receipt.packageSha256 !== "string" || !/^[a-f0-9]{64}$/.test(receipt.packageSha256)) {
+        persistenceFailure(`mutation ${row.mutation_id} has an invalid package hash`);
+      }
+    }
     for (const field of ["checkpointId", "preRestoreCheckpointId"] as const) {
       if (!(field in receipt)) continue;
       const checkpointId = receipt[field];
@@ -1259,7 +1587,7 @@ function assertProofCanvasPersistenceRows(database: SqliteDatabase): void {
     }
     const first = receipts[0];
     const latest = receipts.at(-1);
-    if (!first || !["create", "duplicate"].includes(first.action) || first.updatedAt !== row.created_at) {
+    if (!first || !["create", "duplicate", "package-import"].includes(first.action) || first.updatedAt !== row.created_at) {
       persistenceFailure(`project ${row.id} creation receipt diverges from its row`);
     }
     if (!latest || latest.updatedAt !== row.updated_at) persistenceFailure(`project ${row.id} latest mutation receipt diverges from its row`);

@@ -1,23 +1,27 @@
 'use client'
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent, type ComponentProps, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { forwardRef, memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent, type ComponentProps, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import CanvasStage, { resolveCanvasKeyboardTransformIntent, temporallyTransformsObject, type CanvasKeyboardTransformIntent } from './CanvasStage'
+import AudioPlayback, { type AudioPlaybackHandle } from './AudioPlayback'
 import GraphInspector, { type GraphDraftValue } from './GraphInspector'
 import KeyframeInspector from './KeyframeInspector'
+import MediaLibrary, { type AvailableProjectAsset } from './MediaLibrary'
+import MediaTimeline, { type MediaSelection } from './MediaTimeline'
 import MathPropertiesEditor from './MathPropertiesEditor'
 import PropertyKeyframeField from './PropertyKeyframeField'
 import ShotStoryboard, { type StoryboardActionResult } from './ShotStoryboard'
 import ShotTimeline from './ShotTimeline'
+import StyleLab from './StyleLab'
 import { REQUIRED_AI_COMMANDS, interpretDemoCommand, type AiProposal } from '@/lib/proofcanvas/ai'
 import { compileManim } from '@/lib/proofcanvas/compiler'
 import { PROOFCANVAS_SEMANTIC_COMPONENT_MIME, SEMANTIC_COMPONENTS, insertSemanticComponent, semanticComponentById, type SemanticComponentId } from '@/lib/proofcanvas/components'
 import { critiqueProject, type CritiqueIssue } from '@/lib/proofcanvas/critique'
 import { ensureSessionCsrfToken } from '@/lib/proofcanvas/csrf.client'
-import { createCantorDemoProject } from '@/lib/proofcanvas/demo'
-import { applyDocumentOperations } from '@/lib/proofcanvas/documentOperations'
+import { createCantorDemoProject, createCantorV1Project } from '@/lib/proofcanvas/demo'
+import { applyDocumentOperations, duplicateStyleOperation, type DocumentOperation } from '@/lib/proofcanvas/documentOperations'
 import { projectAuthoringTransitionIssue, projectGraphAuthoringIssues } from '@/lib/proofcanvas/authoringPolicy'
-import { addTimelineTimes, compareTimelineTimes, logicalFrameFor, resolutionFor, subtractTimelineTimes, type LogicalFrame } from '@/lib/proofcanvas/frame'
-import { canRedo, canUndo, commitOperations, commitProject, createHistory, redoAuthoringHistory, undoAuthoringHistory, type ProjectHistory } from '@/lib/proofcanvas/history'
+import { PROOFCANVAS_TIMELINE_TICK_SECONDS, addTimelineTimes, canonicalTimelineTime, compareTimelineTimes, logicalFrameFor, resolutionFor, subtractTimelineTimes, type LogicalFrame } from '@/lib/proofcanvas/frame'
+import { canRedo, canUndo, commitDocumentOperations, commitOperations, commitProject, createHistory, redoAuthoringHistory, undoAuthoringHistory, type ProjectHistory } from '@/lib/proofcanvas/history'
 import { commandTargetWithin, createEditorCommandController, EDITOR_COMMANDS, type EditorCommandId, type EditorCommandInvocation } from '@/lib/proofcanvas/editorCommands'
 import { EditorSequencePlaybackClock, type EditorSequencePlaybackSnapshot } from '@/lib/proofcanvas/editorPlayback'
 import { animationSelection, keyframeSelection, normalizeEditorSelection, objectSelection, projectSelection, selectedAnimationIds, selectedObjectIds, shotSelection, type EditorKeyframeRef, type EditorSelection } from '@/lib/proofcanvas/editorSelection'
@@ -26,21 +30,19 @@ import { beginEditorShotSequencePlayback, buildEditorShotSequence, commitEditorS
 import { allocateId, collectProjectIds } from '@/lib/proofcanvas/ids'
 import { applyOperations, duplicateObjects, effectiveLockOwner, effectiveVisibilityOwner, inspectOperations, type ManualSceneOperation } from '@/lib/proofcanvas/operations'
 import { previewShotAtTime } from '@/lib/proofcanvas/preview'
-import { PROOFCANVAS_BRACE_LABEL_MAX_CHARS, PROOFCANVAS_PROJECT_MAX_BYTES, PROOFCANVAS_SCHEMA_LIMITS, PROOFCANVAS_TEXT_MAX_CHARS, ProjectDocumentSchema, SceneOperationSchema, animationAuthoringCompatibilityIssue, canonicalProjectJson, cloneSerializable, currentShapePropertiesIssue, formatShapePropertiesIssue, mathPropertiesFor, objectTypeSupportsStyleProperty, parseProjectDocument, type AnimationType, type CurrentShapeProperties, type Easing, type MathProperties, type ProjectDocument, type PropertyKeyframe, type PropertyTrack, type SceneAnimation, type SceneObject, type SceneOperation, type Shot } from '@/lib/proofcanvas/schema'
+import { AssetMetadataSchema, PROOFCANVAS_BRACE_LABEL_MAX_CHARS, PROOFCANVAS_PROJECT_MAX_BYTES, PROOFCANVAS_SCHEMA_LIMITS, PROOFCANVAS_TEXT_MAX_CHARS, ProjectDocumentSchema, SceneOperationSchema, StylePackSchema, animationAuthoringCompatibilityIssue, assetVisualSettingsFor, canonicalProjectJson, cloneSerializable, currentShapePropertiesIssue, formatShapePropertiesIssue, mathPropertiesFor, objectTypeSupportsStyleProperty, parseProjectDocument, type AnimationType, type AssetMetadata, type AudioClip, type CaptionClip, type CurrentShapeProperties, type Easing, type MathProperties, type ProjectDocument, type PropertyKeyframe, type PropertyTrack, type SceneAnimation, type SceneObject, type SceneOperation, type Shot, type StylePack, type TimelineMarker } from '@/lib/proofcanvas/schema'
 import { ARROW_TIP_SHAPES, BRACE_DIRECTIONS, MAX_ARROW_TIP_SIZE_RATIO, MIN_ARROW_TIP_SIZE_RATIO, SHAPE_LINE_CAPS, SHAPE_LINE_JOINS, isCurrentShapeType, isLinearShapeType, lineEndpointsForTransform, resolveShapeDimensions, resolveShapeGeometry, resolveShapePaint, shapeAuthoringIssue, transformFromLineEndpoints, type ArrowTipShape, type BraceDirection, type FreeformShapeNode, type NormalizedShapePoint, type ShapeLineCap, type ShapeLineJoin } from '@/lib/proofcanvas/shapeGeometry'
 import { PROOFCANVAS_SHAPE_PRESET_MIME, SHAPE_PRESETS, insertShapePreset, searchShapePresets, shapePresetById, type ShapePresetId } from '@/lib/proofcanvas/shapePresets'
-import { EDITORIAL_INK_STYLE_ID, RAW_MANIM_STYLE_ID, resolvedGraphStroke, styleById } from '@/lib/proofcanvas/styles'
-import { propertyTrackKey } from '@/lib/proofcanvas/timeline'
+import { DEFAULT_STYLE_PACKS, resolvedGraphStroke, styleById } from '@/lib/proofcanvas/styles'
+import { propertyTrackKey, samplePropertyTrack } from '@/lib/proofcanvas/timeline'
+import { exportSrtCaptions, importSrtCaptions, importWebVttCaptions, projectSequenceCaptions } from '@/lib/proofcanvas/captions'
+import { PROOFCANVAS_PROJECT_PACKAGE_EXTENSION, PROOFCANVAS_PROJECT_PACKAGE_LIMITS, PROOFCANVAS_PROJECT_PACKAGE_MEDIA_TYPE } from '@/lib/proofcanvas/projectPackage'
 
 const STORAGE_KEY = 'proofcanvas_project_v1'
 const recoveryStorageKey = (projectId: string) => `proofcanvas_recovery_${projectId}`
-type LibraryTab = 'text' | 'math' | 'shapes' | 'graphs' | 'components' | 'styles'
-const LIBRARY_TABS: readonly LibraryTab[] = ['text', 'math', 'shapes', 'graphs', 'components', 'styles']
-const STYLE_OPTIONS = [
-  { id: EDITORIAL_INK_STYLE_ID, name: 'Editorial Ink' },
-  { id: RAW_MANIM_STYLE_ID, name: 'Raw Manim' },
-] as const
-const OBJECT_TYPES: ReadonlyArray<{ type: Exclude<SceneObject['type'], 'group' | 'image' | 'svg'>; label: string; tab: Exclude<LibraryTab, 'components' | 'styles'>; keywords: string }> = [
+type LibraryTab = 'text' | 'math' | 'shapes' | 'graphs' | 'components' | 'media' | 'styles'
+const LIBRARY_TABS: readonly LibraryTab[] = ['text', 'math', 'shapes', 'graphs', 'components', 'media', 'styles']
+const OBJECT_TYPES: ReadonlyArray<{ type: Exclude<SceneObject['type'], 'group' | 'image' | 'svg'>; label: string; tab: Exclude<LibraryTab, 'components' | 'media' | 'styles'>; keywords: string }> = [
   { type: 'text', label: 'text', tab: 'text', keywords: 'title heading paragraph label narration' },
   { type: 'math', label: 'math', tab: 'math', keywords: 'latex equation formula expression' },
   { type: 'brace', label: 'brace', tab: 'math', keywords: 'annotation measure label' },
@@ -77,7 +79,9 @@ const MAX_LEFT_PANEL = 320
 const MIN_RIGHT_PANEL = 240
 const MAX_RIGHT_PANEL = 400
 const MIN_TIMELINE_HEIGHT = 156
-const MAX_TIMELINE_HEIGHT = 380
+const MAX_TIMELINE_HEIGHT = 600
+const PORTRAIT_TIMELINE_HEIGHT = 260
+const EDITOR_CANVAS_ZOOMS = [1, 1.25, 1.5, 2] as const
 
 type EditorAuthority = Readonly<{
   history: ProjectHistory
@@ -139,11 +143,30 @@ function shotDeleteDescription(project: ProjectDocument, shot: Shot): string {
 
 type ClientRenderJob = {
   id: string
-  status: 'pending' | 'running' | 'succeeded' | 'failed'
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled'
   quality: 'preview' | 'production'
   sourceSha256: string
   error: { code: string; message: string } | null
-  video: { sha256: string; bytes: number } | null
+  output?: {
+    width: number
+    height: number
+    fps: number
+    expectedDurationSeconds: number
+  }
+  video: {
+    sha256: string
+    bytes: number
+    width?: number
+    height?: number
+    fps?: number
+    durationSeconds?: number
+    videoCodec?: 'h264'
+    audioCodec?: 'aac' | null
+    videoStreams?: number
+    audioStreams?: number
+    decodedFrames?: number
+    decodedAudioSamples?: number
+  } | null
 }
 
 type OperationReview = {
@@ -182,6 +205,36 @@ type PendingDurableSave = {
 }
 
 type BlockedDurableSave = Pick<PendingDurableSave, 'canonical' | 'expectedRevision'>
+
+function projectReferencesAsset(project: ProjectDocument, assetId: string): boolean {
+  return project.shots.some((shot) => (
+    shot.objects.some((object) => object.properties.assetId === assetId)
+    || shot.audioClips.some((clip) => clip.assetId === assetId)
+  ))
+}
+
+function projectWithBoundAsset(project: ProjectDocument, asset: AssetMetadata): ProjectDocument {
+  const existing = project.assets.find(({ id }) => id === asset.id)
+  if (existing) {
+    if (JSON.stringify(existing) !== JSON.stringify(asset)) throw new Error(`Asset identity collision: ${asset.id}`)
+    return project
+  }
+  return ProjectDocumentSchema.parse({ ...cloneSerializable(project), assets: [...project.assets, asset] })
+}
+
+function projectWithoutAsset(project: ProjectDocument, assetId: string): ProjectDocument {
+  if (projectReferencesAsset(project, assetId)) throw new Error('Remove every canvas and audio reference before deleting this asset')
+  return ProjectDocumentSchema.parse({ ...cloneSerializable(project), assets: project.assets.filter(({ id }) => id !== assetId) })
+}
+
+function historyWithBoundAsset(history: ProjectHistory, asset: AssetMetadata): ProjectHistory {
+  const rebase = (project: ProjectDocument) => projectWithBoundAsset(project, asset)
+  return {
+    past: history.past.map((entry) => ({ ...entry, project: rebase(entry.project) })),
+    present: rebase(history.present),
+    future: history.future.map((entry) => ({ ...entry, project: rebase(entry.project) })),
+  }
+}
 
 function blockedSaveMatches(
   blocked: readonly BlockedDurableSave[],
@@ -328,11 +381,52 @@ function reviewOperations(project: ProjectDocument, shotId: string, proposal: Ai
 function renderJobFromPayload(candidate: unknown): ClientRenderJob {
   if (!candidate || typeof candidate !== 'object') throw new Error('Renderer returned an invalid job')
   const job = candidate as Partial<ClientRenderJob>
+  const output = job.output
+  const validOutput = output === undefined || (
+    Number.isInteger(output.width) && output.width >= 240 && output.width <= 1920
+    && Number.isInteger(output.height) && output.height >= 240 && output.height <= 1920
+    && output.width * output.height <= 1920 * 1080
+    && [15, 24, 30, 60].includes(output.fps)
+    && Number.isFinite(output.expectedDurationSeconds)
+    && output.expectedDurationSeconds > 0 && output.expectedDurationSeconds <= 310
+  )
+  const error = job.error
+  const validError = error === null || Boolean(
+    error && typeof error.code === 'string' && error.code.length <= 80
+    && typeof error.message === 'string' && error.message.length <= 240,
+  )
+  const video = job.video
+  const richVideoKeys = ['width', 'height', 'fps', 'durationSeconds', 'videoCodec', 'audioCodec', 'videoStreams', 'audioStreams', 'decodedFrames', 'decodedAudioSamples'] as const
+  const hasRichVideo = Boolean(video && richVideoKeys.some((key) => key in video))
+  const validVideo = video === null || Boolean(
+    video
+    && typeof video.sha256 === 'string' && /^[0-9a-f]{64}$/.test(video.sha256)
+    && Number.isSafeInteger(video.bytes) && video.bytes >= 32 && video.bytes <= 256 * 1024 * 1024
+    && (!hasRichVideo || Boolean(
+      output
+      && video.width === output.width && video.height === output.height && video.fps === output.fps
+      && typeof video.durationSeconds === 'number' && Number.isFinite(video.durationSeconds)
+      && video.durationSeconds > 0 && video.durationSeconds <= 310
+      && video.videoCodec === 'h264'
+      && (video.audioCodec === null || video.audioCodec === 'aac')
+      && video.videoStreams === 1
+      && video.audioStreams === (video.audioCodec === 'aac' ? 1 : 0)
+      && Number.isSafeInteger(video.decodedFrames) && (video.decodedFrames ?? 0) > 0
+      && Number.isSafeInteger(video.decodedAudioSamples) && (video.decodedAudioSamples ?? -1) >= 0,
+    )),
+  )
+  const validStatusShape = (
+    (job.status === 'succeeded' && video !== null)
+    || ((job.status === 'pending' || job.status === 'running') && video === null && error === null)
+    || (job.status === 'failed' && video === null && error !== null)
+    || (job.status === 'cancelled' && video === null)
+  )
   if (
     typeof job.id !== 'string' || !/^[A-Za-z0-9_-]{24}$/.test(job.id)
-    || !['pending', 'running', 'succeeded', 'failed'].includes(String(job.status))
+    || !['pending', 'running', 'succeeded', 'failed', 'cancelled'].includes(String(job.status))
     || !['preview', 'production'].includes(String(job.quality))
     || typeof job.sourceSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(job.sourceSha256)
+    || !validOutput || !validError || !validVideo || !validStatusShape
   ) throw new Error('Renderer returned an invalid job')
   return job as ClientRenderJob
 }
@@ -443,12 +537,21 @@ function objectFamilyHasPropertyAuthority(
 
 function download(name: string, type: string, contents: string) {
   const blob = new Blob([contents], { type })
+  downloadBlob(name, blob)
+}
+
+function downloadBlob(name: string, blob: Blob) {
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = url
   anchor.download = name
   anchor.click()
   setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
+async function browserSha256Hex(bytes: ArrayBuffer): Promise<string> {
+  const digest = await window.crypto.subtle.digest('SHA-256', bytes)
+  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('')
 }
 
 function descendants(shot: Shot, id: string): number {
@@ -494,17 +597,49 @@ const IsolatedCanvasStage = memo(function IsolatedCanvasStage({
   isPlaying,
   pausedPlayhead,
   previewStyleId,
+  editorZoom,
   ...stageProps
 }: Omit<ComponentProps<typeof CanvasStage>, 'playhead'> & {
   clock: EditorSequencePlaybackClock
   isPlaying: boolean
   pausedPlayhead: number
   previewStyleId: string
+  editorZoom: number
 }) {
   const livePosition = useSyncExternalStore(clock.subscribe, clock.getSnapshot, clock.getServerSnapshot)
   const shownPlayhead = isPlaying && livePosition.shotId === stageProps.shot.id ? livePosition.localTime : pausedPlayhead
-  return <div role="region" aria-label="Scene canvas" data-pc-canvas data-preview-time={shownPlayhead} data-preview-style-id={previewStyleId} className="pc-canvas-region"><CanvasStage {...stageProps} playhead={shownPlayhead}/></div>
+  return <div
+    role="region"
+    aria-label="Scene canvas"
+    data-pc-canvas
+    data-preview-time={shownPlayhead}
+    data-preview-style-id={previewStyleId}
+    data-editor-zoom={editorZoom}
+    data-editor-zoomed={editorZoom > 1 ? 'true' : 'false'}
+    className="pc-canvas-region"
+    style={{ '--pc-editor-zoom': editorZoom } as CSSProperties}
+  ><CanvasStage {...stageProps} playhead={shownPlayhead}/></div>
 })
+
+const IsolatedAudioPlayback = memo(forwardRef<AudioPlaybackHandle, {
+  clock: EditorSequencePlaybackClock
+  isPlaying: boolean
+  pausedPlayhead: number
+  projectId: string
+  shot: Shot
+  onPlaybackError(message: string): void
+}>(function IsolatedAudioPlayback({
+  clock,
+  isPlaying,
+  pausedPlayhead,
+  projectId,
+  shot,
+  onPlaybackError,
+}, ref) {
+  const livePosition = useSyncExternalStore(clock.subscribe, clock.getSnapshot, clock.getServerSnapshot)
+  const shownPlayhead = isPlaying && livePosition.shotId === shot.id ? livePosition.localTime : pausedPlayhead
+  return <AudioPlayback ref={ref} projectId={projectId} shot={shot} playhead={shownPlayhead} playing={isPlaying && livePosition.shotId === shot.id} onPlaybackError={onPlaybackError}/>
+}))
 
 const IsolatedTimelinePlayhead = memo(function IsolatedTimelinePlayhead({
   clock,
@@ -566,6 +701,11 @@ export default function ProofCanvasEditor({
   const { activeShotId, selection, playhead } = workspace
   const [libraryTab, setLibraryTab] = useState<LibraryTab>('text')
   const [librarySearch, setLibrarySearch] = useState('')
+  const [mediaSelection, setMediaSelection] = useState<MediaSelection>(null)
+  const [objectStyleClipboard, setObjectStyleClipboard] = useState<SceneObject['style'] | null>(null)
+  const [assetAvailability, setAssetAvailability] = useState<Record<string, boolean>>({})
+  const [assetPending, setAssetPending] = useState(false)
+  const [packagePending, setPackagePending] = useState(false)
   const [draggedShapePresetId, setDraggedShapePresetId] = useState<ShapePresetId | null>(null)
   const [draggedComponentId, setDraggedComponentId] = useState<SemanticComponentId | null>(null)
   const [animationType, setAnimationType] = useState<AnimationType>('fade-in')
@@ -588,6 +728,7 @@ export default function ProofCanvasEditor({
   const [renderJob, setRenderJob] = useState<ClientRenderJob | null>(null)
   const [renderBaseRevision, setRenderBaseRevision] = useState<string | null>(null)
   const [renderPending, setRenderPending] = useState(false)
+  const [renderActionPending, setRenderActionPending] = useState<'cancel' | 'still' | null>(null)
   const [renderPollFailures, setRenderPollFailures] = useState(0)
   const [renderPollingPaused, setRenderPollingPaused] = useState(false)
   const [serverRevision, setServerRevision] = useState(durableProject?.revision ?? 0)
@@ -609,10 +750,14 @@ export default function ProofCanvasEditor({
   const [renderQuality, setRenderQuality] = useState<ClientRenderJob['quality']>('preview')
   const [leftPanelWidth, setLeftPanelWidth] = useState(224)
   const [rightPanelWidth, setRightPanelWidth] = useState(292)
-  const [timelineHeight, setTimelineHeight] = useState(340)
+  const [timelineHeight, setTimelineHeight] = useState(460)
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false)
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false)
   const [timelineCollapsed, setTimelineCollapsed] = useState(false)
+  const [editorCanvasZoom, setEditorCanvasZoom] = useState<number>(1)
+  const [canvasFocusMode, setCanvasFocusMode] = useState(false)
+  const [aspectConversionPolicy, setAspectConversionPolicy] = useState<'fit-all' | 'preserve'>('fit-all')
+  const canvasFocusRestoreRef = useRef({ left: false, right: false, timeline: false })
   const [shotDialog, setShotDialog] = useState<ShotDialogState>(null)
   const [panelResize, setPanelResize] = useState<{ kind: 'left' | 'right' | 'timeline'; start: number; initial: number } | null>(null)
   const trackRef = useRef<HTMLDivElement | null>(null)
@@ -633,6 +778,7 @@ export default function ProofCanvasEditor({
   const shotDialogInputRef = useRef<HTMLInputElement | null>(null)
   const aiRequestSequence = useRef(0)
   const importRequestSequence = useRef(0)
+  const packageImportMutationIdsRef = useRef(new Map<string, string>())
   const aiAbortController = useRef<AbortController | null>(null)
   const serverRevisionRef = useRef(serverRevision)
   const csrfTokenRef = useRef(csrfToken)
@@ -654,6 +800,7 @@ export default function ProofCanvasEditor({
   const playbackClockRef = useRef(playbackClock)
   const playbackGenerationRef = useRef(0)
   const playbackFrameRef = useRef<number | null>(null)
+  const audioPlaybackRef = useRef<AudioPlaybackHandle>(null)
 
   serverRevisionRef.current = serverRevision
   csrfTokenRef.current = csrfToken
@@ -661,6 +808,17 @@ export default function ProofCanvasEditor({
   const logicalFrame = logicalFrameFor(project.settings.aspectRatio)
   const shot = project.shots.find(({ id }) => id === activeShotId) ?? project.shots[0]
   const previewStyle = styleById(project.styles, project.activeStyleId) ?? project.styles[0]
+  const styleOptions = project.styles.map(({ id, name }) => ({ id, name }))
+  const availableProjectAssets: AvailableProjectAsset[] = project.assets.map((asset) => ({
+    ...asset,
+    available: durableProject ? assetAvailability[asset.id] === true : false,
+  }))
+  const availableAssetIds = new Set(availableProjectAssets.filter(({ available }) => available).map(({ id }) => id))
+  const outsideFrameObjectIds = useMemo(() => new Set(
+    critiqueProject(project)
+      .filter(({ kind }) => kind === 'outside-frame')
+      .flatMap(({ objectIds }) => objectIds),
+  ), [project])
   const publishWorkspaceOnly = useCallback((nextWorkspace: EditorShotWorkspace, nextPlaying = authorityRef.current.isPlaying) => {
     const current = authorityRef.current
     const reconciled = reconcileEditorWorkspace(current.history.present, nextWorkspace)
@@ -674,6 +832,7 @@ export default function ProofCanvasEditor({
     setEditorAuthority(next)
   }, [])
   const setSelectedIds = useCallback((value: readonly string[] | ((ids: readonly string[]) => readonly string[])) => {
+    setMediaSelection(null)
     const current = authorityRef.current
     const latestProject = current.history.present
     const latestShot = latestProject.shots.find(({ id }) => id === current.workspace.activeShotId) ?? latestProject.shots[0]
@@ -682,6 +841,7 @@ export default function ProofCanvasEditor({
     publishWorkspaceOnly({ ...current.workspace, selection: objectSelection(latestShot, selectionRootIds(latestShot, next)) })
   }, [publishWorkspaceOnly])
   const setSelectedAnimationId = useCallback((id: string | null) => {
+    setMediaSelection(null)
     const current = authorityRef.current
     const latestProject = current.history.present
     const latestShot = latestProject.shots.find(({ id: candidateId }) => candidateId === current.workspace.activeShotId) ?? latestProject.shots[0]
@@ -689,18 +849,28 @@ export default function ProofCanvasEditor({
     publishWorkspaceOnly({ ...current.workspace, selection: next })
   }, [publishWorkspaceOnly])
   const setEditorSelection = useCallback((nextSelection: EditorSelection) => {
+    setMediaSelection(null)
     const current = authorityRef.current
     publishWorkspaceOnly({ ...current.workspace, selection: nextSelection })
   }, [publishWorkspaceOnly])
   const selectSingleKeyframe = useCallback((ref: EditorKeyframeRef) => {
+    setMediaSelection(null)
     const current = authorityRef.current
     const latestProject = current.history.present
     const latestShot = latestProject.shots.find(({ id }) => id === current.workspace.activeShotId) ?? latestProject.shots[0]
     publishWorkspaceOnly({ ...current.workspace, selection: keyframeSelection(latestShot, [ref], ref) })
   }, [publishWorkspaceOnly])
   const selectProjectContext = useCallback(() => {
+    setMediaSelection(null)
     const current = authorityRef.current
     publishWorkspaceOnly({ ...current.workspace, selection: projectSelection() })
+  }, [publishWorkspaceOnly])
+  const selectMedia = useCallback((nextSelection: MediaSelection) => {
+    setMediaSelection(nextSelection)
+    if (!nextSelection) return
+    const current = authorityRef.current
+    const latestShot = current.history.present.shots.find(({ id }) => id === current.workspace.activeShotId) ?? current.history.present.shots[0]
+    publishWorkspaceOnly({ ...current.workspace, selection: shotSelection([latestShot.id]) })
   }, [publishWorkspaceOnly])
   const selectedRootIds = selectionRootIds(shot, selectedObjectIds(selection, shot.id))
   const selectedObjects = selectedRootIds.map((id) => shot.objects.find((object) => object.id === id)).filter((object): object is SceneObject => Boolean(object))
@@ -725,6 +895,15 @@ export default function ProofCanvasEditor({
   )), [shot.propertyTracks])
   const selectedAnimationId = selectedAnimationIds(selection, shot.id).at(-1) ?? null
   const selectedAnimation = shot.animations.find(({ id }) => id === selectedAnimationId) ?? null
+  const selectedAudioClip = mediaSelection?.kind === 'audio' ? shot.audioClips.find(({ id }) => id === mediaSelection.id) ?? null : null
+  const selectedCaptionClip = mediaSelection?.kind === 'caption' ? shot.captionClips.find(({ id }) => id === mediaSelection.id) ?? null : null
+  const selectedMarker = mediaSelection?.kind === 'marker' ? shot.markers.find(({ id }) => id === mediaSelection.id) ?? null : null
+  const selectedAudioVolumeTrack = selectedAudioClip ? shot.propertyTracks.find((track) => (
+    track.target.kind === 'audio' && track.target.audioClipId === selectedAudioClip.id && track.property === 'volume'
+  )) : undefined
+  const selectedAudioVolumeAtPlayhead = selectedAudioClip && selectedAudioVolumeTrack && compareTimelineTimes(playhead, selectedAudioVolumeTrack.keyframes[0].time) >= 0
+    ? samplePropertyTrack(selectedAudioVolumeTrack, playhead)
+    : selectedAudioClip?.volume
   const selectedEntranceThereBackUnsupported = Boolean(
     selectedAnimation
     && (selectedAnimation.type === 'write' || selectedAnimation.type === 'create')
@@ -740,6 +919,17 @@ export default function ProofCanvasEditor({
   const selectedAnimationTarget = selectedAnimation ? shot.objects.find(({ id }) => id === selectedAnimation.targetIds[0]) : undefined
   const projectRevision = useMemo(() => canonicalProjectJson(project), [project])
   const primaryMathProperties = primary ? mathPropertiesFor(primary) : null
+  const primaryAssetVisualSettings = primary && (primary.type === 'image' || primary.type === 'svg') ? assetVisualSettingsFor(primary) : null
+  const primarySvgVisualUnsupported = Boolean(
+    primary?.type === 'svg'
+    && primaryAssetVisualSettings
+    && (
+      primaryAssetVisualSettings.fit !== 'contain'
+      || !primaryAssetVisualSettings.preserveAspectRatio
+      || primaryAssetVisualSettings.crop
+      || (primaryAssetVisualSettings.mask && primaryAssetVisualSettings.mask.kind !== 'none')
+    ),
+  )
   const mathDraftAuthorityKey = primary ? `${projectRevision}\u0000${shot.id}\u0000${primary.id}` : ''
   const graphDraftAuthorityKey = primary ? `${projectRevision}\u0000${shot.id}\u0000${primary.id}` : ''
   const projectRevisionRef = useRef(projectRevision)
@@ -750,6 +940,38 @@ export default function ProofCanvasEditor({
     setCsrfToken(token)
     return token
   }, [])
+
+  const refreshAssetAvailability = useCallback(async (): Promise<boolean> => {
+    if (!durableProject) {
+      setAssetAvailability({})
+      return true
+    }
+    if (authorityRef.current.history.present.assets.length === 0) {
+      setAssetAvailability({})
+      return true
+    }
+    try {
+      const response = await fetch(`/api/projects/${encodeURIComponent(durableProject.projectId)}/assets`, { cache: 'no-store' })
+      const payload: unknown = await response.json()
+      if (!response.ok || !payload || typeof payload !== 'object' || (payload as { ok?: unknown }).ok !== true || !Array.isArray((payload as { assets?: unknown }).assets)) {
+        throw new Error(responseMessage(payload, 'Project assets could not be loaded'))
+      }
+      const next: Record<string, boolean> = {}
+      for (const candidate of (payload as { assets: unknown[] }).assets) {
+        if (!candidate || typeof candidate !== 'object' || typeof (candidate as { available?: unknown }).available !== 'boolean') throw new Error('Project assets returned an invalid response')
+        const { available, contentUrl, ...metadata } = candidate as Record<string, unknown>
+        const asset = AssetMetadataSchema.parse(metadata)
+        const expectedUrl = `/api/projects/${encodeURIComponent(durableProject.projectId)}/assets/${encodeURIComponent(asset.id)}`
+        if (contentUrl !== expectedUrl) throw new Error('Project assets returned an invalid content route')
+        next[asset.id] = available as boolean
+      }
+      setAssetAvailability(next)
+      return true
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Project assets could not be loaded')
+      return false
+    }
+  }, [durableProject])
 
   const durableMutation = useCallback(async (url: string, method: string, body: object) => {
     const token = await ensureCsrfToken()
@@ -954,6 +1176,14 @@ export default function ProofCanvasEditor({
     ] : []
 
   useEffect(() => {
+    void refreshAssetAvailability()
+  }, [refreshAssetAvailability])
+
+  useEffect(() => {
+    if (mediaSelection && !selectedAudioClip && !selectedCaptionClip && !selectedMarker) setMediaSelection(null)
+  }, [mediaSelection, selectedAudioClip, selectedCaptionClip, selectedMarker])
+
+  useEffect(() => {
     if (!durableProject) return
     try {
       const scoped = window.localStorage.getItem(recoveryStorageKey(durableProject.projectId))
@@ -1110,6 +1340,7 @@ export default function ProofCanvasEditor({
           setRendererMessage('')
           setRenderJob(next)
           if (next.status === 'failed') setRendererMessage(next.error?.message ?? 'Manim could not render this generated scene.')
+          if (next.status === 'cancelled') setStatus('Manim render cancelled')
           if (next.status === 'succeeded') setStatus('Genuine Manim MP4 render completed')
         }
       } catch (error) {
@@ -1309,6 +1540,25 @@ export default function ProofCanvasEditor({
     }
   }, [materializeLiveWorkspace, publishEditorAuthority])
 
+  const commitDocumentOps = useCallback((operations: readonly DocumentOperation[], label: string) => {
+    try {
+      const currentAuthority = authorityRef.current
+      if (currentAuthority.isPlaying) {
+        setStatus('Pause sequence playback before editing the project.')
+        return false
+      }
+      const current = currentAuthority.history
+      const liveWorkspace = materializeLiveWorkspace(currentAuthority)
+      const next = commitDocumentOperations(current, operations, label)
+      publishEditorAuthority(next, reconcileEditorWorkspace(next.present, liveWorkspace), 'pause', { status: next === current ? 'No project values changed' : label })
+      setAiError('')
+      return true
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'The project edit could not be applied')
+      return false
+    }
+  }, [materializeLiveWorkspace, publishEditorAuthority])
+
   /** Timeline edits keep history, selection, shot, and playback in one authority update. */
   const commitTimelineIntent = useCallback((intent: TimelineOperationIntent, base: TimelineIntentAuthorityBase) => {
     const currentAuthority = authorityRef.current
@@ -1388,6 +1638,361 @@ export default function ProofCanvasEditor({
     const object = newObject(type, allocateId('object', ids, type), latestShot.objects.length + 1, frame)
     if (commitOps([{ type: 'add-object', object }], `Insert ${type}`)) setSelectedIds([object.id])
   }
+
+  const insertVisualAsset = useCallback((assetId: string) => {
+    const current = authorityRef.current
+    if (current.isPlaying) return setStatus('Pause sequence playback before inserting an asset.')
+    const latestProject = current.history.present
+    const asset = latestProject.assets.find(({ id }) => id === assetId)
+    if (!asset || !asset.mimeType.startsWith('image/')) return setStatus('That image asset is no longer available.')
+    if (durableProject && assetAvailability[asset.id] !== true) return setStatus('That image asset is missing its validated content bytes.')
+    const latestShot = latestProject.shots.find(({ id }) => id === current.workspace.activeShotId) ?? latestProject.shots[0]
+    const frame = logicalFrameFor(latestProject.settings.aspectRatio)
+    const type = asset.mimeType === 'image/svg+xml' ? 'svg' : 'image'
+    const object = newObject(type, allocateId('object', collectProjectIds(latestProject), type), latestShot.objects.length + 1, frame)
+    const aspect = (asset.width ?? 1) / (asset.height ?? 1)
+    const maximumWidth = Math.min(360, frame.width * 0.48)
+    const maximumHeight = Math.min(240, frame.height * 0.48)
+    const width = Math.max(1, Math.min(maximumWidth, maximumHeight * aspect))
+    const height = Math.max(1, Math.min(maximumHeight, maximumWidth / aspect))
+    const inserted: SceneObject = {
+      ...object,
+      name: asset.filename.replace(/\.[^.]+$/, '') || (type === 'svg' ? 'SVG asset' : 'Image asset'),
+      transform: { ...object.transform, width: canonicalTimelineTime(width), height: canonicalTimelineTime(height) },
+      style: { opacity: 1 },
+      properties: { assetId: asset.id, fit: 'contain', preserveAspectRatio: true },
+    }
+    if (commitOps([{ type: 'add-object', object: inserted }], `Insert ${asset.filename}`)) setSelectedIds([inserted.id])
+  }, [assetAvailability, commitOps, durableProject, setSelectedIds])
+
+  const addAudioAsset = useCallback((assetId: string, requestedStart = playbackClockRef.current.getSnapshot().localTime) => {
+    const current = authorityRef.current
+    if (current.isPlaying) return false
+    const latestProject = current.history.present
+    const asset = latestProject.assets.find(({ id }) => id === assetId)
+    if (!asset || !asset.mimeType.startsWith('audio/') || !asset.duration) {
+      setStatus('That audio asset has no validated duration.')
+      return false
+    }
+    if (durableProject && assetAvailability[asset.id] !== true) {
+      setStatus('That audio asset is missing its validated content bytes.')
+      return false
+    }
+    const latestShot = latestProject.shots.find(({ id }) => id === current.workspace.activeShotId) ?? latestProject.shots[0]
+    const start = canonicalTimelineTime(Math.max(0, Math.min(latestShot.duration - PROOFCANVAS_TIMELINE_TICK_SECONDS, requestedStart)))
+    const duration = canonicalTimelineTime(Math.min(asset.duration, subtractTimelineTimes(latestShot.duration, start)))
+    const id = allocateId('audio', collectProjectIds(latestProject), asset.filename)
+    const clip: AudioClip = {
+      id,
+      assetId: asset.id,
+      name: asset.filename.replace(/\.[^.]+$/, '') || 'Audio clip',
+      start,
+      duration,
+      sourceStart: 0,
+      sourceEnd: duration,
+      volume: 1,
+      muted: false,
+      solo: false,
+      fadeIn: 0,
+      fadeOut: 0,
+    }
+    const committed = commitDocumentOps([{ type: 'add-audio-clip', shotId: latestShot.id, clip }], `Add ${asset.filename} to audio timeline`)
+    if (committed) {
+      setMediaSelection({ kind: 'audio', id })
+      publishWorkspaceOnly({ ...workspaceRef.current, selection: shotSelection([latestShot.id]), playhead: start })
+    }
+    return committed
+  }, [assetAvailability, commitDocumentOps, durableProject, publishWorkspaceOnly])
+
+  const replaceAudioClip = useCallback((clip: AudioClip, label: string) => {
+    const current = authorityRef.current
+    const latestShot = current.history.present.shots.find(({ id }) => id === current.workspace.activeShotId) ?? current.history.present.shots[0]
+    return commitDocumentOps([{ type: 'replace-audio-clip', shotId: latestShot.id, audioClipId: clip.id, clip }], label)
+  }, [commitDocumentOps])
+
+  const deleteAudioClip = useCallback((audioClipId: string) => {
+    const current = authorityRef.current
+    const latestShot = current.history.present.shots.find(({ id }) => id === current.workspace.activeShotId) ?? current.history.present.shots[0]
+    const committed = commitDocumentOps([{ type: 'delete-audio-clip', shotId: latestShot.id, audioClipId }], 'Delete audio clip')
+    if (committed) setMediaSelection(null)
+    return committed
+  }, [commitDocumentOps])
+
+  const splitAudioClip = useCallback((audioClipId: string) => {
+    const current = authorityRef.current
+    const latestProject = current.history.present
+    const latestShot = latestProject.shots.find(({ id }) => id === current.workspace.activeShotId) ?? latestProject.shots[0]
+    const rightClipId = allocateId('audio', collectProjectIds(latestProject), 'split')
+    const committed = commitDocumentOps([{
+      type: 'split-audio-clip',
+      shotId: latestShot.id,
+      audioClipId,
+      time: current.workspace.playhead,
+      rightClipId,
+    }], 'Split audio clip')
+    if (committed) setMediaSelection({ kind: 'audio', id: rightClipId })
+    return committed
+  }, [commitDocumentOps])
+
+  const replaceCaption = useCallback((clip: CaptionClip, label: string) => {
+    const current = authorityRef.current
+    const latestShot = current.history.present.shots.find(({ id }) => id === current.workspace.activeShotId) ?? current.history.present.shots[0]
+    return commitDocumentOps([{ type: 'replace-caption', shotId: latestShot.id, captionId: clip.id, clip }], label)
+  }, [commitDocumentOps])
+
+  const deleteCaption = useCallback((captionId: string) => {
+    const current = authorityRef.current
+    const latestShot = current.history.present.shots.find(({ id }) => id === current.workspace.activeShotId) ?? current.history.present.shots[0]
+    const committed = commitDocumentOps([{ type: 'delete-caption', shotId: latestShot.id, captionId }], 'Delete caption')
+    if (committed) setMediaSelection(null)
+    return committed
+  }, [commitDocumentOps])
+
+  const createCaption = useCallback(() => {
+    const current = authorityRef.current
+    const latestProject = current.history.present
+    const latestShot = latestProject.shots.find(({ id }) => id === current.workspace.activeShotId) ?? latestProject.shots[0]
+    const start = canonicalTimelineTime(Math.max(0, Math.min(latestShot.duration - 0.01, current.workspace.playhead)))
+    const end = canonicalTimelineTime(Math.min(latestShot.duration, start + Math.min(3, latestShot.duration)))
+    const clip: CaptionClip = {
+      id: allocateId('caption', collectProjectIds(latestProject), 'manual'),
+      start,
+      end,
+      text: 'New caption',
+      style: { position: 'bottom' },
+    }
+    const committed = commitDocumentOps([{ type: 'add-caption', shotId: latestShot.id, clip }], 'Create caption')
+    if (committed) setMediaSelection({ kind: 'caption', id: clip.id })
+    return committed
+  }, [commitDocumentOps])
+
+  const splitCaption = useCallback((captionId: string) => {
+    const current = authorityRef.current
+    const latestProject = current.history.present
+    const latestShot = latestProject.shots.find(({ id }) => id === current.workspace.activeShotId) ?? latestProject.shots[0]
+    const rightCaptionId = allocateId('caption', collectProjectIds(latestProject), 'split')
+    const committed = commitDocumentOps([{
+      type: 'split-caption',
+      shotId: latestShot.id,
+      captionId,
+      time: current.workspace.playhead,
+      rightCaptionId,
+    }], 'Split caption')
+    if (committed) setMediaSelection({ kind: 'caption', id: rightCaptionId })
+    return committed
+  }, [commitDocumentOps])
+
+  const createMarker = useCallback(() => {
+    const current = authorityRef.current
+    const latestProject = current.history.present
+    const latestShot = latestProject.shots.find(({ id }) => id === current.workspace.activeShotId) ?? latestProject.shots[0]
+    const marker: TimelineMarker = {
+      id: allocateId('marker', collectProjectIds(latestProject), 'narration'),
+      time: current.workspace.playhead,
+      name: `Narration cue ${latestShot.markers.length + 1}`,
+      color: (styleById(latestProject.styles, latestProject.activeStyleId) ?? latestProject.styles[0]).colors.warmAccent,
+    }
+    const committed = commitDocumentOps([{ type: 'add-marker', shotId: latestShot.id, marker }], 'Add narration marker')
+    if (committed) setMediaSelection({ kind: 'marker', id: marker.id })
+    return committed
+  }, [commitDocumentOps])
+
+  const importCaptionFile = useCallback(async (file: File) => {
+    try {
+      if (file.size > 512 * 1024) throw new Error('Caption files may contain at most 512 KiB')
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      const current = authorityRef.current
+      if (current.isPlaying) throw new Error('Pause sequence playback before importing captions')
+      const latestProject = current.history.present
+      const latestShot = latestProject.shots.find(({ id }) => id === current.workspace.activeShotId) ?? latestProject.shots[0]
+      const ids = collectProjectIds(latestProject)
+      const allocateCaptionId = ({ index }: { index: number }) => {
+        const id = allocateId('caption', ids, `import-${index + 1}`)
+        ids.add(id)
+        return id
+      }
+      const lower = file.name.toLowerCase()
+      const result = lower.endsWith('.vtt') || file.type === 'text/vtt'
+        ? importWebVttCaptions(bytes, { allocateId: allocateCaptionId })
+        : importSrtCaptions(bytes, { allocateId: allocateCaptionId })
+      if (!result.ok) throw new Error(result.diagnostic.message)
+      const outsideShot = result.clips.find(({ end }) => compareTimelineTimes(end, latestShot.duration) > 0)
+      if (outsideShot) throw new Error(`Caption ${outsideShot.id} ends after the active shot at ${latestShot.duration}s`)
+      if (!result.clips.length) throw new Error('The caption file contains no cues')
+      const operations: DocumentOperation[] = result.clips.map((clip) => ({ type: 'add-caption', shotId: latestShot.id, clip }))
+      if (commitDocumentOps(operations, `Import ${result.clips.length} ${result.format.toUpperCase()} captions`)) {
+        setMediaSelection({ kind: 'caption', id: result.clips[0].id })
+      }
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Captions could not be imported')
+    }
+  }, [commitDocumentOps])
+
+  const exportProjectCaptions = useCallback(() => {
+    const current = authorityRef.current
+    const latestProject = current.history.present
+    const result = exportSrtCaptions(projectSequenceCaptions(latestProject.shots))
+    if (!result.ok) {
+      setStatus(result.diagnostic.message)
+      return false
+    }
+    download(`${latestProject.metadata.title.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-|-$/g, '').toLowerCase() || 'proofcanvas-project'}.srt`, 'application/x-subrip;charset=utf-8', result.text)
+    setStatus(`Exported ${result.cueCount} project SRT caption${result.cueCount === 1 ? '' : 's'}`)
+    return true
+  }, [])
+
+  const publishUploadedAsset = useCallback((asset: AssetMetadata, savedBase: ProjectDocument, revision: number) => {
+    const current = authorityRef.current
+    const nextHistory = historyWithBoundAsset(current.history, asset)
+    const savedProject = projectWithBoundAsset(savedBase, asset)
+    serverRevisionRef.current = revision
+    setServerRevision(revision)
+    blockedSaveTuplesRef.current = []
+    lastSavedCanonicalRef.current = canonicalProjectJson(savedProject)
+    const nextWorkspace = reconcileEditorWorkspace(nextHistory.present, current.workspace)
+    publishEditorAuthority(nextHistory, nextWorkspace, 'pause', { status: `Imported ${asset.filename}` })
+    const caughtUp = canonicalProjectJson(nextHistory.present) === lastSavedCanonicalRef.current
+    setSaveState(caughtUp ? 'saved' : 'waiting')
+    setSaveMessage(caughtUp ? `Asset imported at revision ${revision}` : 'Asset imported; saving newer edits…')
+    setAssetAvailability((available) => ({ ...available, [asset.id]: true }))
+  }, [publishEditorAuthority])
+
+  const uploadProjectAssets = useCallback(async (files: FileList) => {
+    if (!durableProject || assetPending) {
+      setStatus('Asset import requires a durable owner project.')
+      return
+    }
+    const selectedFiles = Array.from(files)
+    setAssetPending(true)
+    try {
+      for (const file of selectedFiles) {
+        if (file.size < 1) throw new Error(`${file.name || 'Asset'} is empty`)
+        if (file.size > 64 * 1024 * 1024) throw new Error(`${file.name} exceeds the 64 MiB browser upload limit`)
+        await enqueueRevisionMutation(async () => {
+          if (!await drainDurableSaves()) throw new Error('Save the current project before importing an asset')
+          const expectedRevision = serverRevisionRef.current
+          const savedBase = historyRef.current.present
+          const token = await ensureCsrfToken()
+          let response: Response
+          let payload: unknown = null
+          try {
+            response = await fetch(`/api/projects/${encodeURIComponent(durableProject.projectId)}/assets`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': file.type || 'application/octet-stream',
+                'X-ProofCanvas-CSRF': token,
+                'X-ProofCanvas-Asset-Filename': encodeURIComponent(file.name),
+                'X-ProofCanvas-Expected-Revision': String(expectedRevision),
+                'X-ProofCanvas-Mutation-Id': window.crypto.randomUUID(),
+              },
+              body: file,
+            })
+            try { payload = await response.json() } catch { /* Receipt validation below owns malformed bodies. */ }
+          } catch (error) {
+            saveConflictRef.current = true
+            setSaveState('conflict')
+            throw new Error(`${error instanceof Error ? error.message : 'Asset upload response was lost'}. Reload to reconcile whether the asset committed.`)
+          }
+          if (!response.ok) {
+            if (response.status === 409 && ['revision_conflict', 'idempotency_conflict'].includes(responseCode(payload) ?? '')) {
+              saveConflictRef.current = true
+              setSaveState('conflict')
+            }
+            throw new Error(responseMessage(payload, `${file.name} could not be imported`))
+          }
+          const receipt = payload && typeof payload === 'object' ? payload as { ok?: unknown; asset?: unknown; project?: unknown; replayed?: unknown } : null
+          const projectReceipt = receipt?.project && typeof receipt.project === 'object' ? receipt.project as { projectId?: unknown; revision?: unknown; updatedAt?: unknown } : null
+          const parsedAsset = AssetMetadataSchema.safeParse(receipt?.asset)
+          if (receipt?.ok !== true
+            || typeof receipt.replayed !== 'boolean'
+            || !projectReceipt
+            || projectReceipt.projectId !== durableProject.projectId
+            || projectReceipt.revision !== expectedRevision + 1
+            || typeof projectReceipt.updatedAt !== 'string'
+            || !parsedAsset.success) {
+            saveConflictRef.current = true
+            setSaveState('conflict')
+            throw new Error('Asset upload returned an uncertain revision receipt. Reload the durable project before continuing')
+          }
+          publishUploadedAsset(parsedAsset.data, savedBase, projectReceipt.revision as number)
+          return true
+        })
+      }
+      setLibraryTab('media')
+    } catch (error) {
+      setSaveMessage(error instanceof Error ? error.message : 'Asset import failed')
+    } finally {
+      setAssetPending(false)
+    }
+  }, [assetPending, drainDurableSaves, durableProject, enqueueRevisionMutation, ensureCsrfToken, publishUploadedAsset])
+
+  const deleteProjectAsset = useCallback(async (assetId: string) => {
+    if (!durableProject || assetPending) return
+    const asset = historyRef.current.present.assets.find(({ id }) => id === assetId)
+    if (!asset) return setStatus('That asset is no longer available.')
+    if (projectReferencesAsset(historyRef.current.present, assetId)) return setStatus('Remove every canvas and audio clip that uses this asset before deleting it.')
+    if (!window.confirm(`Delete “${asset.filename}” from this project? This clears undo history because restored edits must not reference deleted asset metadata.`)) return
+    setAssetPending(true)
+    try {
+      await enqueueRevisionMutation(async () => {
+        if (!await drainDurableSaves()) throw new Error('Save the current project before deleting an asset')
+        const expectedRevision = serverRevisionRef.current
+        const savedBase = historyRef.current.present
+        let response: Response
+        let payload: unknown
+        try {
+          ({ response, payload } = await durableMutation(`/api/projects/${encodeURIComponent(durableProject.projectId)}/assets/${encodeURIComponent(assetId)}`, 'DELETE', {
+            expectedRevision,
+            mutationId: window.crypto.randomUUID(),
+          }))
+        } catch (error) {
+          saveConflictRef.current = true
+          setSaveState('conflict')
+          throw new Error(`${error instanceof Error ? error.message : 'Asset deletion response was lost'}. Reload to reconcile whether the deletion committed.`)
+        }
+        if (response.status === 409) {
+          saveConflictRef.current = true
+          setSaveState('conflict')
+        }
+        if (!response.ok) throw new Error(responseMessage(payload, 'Asset could not be deleted'))
+        const receipt = payload && typeof payload === 'object' ? payload as { ok?: unknown; project?: unknown; replayed?: unknown } : null
+        const projectReceipt = receipt?.project && typeof receipt.project === 'object' ? receipt.project as { projectId?: unknown; revision?: unknown; updatedAt?: unknown; assetId?: unknown } : null
+        if (receipt?.ok !== true || typeof receipt.replayed !== 'boolean' || !projectReceipt
+          || projectReceipt.projectId !== durableProject.projectId
+          || projectReceipt.revision !== expectedRevision + 1
+          || projectReceipt.assetId !== assetId
+          || typeof projectReceipt.updatedAt !== 'string') {
+          saveConflictRef.current = true
+          setSaveState('conflict')
+          throw new Error('Asset deletion returned an uncertain revision receipt. Reload the durable project before continuing')
+        }
+        const latest = historyRef.current.present
+        if (projectReferencesAsset(latest, assetId)) {
+          saveConflictRef.current = true
+          setSaveState('conflict')
+          throw new Error('The asset was referenced while deletion was in flight. Reload the durable project to reconcile the committed deletion')
+        }
+        const savedProject = projectWithoutAsset(savedBase, assetId)
+        const nextProject = projectWithoutAsset(latest, assetId)
+        const nextHistory = createHistory(nextProject)
+        serverRevisionRef.current = projectReceipt.revision as number
+        setServerRevision(projectReceipt.revision as number)
+        blockedSaveTuplesRef.current = []
+        lastSavedCanonicalRef.current = canonicalProjectJson(savedProject)
+        const current = authorityRef.current
+        publishEditorAuthority(nextHistory, reconcileEditorWorkspace(nextProject, current.workspace), 'pause', { status: `Deleted ${asset.filename}; undo history cleared` })
+        const caughtUp = canonicalProjectJson(nextProject) === lastSavedCanonicalRef.current
+        setSaveState(caughtUp ? 'saved' : 'waiting')
+        setSaveMessage(caughtUp ? `Asset deleted at revision ${projectReceipt.revision}` : 'Asset deleted; saving newer edits…')
+        setAssetAvailability((available) => { const next = { ...available }; delete next[assetId]; return next })
+        return true
+      })
+    } catch (error) {
+      setSaveMessage(error instanceof Error ? error.message : 'Asset could not be deleted')
+    } finally {
+      setAssetPending(false)
+    }
+  }, [assetPending, drainDurableSaves, durableMutation, durableProject, enqueueRevisionMutation, publishEditorAuthority])
 
   const insertShapePresetAt = useCallback((presetId: ShapePresetId, origin?: { x: number; y: number }) => {
     try {
@@ -1542,11 +2147,131 @@ export default function ProofCanvasEditor({
     if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return
     event.preventDefault()
     event.stopPropagation()
-    const index = STYLE_OPTIONS.findIndex(({ id }) => id === currentId)
+    const index = styleOptions.findIndex(({ id }) => id === currentId)
     const delta = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1
-    const next = STYLE_OPTIONS[(index + delta + STYLE_OPTIONS.length) % STYLE_OPTIONS.length]
+    const next = styleOptions[(index + delta + styleOptions.length) % styleOptions.length]
     selectOutputStyle(next.id, next.name)
     window.requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-style-surface="${surface}"][data-style-id="${next.id}"]`)?.focus())
+  }
+
+  const replaceStyle = (style: StylePack, label: string) => commitDocumentOps([
+    { type: 'replace-style', styleId: style.id, style: StylePackSchema.parse(style) },
+  ], label)
+
+  const duplicateStyle = (styleId: string, saveAsPreset = false) => {
+    try {
+      const latest = authorityRef.current.history.present
+      const source = latest.styles.find(({ id }) => id === styleId)
+      if (!source) throw new Error('The style is no longer available.')
+      const operation = duplicateStyleOperation(latest, styleId, saveAsPreset ? `${source.name} preset` : undefined)
+      const next = applyDocumentOperations(latest, [operation]).project
+      next.activeStyleId = operation.style.id
+      commitDocument(next, saveAsPreset ? `Save ${source.name} as a project preset` : `Duplicate ${source.name}`)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'The style could not be duplicated.')
+    }
+  }
+
+  const resetStylePreset = (styleId: string) => {
+    const baseline = styleById(DEFAULT_STYLE_PACKS, styleId)
+    if (!baseline) {
+      setStatus('Only a built-in starting style can be reset.')
+      return
+    }
+    replaceStyle(cloneSerializable(baseline), `Reset ${baseline.name} preset`)
+  }
+
+  const importStyle = (candidate: StylePack) => {
+    try {
+      const latest = authorityRef.current.history.present
+      const parsed = StylePackSchema.parse(candidate)
+      const occupied = collectProjectIds(latest)
+      const id = occupied.has(parsed.id) ? allocateId('style', occupied, parsed.name) : parsed.id
+      const style = StylePackSchema.parse({ ...parsed, id, origin: 'custom' })
+      const next = applyDocumentOperations(latest, [{ type: 'add-style', style }]).project
+      next.activeStyleId = style.id
+      if (commitDocument(next, `Import ${style.name} style`)) setStatus(`Imported and activated ${style.name}.`)
+    } catch (error) {
+      setStatus(error instanceof Error ? `Style import failed: ${error.message}` : 'Style import failed.')
+    }
+  }
+
+  const exportStyle = (style: StylePack) => {
+    const filename = `${style.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'proofcanvas-style'}.json`
+    download(filename, 'application/json', `${JSON.stringify(StylePackSchema.parse(style), null, 2)}\n`)
+    setStatus(`Exported ${style.name} style JSON.`)
+  }
+
+  const copyObjectStyle = () => {
+    if (!primary) {
+      setStatus('Select an object to copy its style.')
+      return
+    }
+    setObjectStyleClipboard(cloneSerializable(primary.style))
+    setStatus(`Copied ${primary.name} style overrides.`)
+  }
+
+  const pasteObjectStyle = () => {
+    if (!primary || !objectStyleClipboard) {
+      setStatus('Copy an object style before pasting.')
+      return
+    }
+    const latest = cloneSerializable(authorityRef.current.history.present)
+    const latestShot = latest.shots.find(({ id }) => id === authorityRef.current.workspace.activeShotId) ?? latest.shots[0]
+    const latestObject = latestShot.objects.find(({ id }) => id === primary.id)
+    if (!latestObject) {
+      setStatus('The selected object is no longer available.')
+      return
+    }
+    if (effectiveLockOwner(latestShot, latestObject)) {
+      setStatus('Unlock the selected object before pasting style overrides.')
+      return
+    }
+    latestObject.style = cloneSerializable(objectStyleClipboard)
+    commitDocument(latest, `Paste style onto ${latestObject.name}`)
+  }
+
+  const resetObjectStyle = () => {
+    if (!primary) {
+      setStatus('Select an object to reset its style.')
+      return
+    }
+    const latest = cloneSerializable(authorityRef.current.history.present)
+    const latestShot = latest.shots.find(({ id }) => id === authorityRef.current.workspace.activeShotId) ?? latest.shots[0]
+    const latestObject = latestShot.objects.find(({ id }) => id === primary.id)
+    if (!latestObject) {
+      setStatus('The selected object is no longer available.')
+      return
+    }
+    if (effectiveLockOwner(latestShot, latestObject)) {
+      setStatus('Unlock the selected object before resetting style overrides.')
+      return
+    }
+    latestObject.style = {}
+    commitDocument(latest, `Reset ${latestObject.name} to global style`)
+  }
+
+  const resetSvgFraming = () => {
+    if (!primary || primary.type !== 'svg') {
+      setStatus('Select an SVG object to reset its framing.')
+      return
+    }
+    const latest = cloneSerializable(authorityRef.current.history.present)
+    const latestShot = latest.shots.find(({ id }) => id === authorityRef.current.workspace.activeShotId) ?? latest.shots[0]
+    const latestObject = latestShot.objects.find(({ id }) => id === primary.id)
+    if (!latestObject || latestObject.type !== 'svg') {
+      setStatus('The selected SVG object is no longer available.')
+      return
+    }
+    if (effectiveLockOwner(latestShot, latestObject)) {
+      setStatus('Unlock the selected SVG before resetting its framing.')
+      return
+    }
+    latestObject.properties.fit = 'contain'
+    latestObject.properties.preserveAspectRatio = true
+    delete latestObject.properties.crop
+    delete latestObject.properties.mask
+    commitDocument(latest, `Reset ${latestObject.name} to render-safe SVG framing`)
   }
 
   const commitPatch = (patch: Extract<SceneOperation, { type: 'update-object' }>['patch'], label: string) => {
@@ -1865,6 +2590,7 @@ export default function ProofCanvasEditor({
       setStatus(started.diagnostic.message)
       return
     }
+    audioPlaybackRef.current?.beginFromUserGesture()
     publishEditorAuthority(current.history, started.workspace, 'play', { invalidateAi: false, status: started.globalTime === 0 ? 'Sequence playing from start' : 'Sequence playing' })
   }, [materializeLiveWorkspace, publishEditorAuthority])
 
@@ -1940,12 +2666,14 @@ export default function ProofCanvasEditor({
       return false
     }
     if (resolved.workspace === current.workspace && resolved.playback === 'preserve') return true
+    setMediaSelection(null)
     publishEditorAuthority(current.history, resolved.workspace, resolved.playback, { invalidateAi: false, status: `Selected ${current.history.present.shots.find(({ id }) => id === shotId)?.name ?? 'shot'}` })
     invalidateAiContext()
     return true
   }, [invalidateAiContext, materializeLiveWorkspace, publishEditorAuthority])
 
   const resetWorkspaceToShot = useCallback((shotId: string, nextPlayhead = 0) => {
+    setMediaSelection(null)
     const current = authorityRef.current
     publishEditorAuthority(current.history, { activeShotId: shotId, selection: shotSelection([shotId]), playhead: nextPlayhead }, 'pause', { invalidateAi: false })
     invalidateAiContext()
@@ -2289,6 +3017,74 @@ export default function ProofCanvasEditor({
     }
   }
 
+  const cancelRender = async () => {
+    const current = renderJob
+    if (!current || (current.status !== 'pending' && current.status !== 'running') || renderActionPending) return
+    setRenderActionPending('cancel')
+    setRendererMessage('')
+    try {
+      const token = await ensureCsrfToken()
+      const response = await fetch(`/api/proofcanvas/render/${encodeURIComponent(current.id)}`, {
+        method: 'DELETE',
+        headers: { 'X-ProofCanvas-CSRF': token },
+      })
+      let payload: unknown = null
+      try { payload = await response.json() } catch { /* HTTP status still owns the actionable failure. */ }
+      if (!response.ok || !payload || typeof payload !== 'object' || (payload as { ok?: unknown }).ok !== true) {
+        throw new Error(responseMessage(payload, 'The Manim render could not be cancelled'))
+      }
+      const next = renderJobFromPayload((payload as { job?: unknown }).job)
+      if (next.id !== current.id || next.sourceSha256 !== current.sourceSha256 || next.status !== 'cancelled') {
+        throw new Error('Renderer returned an invalid cancellation receipt')
+      }
+      setRenderJob(next)
+      setRenderPollFailures(0)
+      setRenderPollingPaused(false)
+      setStatus('Manim render cancelled')
+    } catch (error) {
+      setRendererMessage(error instanceof Error ? error.message : 'The Manim render could not be cancelled')
+    } finally {
+      setRenderActionPending(null)
+    }
+  }
+
+  const downloadRenderStill = async () => {
+    const current = renderJob
+    if (!current || current.status !== 'succeeded' || !renderRepresentsCurrentProject || renderActionPending) return
+    setRenderActionPending('still')
+    setRendererMessage('')
+    try {
+      const response = await fetch(`/api/proofcanvas/render/${encodeURIComponent(current.id)}/still?time=${encodeURIComponent(String(pausedGlobalTime))}`, { cache: 'no-store' })
+      if (!response.ok) {
+        let payload: unknown = null
+        try { payload = await response.json() } catch { /* HTTP status still owns the actionable failure. */ }
+        throw new Error(responseMessage(payload, 'A still could not be exported at the current playhead'))
+      }
+      const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
+      const bytes = Number(response.headers.get('content-length'))
+      const sourceSha256 = response.headers.get('x-proofcanvas-source-sha256') ?? ''
+      const stillSha256 = response.headers.get('x-proofcanvas-still-sha256') ?? ''
+      const actualTime = Number(response.headers.get('x-proofcanvas-still-time'))
+      if (
+        contentType !== 'image/png'
+        || !Number.isSafeInteger(bytes) || bytes < 32 || bytes > 16 * 1024 * 1024
+        || sourceSha256 !== current.sourceSha256
+        || !/^[0-9a-f]{64}$/.test(stillSha256)
+        || !Number.isFinite(actualTime) || actualTime < 0 || actualTime > 300
+      ) throw new Error('Renderer returned an invalid still image')
+      const blob = await response.blob()
+      if (blob.size !== bytes || blob.type.split(';', 1)[0].trim().toLowerCase() !== 'image/png') {
+        throw new Error('Renderer returned an invalid still image')
+      }
+      downloadBlob(`proofcanvas-still-${actualTime.toFixed(3)}s.png`, blob)
+      setStatus(`Still PNG exported at ${actualTime.toFixed(3)} seconds`)
+    } catch (error) {
+      setRendererMessage(error instanceof Error ? error.message : 'A still could not be exported at the current playhead')
+    } finally {
+      setRenderActionPending(null)
+    }
+  }
+
   const applyProposal = () => {
     if (!proposal) return
     if (!proposalBase || proposalBase.revision !== projectRevision || proposalBase.shotId !== shot.id) {
@@ -2447,11 +3243,8 @@ export default function ProofCanvasEditor({
   }
 
   const resetDemo = () => {
-    const source = createCantorDemoProject()
-    const demo = durableProject ? ProjectDocumentSchema.parse({
-      ...source,
-      metadata: { ...source.metadata, id: durableProject.projectId, title: project.metadata.title, createdAt: project.metadata.createdAt, updatedAt: project.metadata.updatedAt },
-    }) : source
+    if (durableProject) return
+    const demo = createCantorV1Project()
     if (commitDocument(demo, 'Reset to preloaded demo')) { resetWorkspaceToShot(demo.shots[0].id, INITIAL_DEMO_PLAYHEAD); setCritique(null) }
   }
 
@@ -2470,6 +3263,14 @@ export default function ProofCanvasEditor({
       const raw = await file.text()
       if (requestId !== importRequestSequence.current) return
       const loaded = parseProjectDocument(raw)
+      if (durableProject) {
+        if (loaded.metadata.id !== durableProject.projectId || loaded.metadata.id !== project.metadata.id) {
+          throw new Error('This JSON belongs to a different project. Use the dashboard .proofcanvas import to create it as a new project with its bundled assets.')
+        }
+        if (JSON.stringify(loaded.assets) !== JSON.stringify(project.assets)) {
+          throw new Error('Project JSON cannot change durable asset authority. Use the dashboard .proofcanvas import to create a new project with its bundled asset bytes.')
+        }
+      }
       const graphIssues = projectGraphAuthoringIssues(loaded)
       if (graphIssues.length) throw new Error(`Imported projects may not introduce invalid graph geometry: ${graphIssues[0].code}, object ${graphIssues[0].objectId}. ${graphIssues[0].message}`)
       if (requestId !== importRequestSequence.current) return
@@ -2491,11 +3292,115 @@ export default function ProofCanvasEditor({
     setExportPreview({ title, contents, diagnostics })
   }
   const exportJson = () => { const contents = canonicalProjectJson(project); showExportPreview('Project JSON', contents); download('uncountable-yet-zero-length.proofcanvas.json', 'application/json', contents) }
+  const exportProjectPackage = async () => {
+    if (!durableProject) {
+      setStatus('Project packages are available after the sample is saved in the private owner workspace.')
+      return
+    }
+    if (packagePending) return
+    setPackagePending(true)
+    try {
+      if (!await flushDurableSaves()) throw new Error('Resolve the current autosave before exporting a package')
+      const response = await fetch(`/api/projects/${encodeURIComponent(durableProject.projectId)}/package`, { cache: 'no-store' })
+      if (!response.ok) {
+        let payload: unknown = null
+        try { payload = await response.json() } catch { /* Preserve the status-backed fallback. */ }
+        throw new Error(responseMessage(payload, 'Project package export failed'))
+      }
+      const mediaType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
+      const declaredLength = Number(response.headers.get('content-length'))
+      const packageHash = response.headers.get('x-proofcanvas-package-sha256')
+      if (mediaType !== PROOFCANVAS_PROJECT_PACKAGE_MEDIA_TYPE
+        || !Number.isSafeInteger(declaredLength)
+        || declaredLength <= 0
+        || !packageHash
+        || !/^[a-f0-9]{64}$/.test(packageHash)) throw new Error('Project package export returned invalid integrity metadata')
+      const blob = await response.blob()
+      if (blob.size !== declaredLength || blob.size > PROOFCANVAS_PROJECT_PACKAGE_LIMITS.maxArchiveBytes) throw new Error('Project package export size did not match its receipt')
+      const safeTitle = project.metadata.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || project.metadata.id
+      downloadBlob(`${safeTitle}${PROOFCANVAS_PROJECT_PACKAGE_EXTENSION}`, blob)
+      setStatus(`Exported revision ${response.headers.get('x-proofcanvas-source-revision') ?? serverRevisionRef.current} package · ${packageHash.slice(0, 12)}…`)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Project package export failed.')
+    } finally {
+      setPackagePending(false)
+    }
+  }
+
+  const importProjectPackage = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0]
+    event.currentTarget.value = ''
+    setOwnerMenuOpen(false)
+    if (!file || packagePending) return
+    if (!durableProject) {
+      setStatus('Sign in to the private owner workspace before importing a project package.')
+      return
+    }
+    if (file.size <= 0 || file.size > PROOFCANVAS_PROJECT_PACKAGE_LIMITS.maxArchiveBytes) {
+      setStatus(`Project package must be between 1 byte and ${Math.floor(PROOFCANVAS_PROJECT_PACKAGE_LIMITS.maxArchiveBytes / 1024 / 1024)} MiB.`)
+      return
+    }
+    setPackagePending(true)
+    let mutationId: string | null = null
+    try {
+      if (!await flushDurableSaves()) throw new Error('Resolve the current autosave before importing another project')
+      const token = await ensureCsrfToken()
+      const packageBytes = await file.arrayBuffer()
+      if (packageBytes.byteLength !== file.size || packageBytes.byteLength > PROOFCANVAS_PROJECT_PACKAGE_LIMITS.maxArchiveBytes) {
+        throw new Error('Project package bytes did not match the validated file size')
+      }
+      const packageSha256 = await browserSha256Hex(packageBytes)
+      const attemptKey = `${packageBytes.byteLength}\u0000${packageSha256}`
+      mutationId = packageImportMutationIdsRef.current.get(attemptKey) ?? null
+      if (!mutationId) {
+        mutationId = `package-${window.crypto.randomUUID()}`
+        if (packageImportMutationIdsRef.current.size >= 8) packageImportMutationIdsRef.current.delete(packageImportMutationIdsRef.current.keys().next().value ?? '')
+        packageImportMutationIdsRef.current.set(attemptKey, mutationId)
+      }
+      const response = await fetch('/api/projects/import', {
+        method: 'POST',
+        headers: {
+          'Content-Type': PROOFCANVAS_PROJECT_PACKAGE_MEDIA_TYPE,
+          'X-ProofCanvas-CSRF': token,
+          'x-proofcanvas-mutation-id': mutationId,
+        },
+        body: packageBytes,
+      })
+      let payload: unknown = null
+      try { payload = await response.json() } catch { /* The status-backed failure remains actionable. */ }
+      if (!response.ok || !payload || typeof payload !== 'object' || (payload as { ok?: unknown }).ok !== true) {
+        throw new Error(responseMessage(payload, 'Project package import failed'))
+      }
+      const receipt = (payload as { project?: unknown }).project
+      const importedId = receipt && typeof receipt === 'object' ? (receipt as { projectId?: unknown }).projectId : null
+      const url = receipt && typeof receipt === 'object' ? (receipt as { url?: unknown }).url : null
+      if (typeof importedId !== 'string' || typeof url !== 'string' || url !== `/projects/${encodeURIComponent(importedId)}`) {
+        throw new Error('Project package import returned an invalid project receipt')
+      }
+      setPackagePending(false)
+      window.location.assign(url)
+    } catch (error) {
+      const retryGuidance = mutationId
+        ? 'Retrying the same package bytes reuses its mutation ID.'
+        : 'No package import was submitted.'
+      setStatus(`${error instanceof Error ? error.message : 'Project package import failed.'} ${retryGuidance}`)
+      setPackagePending(false)
+    }
+  }
   const exportPython = () => {
-    const result = compileManim(project)
-    const diagnostics = result.diagnostics.map((diagnostic) => `${diagnostic.severity.toUpperCase()} ${diagnostic.code}: ${diagnostic.message}${diagnostic.objectId ? ` · object ${diagnostic.objectId}` : ''}${diagnostic.animationId ? ` · animation ${diagnostic.animationId}` : ''}`)
-    showExportPreview(`Manim Python${diagnostics.length ? ` · ${diagnostics.length} diagnostics` : ''}`, result.python, diagnostics)
-    if (!result.diagnostics.some(({ severity }) => severity === 'error')) download('uncountable_yet_zero_length.py', 'text/x-python', result.python)
+    const hasAudio = project.shots.some(({ audioClips }) => audioClips.length > 0)
+    const result = compileManim(project, { audioTransport: hasAudio })
+    const python = hasAudio
+      ? result.python.replace('import math\n', 'import math\n# Audio is muxed separately by ProofCanvas and is not embedded in this visual source export.\n')
+      : result.python
+    const exportDiagnostics = hasAudio ? [{
+      severity: 'warning' as const,
+      code: 'AUDIO_EXTERNAL_MUX_NOT_EMBEDDED',
+      message: 'The readable Manim source is visual-only. ProofCanvas transports and muxes authored audio separately during MP4 rendering.',
+    }, ...result.diagnostics] : result.diagnostics
+    const diagnostics = exportDiagnostics.map((diagnostic) => `${diagnostic.severity.toUpperCase()} ${diagnostic.code}: ${diagnostic.message}${diagnostic.objectId ? ` · object ${diagnostic.objectId}` : ''}${diagnostic.animationId ? ` · animation ${diagnostic.animationId}` : ''}`)
+    showExportPreview(`Manim Python${diagnostics.length ? ` · ${diagnostics.length} diagnostics` : ''}`, python, diagnostics)
+    if (!exportDiagnostics.some(({ severity }) => severity === 'error')) download('uncountable_yet_zero_length.py', 'text/x-python', python)
   }
 
   const openUtilityDialog = (dialog: 'settings' | 'shortcuts' | 'render-export') => {
@@ -2518,6 +3423,7 @@ export default function ProofCanvasEditor({
 
   const updateProjectSettings = (patch: Partial<Pick<ProjectDocument['settings'], 'aspectRatio' | 'frameRate' | 'renderPreset' | 'previewQuality'>>) => {
     const latest = historyRef.current.present
+    const changesAspect = patch.aspectRatio !== undefined && patch.aspectRatio !== latest.settings.aspectRatio
     const settings = {
       aspectRatio: patch.aspectRatio ?? latest.settings.aspectRatio,
       frameRate: patch.frameRate ?? latest.settings.frameRate,
@@ -2525,11 +3431,39 @@ export default function ProofCanvasEditor({
       previewQuality: patch.previewQuality ?? latest.settings.previewQuality,
     }
     try {
-      const next = applyDocumentOperations(latest, [{ type: 'set-project-settings', settings, cameraPolicy: 'recenter-default' }]).project
+      const cameraPolicy = changesAspect ? aspectConversionPolicy : 'recenter-default'
+      const next = applyDocumentOperations(latest, [{ type: 'set-project-settings', settings, cameraPolicy }]).project
       commitDocument(next, 'Update project settings')
+      if (changesAspect) {
+        setEditorCanvasZoom(1)
+        if (settings.aspectRatio === '9:16') setTimelineHeight((height) => Math.min(height, PORTRAIT_TIMELINE_HEIGHT))
+        setStatus(cameraPolicy === 'fit-all'
+          ? `Changed to ${settings.aspectRatio} and fitted authored geometry inside the new frame.`
+          : `Changed to ${settings.aspectRatio} while preserving authored coordinates; review the frame safety report.`)
+      }
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Project settings could not be updated')
     }
+  }
+
+  const toggleCanvasFocusMode = () => {
+    if (canvasFocusMode) {
+      const restore = canvasFocusRestoreRef.current
+      setLeftPanelCollapsed(restore.left)
+      setRightPanelCollapsed(restore.right)
+      setTimelineCollapsed(restore.timeline)
+      setCanvasFocusMode(false)
+      return
+    }
+    canvasFocusRestoreRef.current = {
+      left: leftPanelCollapsed,
+      right: rightPanelCollapsed,
+      timeline: timelineCollapsed,
+    }
+    setLeftPanelCollapsed(true)
+    setRightPanelCollapsed(true)
+    setTimelineCollapsed(true)
+    setCanvasFocusMode(true)
   }
 
   const guardedLeave = async (destination: '/' | '/login', logout = false) => {
@@ -2951,7 +3885,7 @@ export default function ProofCanvasEditor({
   }
 
   return (
-    <div className="proofcanvas-app" role="application" aria-label="ProofCanvas editor" aria-busy={leavePending} data-testid="proofcanvas-editor" data-pc-editor data-project-id={project.metadata.id} data-schema-version={project.schemaVersion} data-active-shot-id={shot.id} data-selection-kind={selection.kind} data-history-past-count={history.past.length} data-history-future-count={history.future.length} data-durable={durableProject ? 'true' : 'false'} data-server-revision={durableProject ? serverRevision : undefined} data-save-state={durableProject ? saveState : undefined} data-left-collapsed={leftPanelCollapsed ? 'true' : 'false'} data-right-collapsed={rightPanelCollapsed ? 'true' : 'false'} data-timeline-collapsed={timelineCollapsed ? 'true' : 'false'} style={{ '--pc-left-width': leftPanelCollapsed ? '0px' : `${leftPanelWidth}px`, '--pc-right-width': rightPanelCollapsed ? '0px' : `${rightPanelWidth}px`, '--pc-timeline-height': timelineCollapsed ? '150px' : `${timelineHeight}px` } as CSSProperties}>
+    <div className="proofcanvas-app" role="application" aria-label="ProofCanvas editor" aria-busy={leavePending} data-testid="proofcanvas-editor" data-pc-editor data-project-id={project.metadata.id} data-schema-version={project.schemaVersion} data-active-shot-id={shot.id} data-selection-kind={selection.kind} data-history-past-count={history.past.length} data-history-future-count={history.future.length} data-durable={durableProject ? 'true' : 'false'} data-server-revision={durableProject ? serverRevision : undefined} data-save-state={durableProject ? saveState : undefined} data-left-collapsed={leftPanelCollapsed ? 'true' : 'false'} data-right-collapsed={rightPanelCollapsed ? 'true' : 'false'} data-timeline-collapsed={timelineCollapsed ? 'true' : 'false'} data-canvas-focus={canvasFocusMode ? 'true' : 'false'} style={{ '--pc-left-width': leftPanelCollapsed ? '0px' : `${leftPanelWidth}px`, '--pc-right-width': rightPanelCollapsed ? '0px' : `${rightPanelWidth}px`, '--pc-timeline-height': timelineCollapsed ? '150px' : `${timelineHeight}px` } as CSSProperties}>
       <div className="pc-desktop-notice" aria-label="Desktop viewport required"><strong>A wider workspace is required</strong><span>ProofCanvas is a desktop editor. Use a viewport at least 1024 px wide; your project remains safely autosaved.</span></div>
       <header className="pc-header" role="group" aria-label="Project actions">
         <a href="/" className="pc-back-link" aria-label="Back to projects" aria-disabled={leavePending} onClick={(event) => { event.preventDefault(); void guardedLeave('/') }}>←</a>
@@ -2967,7 +3901,7 @@ export default function ProofCanvasEditor({
           <button type="button" onClick={() => openUtilityDialog('shortcuts')} aria-label="Keyboard shortcuts">Shortcuts</button>
           <button ref={commandButtonRef} type="button" onClick={() => commandController.execute('open-command-palette')} aria-label="Open command palette" title="Command palette · Ctrl/Cmd K">Commands</button>
           <button type="button" className="pc-primary" onClick={() => commandController.execute('open-render-export')} aria-label="Render or export">Render / export</button>
-          <details ref={ownerMenuRef} className="pc-owner-menu" open={ownerMenuOpen}><summary ref={ownerMenuTriggerRef} aria-label="Owner menu" aria-expanded={ownerMenuOpen} onClick={(event) => { event.preventDefault(); setOwnerMenuOpen((value) => !value) }}><span aria-hidden="true">LW</span><b>Owner</b></summary><div aria-label="Owner and project actions"><p><strong>{durableProject ? 'Private owner workspace' : 'Local demonstration'}</strong><span>{durableProject ? `Project revision ${serverRevision}` : 'Browser-only save'}</span></p><button type="button" onClick={() => { setOwnerMenuOpen(false); saveProject() }} aria-label="Save project">Save now</button>{durableProject ? <><button type="button" onClick={() => { setOwnerMenuOpen(false); void createCheckpoint() }} disabled={checkpointPending || saveState === 'conflict'} aria-label="Create checkpoint">Create checkpoint</button><button type="button" onClick={() => { setOwnerMenuOpen(false); loadProject() }} disabled={checkpointPending} aria-label="Open project recovery">Project recovery</button></> : <button type="button" onClick={() => { setOwnerMenuOpen(false); loadProject() }} aria-label="Load saved project">Load local project</button>}<label className="pc-file-label">Import project…<input type="file" accept="application/json,.json" onChange={(event) => { setOwnerMenuOpen(false); void importJson(event) }} aria-label="Import project JSON" /></label><button type="button" onClick={() => { setOwnerMenuOpen(false); resetDemo() }}>Reset sample project</button>{durableProject && <button type="button" onClick={() => void logoutOwner()} disabled={leavePending}>Log out</button>}</div></details>
+          <details ref={ownerMenuRef} className="pc-owner-menu" open={ownerMenuOpen}><summary ref={ownerMenuTriggerRef} aria-label="Owner menu" aria-expanded={ownerMenuOpen} onClick={(event) => { event.preventDefault(); setOwnerMenuOpen((value) => !value) }}><span aria-hidden="true">LW</span><b>Owner</b></summary><div aria-label="Owner and project actions"><p><strong>{durableProject ? 'Private owner workspace' : 'Local demonstration'}</strong><span>{durableProject ? `Project revision ${serverRevision}` : 'Browser-only save'}</span></p><button type="button" onClick={() => { setOwnerMenuOpen(false); saveProject() }} aria-label="Save project">Save now</button>{durableProject ? <><button type="button" onClick={() => { setOwnerMenuOpen(false); void createCheckpoint() }} disabled={checkpointPending || saveState === 'conflict'} aria-label="Create checkpoint">Create checkpoint</button><button type="button" onClick={() => { setOwnerMenuOpen(false); loadProject() }} disabled={checkpointPending} aria-label="Open project recovery">Project recovery</button><label className="pc-file-label">Import .proofcanvas…<input type="file" accept={PROOFCANVAS_PROJECT_PACKAGE_EXTENSION} disabled={packagePending} onChange={(event) => void importProjectPackage(event)} aria-label="Import ProofCanvas package" /></label></> : <button type="button" onClick={() => { setOwnerMenuOpen(false); loadProject() }} aria-label="Load saved project">Load local project</button>}<label className="pc-file-label">Import project JSON…<input type="file" accept="application/json,.json" onChange={(event) => { setOwnerMenuOpen(false); void importJson(event) }} aria-label="Import project JSON" /></label>{!durableProject && <button type="button" onClick={() => { setOwnerMenuOpen(false); resetDemo() }}>Reset sample project</button>}{durableProject && <button type="button" onClick={() => void logoutOwner()} disabled={leavePending}>Log out</button>}</div></details>
         </div>
       </header>
 
@@ -2977,7 +3911,7 @@ export default function ProofCanvasEditor({
 
       <aside className="pc-left" aria-label="Object and layer library">
         <section className="pc-library-section"><div className="pc-section-heading"><div><span>Insert</span><h2>Library</h2></div><button type="button" onClick={() => setLeftPanelCollapsed(true)} aria-label="Collapse library panel">‹</button></div><div role="tablist" aria-label="Insert library" className="pc-library-tabs">{LIBRARY_TABS.map((tab) => <button type="button" role="tab" key={tab} aria-selected={libraryTab === tab} tabIndex={libraryTab === tab ? 0 : -1} data-library-tab={tab} onKeyDown={(event) => selectLibraryTab(event, tab)} onClick={() => { setLibraryTab(tab); setLibrarySearch('') }}>{tab[0].toUpperCase() + tab.slice(1)}</button>)}</div>
-          {libraryTab !== 'styles' && <label className="pc-library-search"><span className="pc-visually-hidden">Search library</span><input type="search" aria-label="Search library" placeholder={`Search ${libraryTab}`} value={librarySearch} onChange={(event) => setLibrarySearch(event.target.value)}/><span aria-hidden="true">⌕</span></label>}
+          {libraryTab !== 'styles' && libraryTab !== 'media' && <label className="pc-library-search"><span className="pc-visually-hidden">Search library</span><input type="search" aria-label="Search library" placeholder={`Search ${libraryTab}`} value={librarySearch} onChange={(event) => setLibrarySearch(event.target.value)}/><span aria-hidden="true">⌕</span></label>}
           {(['text', 'math', 'graphs'] as LibraryTab[]).includes(libraryTab) && <div className="pc-insert-grid">{visibleObjectTypes.map(({ type, label }) => <button key={type} type="button" onClick={() => insertObject(type)} disabled={isPlaying} aria-label={`Add ${label}`} data-object-type={type}><span aria-hidden="true">{type === 'text' ? 'T' : type === 'math' ? '∑' : type === 'brace' ? '⏟' : type === 'axes' ? '⌗' : 'ƒ'}</span><b>{label}</b></button>)}{visibleObjectTypes.length === 0 && <p className="pc-library-empty" role="status">No {libraryTab} items match “{librarySearch}”.</p>}</div>}
           {libraryTab === 'shapes' && <div className="pc-shape-preset-grid" data-shape-preset-count={SHAPE_PRESETS.length}>{visibleShapePresets.map((preset) => <button
             key={preset.id}
@@ -3025,7 +3959,40 @@ export default function ProofCanvasEditor({
             data-component-id={component.id}
             data-dragging={draggedComponentId === component.id ? 'true' : 'false'}
           ><b>{component.name}</b><small>{component.description}</small></button>)}{visibleComponents.length === 0 && <p className="pc-library-empty" role="status">No components match “{librarySearch}”.</p>}</div>}
-          {libraryTab === 'styles' && <div className="pc-style-library" role="radiogroup" aria-label="Library output styles"><button type="button" role="radio" aria-checked={project.activeStyleId === EDITORIAL_INK_STYLE_ID} tabIndex={project.activeStyleId === EDITORIAL_INK_STYLE_ID ? 0 : -1} disabled={isPlaying} data-style-surface="library" data-style-id={EDITORIAL_INK_STYLE_ID} onKeyDown={(event) => navigateStyleRadios(event, EDITORIAL_INK_STYLE_ID, 'library')} onClick={() => selectOutputStyle(EDITORIAL_INK_STYLE_ID, 'Editorial Ink')}><i data-style-swatch="editorial"/><span><b>Editorial Ink</b><small>Warm restrained proof-film system</small></span></button><button type="button" role="radio" aria-checked={project.activeStyleId === RAW_MANIM_STYLE_ID} tabIndex={project.activeStyleId === RAW_MANIM_STYLE_ID ? 0 : -1} disabled={isPlaying} data-style-surface="library" data-style-id={RAW_MANIM_STYLE_ID} onKeyDown={(event) => navigateStyleRadios(event, RAW_MANIM_STYLE_ID, 'library')} onClick={() => selectOutputStyle(RAW_MANIM_STYLE_ID, 'Raw Manim')}><i data-style-swatch="raw"/><span><b>Raw Manim</b><small>Direct geometric defaults</small></span></button></div>}
+          {libraryTab === 'media' && <MediaLibrary
+            projectId={project.metadata.id}
+            assets={availableProjectAssets}
+            disabled={isPlaying || assetPending}
+            pending={assetPending}
+            durable={Boolean(durableProject)}
+            onUpload={(files) => void uploadProjectAssets(files)}
+            onInsertVisual={insertVisualAsset}
+            onAddAudio={(assetId) => { addAudioAsset(assetId, playhead) }}
+            onDelete={(assetId) => void deleteProjectAsset(assetId)}
+            onImportCaptions={(file) => void importCaptionFile(file)}
+            onCreateCaption={() => { createCaption() }}
+            onExportCaptions={() => { exportProjectCaptions() }}
+            onCreateMarker={() => { createMarker() }}
+          />}
+          {libraryTab === 'styles' && <StyleLab
+            styles={project.styles}
+            activeStyleId={project.activeStyleId}
+            selectedObject={primary}
+            disabled={isPlaying}
+            canPasteObjectStyle={Boolean(objectStyleClipboard)}
+            canResetPreset={Boolean(styleById(DEFAULT_STYLE_PACKS, project.activeStyleId))}
+            onActivate={selectOutputStyle}
+            onReplace={replaceStyle}
+            onDuplicate={(styleId) => duplicateStyle(styleId)}
+            onSavePreset={(styleId) => duplicateStyle(styleId, true)}
+            onResetPreset={resetStylePreset}
+            onImport={importStyle}
+            onExport={exportStyle}
+            onCopyObjectStyle={copyObjectStyle}
+            onPasteObjectStyle={pasteObjectStyle}
+            onResetObjectStyle={resetObjectStyle}
+            onNotice={setStatus}
+          />}
         </section>
         <section className="pc-layer-section"><div className="pc-section-heading"><h2>Layers</h2><span>{shot.objects.length}</span></div>
           <div className="pc-layer-actions" aria-label="Layer actions">
@@ -3040,21 +4007,23 @@ export default function ProofCanvasEditor({
         <div className="pc-canvas-toolbar">
           <div className="pc-panel-toggles"><button type="button" onClick={() => setLeftPanelCollapsed((value) => !value)} aria-pressed={!leftPanelCollapsed} aria-label={leftPanelCollapsed ? 'Show library panel' : 'Hide library panel'}>Library</button><span>{project.settings.aspectRatio} · {project.settings.resolution.width}×{project.settings.resolution.height}</span></div>
           <div role="radiogroup" aria-label="Active output style" className="pc-canvas-style">
-            <label><input type="radio" name="preview-style" value={EDITORIAL_INK_STYLE_ID} checked={project.activeStyleId === EDITORIAL_INK_STYLE_ID} tabIndex={project.activeStyleId === EDITORIAL_INK_STYLE_ID ? 0 : -1} disabled={isPlaying} data-style-surface="canvas" data-style-id={EDITORIAL_INK_STYLE_ID} onKeyDown={(event) => navigateStyleRadios(event, EDITORIAL_INK_STYLE_ID, 'canvas')} onChange={() => selectOutputStyle(EDITORIAL_INK_STYLE_ID, 'Editorial Ink')}/>Editorial Ink</label>
-            <label><input type="radio" name="preview-style" value={RAW_MANIM_STYLE_ID} checked={project.activeStyleId === RAW_MANIM_STYLE_ID} tabIndex={project.activeStyleId === RAW_MANIM_STYLE_ID ? 0 : -1} disabled={isPlaying} data-style-surface="canvas" data-style-id={RAW_MANIM_STYLE_ID} onKeyDown={(event) => navigateStyleRadios(event, RAW_MANIM_STYLE_ID, 'canvas')} onChange={() => selectOutputStyle(RAW_MANIM_STYLE_ID, 'Raw Manim')}/>Raw Manim</label>
+            {styleOptions.map(({ id, name }) => <label key={id}><input type="radio" name="preview-style" value={id} checked={project.activeStyleId === id} tabIndex={project.activeStyleId === id ? 0 : -1} disabled={isPlaying} data-style-surface="canvas" data-style-id={id} onKeyDown={(event) => navigateStyleRadios(event, id, 'canvas')} onChange={() => selectOutputStyle(id, name)}/>{name}</label>)}
           </div>
           <div className="pc-align-actions" aria-label="Alignment actions">
             {(['left','center-x','right','top','center-y','bottom'] as const).map((value) => { const labels = { left: 'Align left', 'center-x': 'Align horizontal centres', right: 'Align right', top: 'Align top', 'center-y': 'Align vertical centres', bottom: 'Align bottom' }; return <button type="button" key={value} onClick={() => align(value)} disabled={isPlaying || selectedRootIds.length < 2} aria-label={labels[value]}>{value.replace('center-', 'mid ')}</button> })}
             <button type="button" onClick={() => distribute('horizontal')} disabled={isPlaying || selectedRootIds.length < 3} aria-label="Distribute horizontally">Distribute H</button><button type="button" onClick={() => distribute('vertical')} disabled={isPlaying || selectedRootIds.length < 3} aria-label="Distribute vertically">Distribute V</button>
           </div>
+          <label className="pc-editor-zoom">Canvas<select aria-label="Editor canvas zoom" value={editorCanvasZoom} onChange={(event) => setEditorCanvasZoom(Number(event.target.value))}>{EDITOR_CANVAS_ZOOMS.map((zoom) => <option key={zoom} value={zoom}>{zoom === 1 ? 'Fit' : `${Math.round(zoom * 100)}%`}</option>)}</select></label>
+          <button type="button" onClick={toggleCanvasFocusMode} aria-pressed={canvasFocusMode} aria-label={canvasFocusMode ? 'Restore editor panels' : 'Focus canvas'}>{canvasFocusMode ? 'Restore' : 'Focus'}</button>
           <button type="button" onClick={() => setRightPanelCollapsed((value) => !value)} aria-pressed={!rightPanelCollapsed} aria-label={rightPanelCollapsed ? 'Show inspector panel' : 'Hide inspector panel'}>Inspector</button>
         </div>
-        <IsolatedCanvasStage clock={playbackClockRef.current} isPlaying={isPlaying} pausedPlayhead={playhead} previewStyleId={previewStyle.id} project={project} projectRevision={projectRevision} shot={shot} previewStyle={previewStyle} previewQuality={project.settings.previewQuality} selectedIds={selectedRootIds} authoringEnabled={!isPlaying} onSelect={(ids) => setSelectedIds(selectionRootIds(shot, ids))} onNotice={setStatus} onCommitTransforms={(updates, label) => commitOps(updates.map(({ objectId, transform }) => ({ type: 'update-object', objectId, patch: { transform } })), label)} onCommitKeyboardTransform={commitCanvasKeyboardTransform} onInsertShapePresetAt={insertShapePresetAt} onInsertSemanticComponentAt={insertComponentAt}/>
+        <IsolatedCanvasStage clock={playbackClockRef.current} isPlaying={isPlaying} pausedPlayhead={playhead} previewStyleId={previewStyle.id} editorZoom={editorCanvasZoom} project={project} projectRevision={projectRevision} shot={shot} previewStyle={previewStyle} previewQuality={project.settings.previewQuality} selectedIds={selectedRootIds} authoringEnabled={!isPlaying} onSelect={(ids) => setSelectedIds(selectionRootIds(shot, ids))} onNotice={setStatus} onCommitTransforms={(updates, label) => commitOps(updates.map(({ objectId, transform }) => ({ type: 'update-object', objectId, patch: { transform } })), label)} onCommitKeyboardTransform={commitCanvasKeyboardTransform} onInsertShapePresetAt={insertShapePresetAt} onInsertSemanticComponentAt={insertComponentAt}/>
+        {durableProject && <IsolatedAudioPlayback ref={audioPlaybackRef} clock={playbackClockRef.current} isPlaying={isPlaying} pausedPlayhead={playhead} projectId={durableProject.projectId} shot={shot} onPlaybackError={setStatus}/>}
         <p className="pc-status" role="status" aria-label="Editor status">{status}</p>
       </section>
 
       <aside className="pc-right" aria-label="Inspector and intelligence tools">
-        <header className="pc-inspector-context"><div><span>{selection.kind === 'objects' ? primary?.type === 'group' ? 'Group' : selectedObjects.length > 1 ? `${selectedObjects.length} objects` : 'Object' : selection.kind === 'animation' ? 'Animation' : selection.kind === 'keyframes' ? 'Keyframe' : selection.kind === 'project' ? 'Project' : 'Shot'}</span><h2>{primary?.name ?? selectedAnimation?.type ?? (selection.kind === 'project' ? project.metadata.title : shot.name)}</h2></div><button type="button" onClick={() => setRightPanelCollapsed(true)} aria-label="Collapse inspector panel">›</button></header>
+        <header className="pc-inspector-context"><div><span>{mediaSelection?.kind === 'audio' ? 'Audio clip' : mediaSelection?.kind === 'caption' ? 'Caption' : mediaSelection?.kind === 'marker' ? 'Marker' : selection.kind === 'objects' ? primary?.type === 'group' ? 'Group' : selectedObjects.length > 1 ? `${selectedObjects.length} objects` : 'Object' : selection.kind === 'animation' ? 'Animation' : selection.kind === 'keyframes' ? 'Keyframe' : selection.kind === 'project' ? 'Project' : 'Shot'}</span><h2>{selectedAudioClip?.name ?? (selectedCaptionClip ? selectedCaptionClip.text.split('\n')[0] : null) ?? selectedMarker?.name ?? primary?.name ?? selectedAnimation?.type ?? (selection.kind === 'project' ? project.metadata.title : shot.name)}</h2></div><button type="button" onClick={() => setRightPanelCollapsed(true)} aria-label="Collapse inspector panel">›</button></header>
         {primary && <form className="pc-inspector" aria-label={primary.type === 'group' ? 'Group inspector' : 'Object inspector'} data-inspector-object-id={primary.id} onSubmit={(event) => event.preventDefault()}><div className="pc-section-heading"><h2>{primary.type === 'group' ? 'Group properties' : 'Object properties'}</h2><button type="button" onClick={toggleLock} disabled={isPlaying || primaryInheritedLocked}>{primaryInheritedLocked ? 'Locked by parent' : primary.locked ? 'Unlock' : 'Lock'}</button></div>
           <fieldset className="pc-lifetime-inspector" disabled={isPlaying || primaryFamilyLocked}>
             <legend>Object lifetime</legend>
@@ -3075,7 +4044,13 @@ export default function ProofCanvasEditor({
             {renderObjectPropertyField('scaleY', 'Scale Y', { ...signedScaleBounds, step: 0.05, familyLock: true })}
             {renderShapeProperties()}
             {primary.type !== 'group' && renderObjectPropertyField('opacity', 'Opacity', { min: 0, max: 1, step: 0.05 })}
-            {(primary.type === 'text' || primary.type === 'math' || primary.type === 'brace') && <label>Font size<input key={`${primary.id}-font-size-${primary.style.fontSize ?? 22}`} type="number" min={PROOFCANVAS_SCHEMA_LIMITS.fontSizeMin} max={PROOFCANVAS_SCHEMA_LIMITS.fontSizeMax} aria-label="Font size" defaultValue={primary.style.fontSize ?? 22} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => { const value = primary.style.fontSize ?? 22; commitNumericInput(event, { key: 'fontSize', label: 'Font size', fallback: value, min: PROOFCANVAS_SCHEMA_LIMITS.fontSizeMin, max: PROOFCANVAS_SCHEMA_LIMITS.fontSizeMax }, value, (next) => commitPatch({ style: { fontSize: next } }, 'Set font size')) }}/></label>}
+            {(primary.type === 'text' || primary.type === 'math' || primary.type === 'brace') && <>
+              <label>Font size<input key={`${primary.id}-font-size-${primary.style.fontSize ?? 22}`} type="number" min={PROOFCANVAS_SCHEMA_LIMITS.fontSizeMin} max={PROOFCANVAS_SCHEMA_LIMITS.fontSizeMax} aria-label="Font size" defaultValue={primary.style.fontSize ?? 22} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => { const value = primary.style.fontSize ?? 22; commitNumericInput(event, { key: 'fontSize', label: 'Font size', fallback: value, min: PROOFCANVAS_SCHEMA_LIMITS.fontSizeMin, max: PROOFCANVAS_SCHEMA_LIMITS.fontSizeMax }, value, (next) => commitPatch({ style: { fontSize: next } }, 'Set font size')) }}/></label>
+              <label className="pc-wide">Font family<input aria-label="Font family" maxLength={120} key={`${primary.id}-font-family-${primary.style.fontFamily ?? ''}`} defaultValue={primary.style.fontFamily ?? (primary.type === 'math' ? previewStyle.typography.math : previewStyle.typography.statement)} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => { const current = primary.style.fontFamily ?? (primary.type === 'math' ? previewStyle.typography.math : previewStyle.typography.statement); commitTextInput(event, current, 'Font family', (fontFamily) => commitPatch({ style: { fontFamily } }, 'Set font family'), { trim: true, required: true }) }}/></label>
+              <label>Font weight<select aria-label="Font weight" value={primary.style.fontWeight ?? 400} disabled={isPlaying || primaryEffectivelyLocked} onChange={(event) => commitPatch({ style: { fontWeight: Number(event.target.value) } }, 'Set font weight')}>{[100, 200, 300, 400, 500, 600, 700, 800, 900].map((weight) => <option key={weight} value={weight}>{weight}</option>)}</select></label>
+              <label>Text alignment<select aria-label="Text alignment" value={primary.style.textAlign ?? 'left'} disabled={isPlaying || primaryEffectivelyLocked} onChange={(event) => commitPatch({ style: { textAlign: event.target.value as 'left' | 'center' | 'right' } }, 'Set text alignment')}><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></label>
+              <label className="pc-check"><input type="checkbox" aria-label="Rough emphasis" checked={primary.style.roughEmphasis ?? false} disabled={isPlaying || primaryEffectivelyLocked} onChange={(event) => commitPatch({ style: { roughEmphasis: event.target.checked } }, 'Set rough emphasis')}/>Rough emphasis</label>
+            </>}
             {primary.type === 'text' && <label className="pc-wide">Content<textarea aria-label="Content" rows={3} maxLength={PROOFCANVAS_TEXT_MAX_CHARS} defaultValue={String(primary.properties.content ?? '')} key={`${primary.id}-content-${String(primary.properties.content ?? '')}`} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => { const current = String(primary.properties.content ?? ''); commitTextInput(event, current, 'Content', (value) => commitPatch({ properties: { content: value } }, 'Edit content')) }}/></label>}
             {primary.type === 'math' && primaryMathProperties && <MathPropertiesEditor key={primary.id} objectId={primary.id} value={primaryMathProperties} authorityKey={mathDraftAuthorityKey} disabled={isPlaying || primaryEffectivelyLocked} onCommit={commitMathProperties} onNotice={setStatus}/>}
             {primary.type === 'graph' && <GraphInspector
@@ -3088,7 +4063,21 @@ export default function ProofCanvasEditor({
               onNotice={setStatus}
             />}
             {primary.type === 'brace' && <label className="pc-wide">Brace label<input aria-label="Brace label" maxLength={PROOFCANVAS_BRACE_LABEL_MAX_CHARS} defaultValue={String(primary.properties.label ?? '')} key={`${primary.id}-label-${String(primary.properties.label ?? '')}`} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => { const current = String(primary.properties.label ?? ''); commitTextInput(event, current, 'Brace label', (value) => commitPatch({ properties: { label: value } }, 'Edit brace label')) }}/></label>}
-            {(primary.type === 'image' || primary.type === 'svg') && <label className="pc-wide">Asset source<input aria-label="Asset source" defaultValue={String(primary.properties.source ?? '')} key={`${primary.id}-source-${String(primary.properties.source ?? '')}`} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => { const current = String(primary.properties.source ?? ''); commitTextInput(event, current, 'Asset source', (value) => commitPatch({ properties: { source: value } }, 'Edit asset source'), { trim: true, required: true }) }}/></label>}
+            {(primary.type === 'image' || primary.type === 'svg') && primaryAssetVisualSettings &&
+              <div className="pc-wide pc-asset-authority"><span>Project asset</span><strong>{project.assets.find(({ id }) => id === primary.properties.assetId)?.filename ?? 'Legacy bundled source'}</strong><code>{String(primary.properties.assetId ?? primary.properties.source ?? '')}</code>{primary.properties.assetId ? <small>Validated project-scoped content; direct source editing is disabled.</small> : <small>Legacy local source is read-only. Re-import it to make a portable asset.</small>}</div>
+            }
+            {primary.type === 'image' && primaryAssetVisualSettings && <>
+              <label>Fit<select aria-label="Asset fit" value={primaryAssetVisualSettings.fit} disabled={isPlaying || primaryEffectivelyLocked} onChange={(event) => commitPatch({ properties: { fit: event.target.value } }, 'Set asset fit')}><option value="contain">Contain</option><option value="cover">Cover</option><option value="fill">Fill</option></select></label>
+              <label className="pc-check"><input type="checkbox" aria-label="Preserve asset aspect ratio" checked={primaryAssetVisualSettings.preserveAspectRatio} disabled={isPlaying || primaryEffectivelyLocked || primaryAssetVisualSettings.fit === 'fill'} onChange={(event) => commitPatch({ properties: { preserveAspectRatio: event.target.checked } }, 'Set asset aspect ratio')}/>Preserve aspect ratio</label>
+              <button type="button" className="pc-wide" disabled={isPlaying || primaryEffectivelyLocked} onClick={() => commitPatch({ properties: { crop: { x: 0, y: 0, width: 1, height: 1 } } }, primaryAssetVisualSettings.crop ? 'Reset asset crop' : 'Enable asset crop')}>{primaryAssetVisualSettings.crop ? 'Reset crop to full source' : 'Enable source crop'}</button>
+              {primaryAssetVisualSettings.crop && (['x', 'y', 'width', 'height'] as const).map((key) => <label key={key}>Crop {key}<input type="number" min={key === 'width' || key === 'height' ? 0.001 : 0} max="1" step="0.01" value={primaryAssetVisualSettings.crop![key]} disabled={isPlaying || primaryEffectivelyLocked} onChange={(event) => { const value = event.target.valueAsNumber; if (Number.isFinite(value)) commitPatch({ properties: { crop: { ...primaryAssetVisualSettings.crop!, [key]: value } } }, `Set crop ${key}`) }}/></label>)}
+              <label>Mask<select aria-label="Asset mask" value={primaryAssetVisualSettings.mask?.kind ?? 'none'} disabled={isPlaying || primaryEffectivelyLocked} onChange={(event) => commitPatch({ properties: { mask: event.target.value === 'circle' ? { kind: 'circle' } : event.target.value === 'rounded-rectangle' ? { kind: 'rounded-rectangle', radius: 12 } : { kind: 'none' } } }, 'Set asset mask')}><option value="none">None</option><option value="circle">Circle</option><option value="rounded-rectangle">Rounded rectangle</option></select></label>
+              {primaryAssetVisualSettings.mask?.kind === 'rounded-rectangle' && <label>Mask radius<input type="number" min="0" max={PROOFCANVAS_SCHEMA_LIMITS.cornerRadiusMax} step="1" value={primaryAssetVisualSettings.mask.radius} disabled={isPlaying || primaryEffectivelyLocked} onChange={(event) => { if (Number.isFinite(event.target.valueAsNumber)) commitPatch({ properties: { mask: { kind: 'rounded-rectangle', radius: event.target.valueAsNumber } } }, 'Set mask radius') }}/></label>}
+            </>}
+            {primary.type === 'svg' && primaryAssetVisualSettings && <>
+              <p className="pc-wide pc-inspector-note" role="status">SVG remains vector and render-safe in Contain mode. Crop, cover/fill, aspect distortion, and clipping masks require a bounded rasterizer and are unavailable for SVG; use PNG, JPEG, or WebP for those controls.</p>
+              {primarySvgVisualUnsupported && <button type="button" className="pc-wide" disabled={isPlaying || primaryEffectivelyLocked} onClick={resetSvgFraming}>Reset SVG to render-safe framing</button>}
+            </>}
             {primary.type === 'axes' && (['xMin', 'xMax'] as const).map((key) => { const label = key === 'xMin' ? 'X minimum' : 'X maximum'; const value = Number(primary.properties[key]); const field = { key, label, fallback: value, min: -PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude, max: PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude }; return <label key={key}>{label}<input key={`${primary.id}-${key}-${String(primary.properties[key])}`} type="number" min={field.min} max={field.max} aria-label={label} defaultValue={value} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => commitNumericInput(event, field, value, (next) => commitPatch({ properties: { [key]: next } }, `Set ${key}`))}/></label> })}
             {primary.type === 'axes' && (['yMin', 'yMax'] as const).map((key) => { const label = key === 'yMin' ? 'Y minimum' : 'Y maximum'; const value = Number(primary.properties[key]); const field = { key, label, fallback: value, min: -PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude, max: PROOFCANVAS_SCHEMA_LIMITS.graphRangeMagnitude }; return <label key={key}>{label}<input key={`${primary.id}-${key}-${String(primary.properties[key])}`} type="number" min={field.min} max={field.max} aria-label={label} defaultValue={value} disabled={isPlaying || primaryEffectivelyLocked} onBlur={(event) => commitNumericInput(event, field, value, (next) => commitPatch({ properties: { [key]: next } }, `Set ${key}`))}/></label> })}
             {primary.type === 'axes' && <p className="pc-wide pc-inspector-note">Coordinate-axis ticks remain a bounded browser guide; axis ranges are authoritative in Manim export and render.</p>}
@@ -3102,6 +4091,42 @@ export default function ProofCanvasEditor({
 
         {selection.kind === 'keyframes' && selection.shotId === shot.id && <KeyframeInspector project={project} shot={shot} selection={selection} disabled={isPlaying} onCommit={commitRenderedTimelineIntent} onSelect={selectSingleKeyframe} onSeek={jumpLocalPlayhead} onNotice={setStatus}/>}
 
+        {selectedAudioClip && <section className="pc-media-inspector" aria-label="Audio clip inspector">
+          <div className="pc-section-heading"><h2>Audio clip</h2><span>{selectedAudioClip.duration.toFixed(2)}s</span></div>
+          <label className="pc-wide">Name<input aria-label="Audio clip name" key={`${selectedAudioClip.id}-name-${selectedAudioClip.name}`} defaultValue={selectedAudioClip.name} maxLength={120} disabled={isPlaying} onBlur={(event) => commitTextInput(event, selectedAudioClip.name, 'Audio clip name', (name) => replaceAudioClip({ ...selectedAudioClip, name }, 'Rename audio clip'), { trim: true, required: true })}/></label>
+          <label>Timeline start<input type="number" min="0" max={subtractTimelineTimes(shot.duration, selectedAudioClip.duration)} step="0.01" key={`${selectedAudioClip.id}-start-${selectedAudioClip.start}`} defaultValue={selectedAudioClip.start} disabled={isPlaying} onBlur={(event) => commitNumericInput(event, { key: 'audioStart', label: 'Audio start', fallback: selectedAudioClip.start, min: 0, max: subtractTimelineTimes(shot.duration, selectedAudioClip.duration) }, selectedAudioClip.start, (start) => replaceAudioClip({ ...selectedAudioClip, start }, 'Move audio clip'))}/></label>
+          <label>Duration<input type="number" min="0.01" max={subtractTimelineTimes(shot.duration, selectedAudioClip.start)} step="0.01" key={`${selectedAudioClip.id}-duration-${selectedAudioClip.duration}`} defaultValue={selectedAudioClip.duration} disabled={isPlaying} onBlur={(event) => commitNumericInput(event, { key: 'audioDuration', label: 'Audio duration', fallback: selectedAudioClip.duration, min: 0.01, max: subtractTimelineTimes(shot.duration, selectedAudioClip.start) }, selectedAudioClip.duration, (duration) => replaceAudioClip({ ...selectedAudioClip, duration }, 'Set audio duration'))}/></label>
+          <label>Source in<input type="number" min="0" max={subtractTimelineTimes(selectedAudioClip.sourceEnd, 0.01)} step="0.01" key={`${selectedAudioClip.id}-source-start-${selectedAudioClip.sourceStart}`} defaultValue={selectedAudioClip.sourceStart} disabled={isPlaying} onBlur={(event) => commitNumericInput(event, { key: 'sourceStart', label: 'Audio source in', fallback: selectedAudioClip.sourceStart, min: 0, max: subtractTimelineTimes(selectedAudioClip.sourceEnd, 0.01) }, selectedAudioClip.sourceStart, (sourceStart) => replaceAudioClip({ ...selectedAudioClip, sourceStart }, 'Trim audio source start'))}/></label>
+          <label>Source out<input type="number" min={addTimelineTimes(selectedAudioClip.sourceStart, 0.01)} max={project.assets.find(({ id }) => id === selectedAudioClip.assetId)?.duration ?? selectedAudioClip.sourceEnd} step="0.01" key={`${selectedAudioClip.id}-source-end-${selectedAudioClip.sourceEnd}`} defaultValue={selectedAudioClip.sourceEnd} disabled={isPlaying} onBlur={(event) => { const maximum = project.assets.find(({ id }) => id === selectedAudioClip.assetId)?.duration ?? selectedAudioClip.sourceEnd; commitNumericInput(event, { key: 'sourceEnd', label: 'Audio source out', fallback: selectedAudioClip.sourceEnd, min: addTimelineTimes(selectedAudioClip.sourceStart, 0.01), max: maximum }, selectedAudioClip.sourceEnd, (sourceEnd) => replaceAudioClip({ ...selectedAudioClip, sourceEnd }, 'Trim audio source end')) }}/></label>
+          <PropertyKeyframeField project={project} shotId={shot.id} target={{ kind: 'audio', audioClipId: selectedAudioClip.id }} property="volume" label="Volume" value={typeof selectedAudioVolumeAtPlayhead === 'number' ? selectedAudioVolumeAtPlayhead : selectedAudioClip.volume} playhead={playhead} track={selectedAudioVolumeTrack} selection={selection} disabled={isPlaying} min={0} max={4} step={0.05} onCommit={commitRenderedTimelineIntent} onBaseChange={(value) => typeof value === 'number' && replaceAudioClip({ ...selectedAudioClip, volume: value }, 'Set audio volume')} onSelectKeyframe={selectSingleKeyframe} onNotice={setStatus}/>
+          <label>Fade in<input type="number" min="0" max={subtractTimelineTimes(selectedAudioClip.duration, selectedAudioClip.fadeOut ?? 0)} step="0.01" key={`${selectedAudioClip.id}-fade-in-${selectedAudioClip.fadeIn ?? 0}`} defaultValue={selectedAudioClip.fadeIn ?? 0} disabled={isPlaying} onBlur={(event) => commitNumericInput(event, { key: 'fadeIn', label: 'Fade in', fallback: selectedAudioClip.fadeIn ?? 0, min: 0, max: subtractTimelineTimes(selectedAudioClip.duration, selectedAudioClip.fadeOut ?? 0) }, selectedAudioClip.fadeIn ?? 0, (fadeIn) => replaceAudioClip({ ...selectedAudioClip, fadeIn }, 'Set audio fade in'))}/></label>
+          <label>Fade out<input type="number" min="0" max={subtractTimelineTimes(selectedAudioClip.duration, selectedAudioClip.fadeIn ?? 0)} step="0.01" key={`${selectedAudioClip.id}-fade-out-${selectedAudioClip.fadeOut ?? 0}`} defaultValue={selectedAudioClip.fadeOut ?? 0} disabled={isPlaying} onBlur={(event) => commitNumericInput(event, { key: 'fadeOut', label: 'Fade out', fallback: selectedAudioClip.fadeOut ?? 0, min: 0, max: subtractTimelineTimes(selectedAudioClip.duration, selectedAudioClip.fadeIn ?? 0) }, selectedAudioClip.fadeOut ?? 0, (fadeOut) => replaceAudioClip({ ...selectedAudioClip, fadeOut }, 'Set audio fade out'))}/></label>
+          <label className="pc-check"><input type="checkbox" checked={selectedAudioClip.muted} aria-label="Mute audio clip" disabled={isPlaying} onChange={(event) => replaceAudioClip({ ...selectedAudioClip, muted: event.target.checked }, 'Toggle audio mute')}/>Mute</label>
+          <label className="pc-check"><input type="checkbox" checked={selectedAudioClip.solo} aria-label="Solo audio clip" disabled={isPlaying} onChange={(event) => replaceAudioClip({ ...selectedAudioClip, solo: event.target.checked }, 'Toggle audio solo')}/>Solo</label>
+          <p className="pc-wide pc-inspector-note">Source {selectedAudioClip.sourceStart.toFixed(2)}–{selectedAudioClip.sourceEnd.toFixed(2)}s. Playback rate {((selectedAudioClip.sourceEnd - selectedAudioClip.sourceStart) / selectedAudioClip.duration).toFixed(3)}×.</p>
+          <div className="pc-wide pc-media-inspector-actions"><button type="button" disabled={isPlaying || compareTimelineTimes(playhead, selectedAudioClip.start) <= 0 || compareTimelineTimes(playhead, addTimelineTimes(selectedAudioClip.start, selectedAudioClip.duration)) >= 0 || Boolean(selectedAudioClip.fadeIn || selectedAudioClip.fadeOut || selectedAudioVolumeTrack)} onClick={() => splitAudioClip(selectedAudioClip.id)}>Split at playhead</button><button type="button" className="pc-danger-action" disabled={isPlaying} onClick={() => deleteAudioClip(selectedAudioClip.id)}>Delete clip</button></div>
+        </section>}
+
+        {selectedCaptionClip && <section className="pc-media-inspector" aria-label="Caption inspector">
+          <div className="pc-section-heading"><h2>Caption</h2><span>{(selectedCaptionClip.end - selectedCaptionClip.start).toFixed(2)}s</span></div>
+          <label>Start<input type="number" min="0" max={subtractTimelineTimes(selectedCaptionClip.end, 0.01)} step="0.01" key={`${selectedCaptionClip.id}-start-${selectedCaptionClip.start}`} defaultValue={selectedCaptionClip.start} disabled={isPlaying} onBlur={(event) => commitNumericInput(event, { key: 'captionStart', label: 'Caption start', fallback: selectedCaptionClip.start, min: 0, max: subtractTimelineTimes(selectedCaptionClip.end, 0.01) }, selectedCaptionClip.start, (start) => replaceCaption({ ...selectedCaptionClip, start }, 'Set caption start'))}/></label>
+          <label>End<input type="number" min={addTimelineTimes(selectedCaptionClip.start, 0.01)} max={shot.duration} step="0.01" key={`${selectedCaptionClip.id}-end-${selectedCaptionClip.end}`} defaultValue={selectedCaptionClip.end} disabled={isPlaying} onBlur={(event) => commitNumericInput(event, { key: 'captionEnd', label: 'Caption end', fallback: selectedCaptionClip.end, min: addTimelineTimes(selectedCaptionClip.start, 0.01), max: shot.duration }, selectedCaptionClip.end, (end) => replaceCaption({ ...selectedCaptionClip, end }, 'Set caption end'))}/></label>
+          <label className="pc-wide">Text<textarea aria-label="Caption text" rows={5} maxLength={PROOFCANVAS_TEXT_MAX_CHARS} key={`${selectedCaptionClip.id}-text-${selectedCaptionClip.text}`} defaultValue={selectedCaptionClip.text} disabled={isPlaying} onBlur={(event) => commitTextInput(event, selectedCaptionClip.text, 'Caption text', (text) => replaceCaption({ ...selectedCaptionClip, text }, 'Edit caption text'), { required: true })}/></label>
+          <label>Text colour<input type="color" aria-label="Caption text colour" value={selectedCaptionClip.style.color ?? '#ffffff'} disabled={isPlaying} onChange={(event) => replaceCaption({ ...selectedCaptionClip, style: { ...selectedCaptionClip.style, color: event.target.value } }, 'Set caption colour')}/></label>
+          <label>Background<input type="color" aria-label="Caption background colour" value={selectedCaptionClip.style.background ?? '#111111'} disabled={isPlaying} onChange={(event) => replaceCaption({ ...selectedCaptionClip, style: { ...selectedCaptionClip.style, background: event.target.value } }, 'Set caption background')}/></label>
+          <label>Font size<input type="number" min="8" max="144" step="1" value={selectedCaptionClip.style.fontSize ?? 28} disabled={isPlaying} onChange={(event) => { if (Number.isFinite(event.target.valueAsNumber)) replaceCaption({ ...selectedCaptionClip, style: { ...selectedCaptionClip.style, fontSize: event.target.valueAsNumber } }, 'Set caption font size') }}/></label>
+          <label>Position<select aria-label="Caption position" value={selectedCaptionClip.style.position ?? 'bottom'} disabled={isPlaying} onChange={(event) => replaceCaption({ ...selectedCaptionClip, style: { ...selectedCaptionClip.style, position: event.target.value as 'top' | 'center' | 'bottom' } }, 'Set caption position')}><option value="top">Top</option><option value="center">Center</option><option value="bottom">Bottom</option></select></label>
+          <div className="pc-wide pc-media-inspector-actions"><button type="button" disabled={isPlaying || compareTimelineTimes(playhead, selectedCaptionClip.start) <= 0 || compareTimelineTimes(playhead, selectedCaptionClip.end) >= 0} onClick={() => splitCaption(selectedCaptionClip.id)}>Split at playhead</button><button type="button" className="pc-danger-action" disabled={isPlaying} onClick={() => deleteCaption(selectedCaptionClip.id)}>Delete caption</button></div>
+        </section>}
+
+        {selectedMarker && <section className="pc-media-inspector" aria-label="Marker inspector">
+          <div className="pc-section-heading"><h2>Narration marker</h2><span>{selectedMarker.time.toFixed(2)}s</span></div>
+          <label className="pc-wide">Name<input aria-label="Marker name" maxLength={120} key={`${selectedMarker.id}-name-${selectedMarker.name}`} defaultValue={selectedMarker.name} disabled={isPlaying} onBlur={(event) => commitTextInput(event, selectedMarker.name, 'Marker name', (name) => commitDocumentOps([{ type: 'update-marker', shotId: shot.id, markerId: selectedMarker.id, patch: { name } }], 'Rename marker'), { trim: true, required: true })}/></label>
+          <label>Time<input type="number" min="0" max={shot.duration} step="0.01" key={`${selectedMarker.id}-time-${selectedMarker.time}`} defaultValue={selectedMarker.time} disabled={isPlaying} onBlur={(event) => commitNumericInput(event, { key: 'markerTime', label: 'Marker time', fallback: selectedMarker.time, min: 0, max: shot.duration }, selectedMarker.time, (time) => commitDocumentOps([{ type: 'update-marker', shotId: shot.id, markerId: selectedMarker.id, patch: { time } }], 'Move marker'))}/></label>
+          <label>Colour<input type="color" aria-label="Marker colour" value={selectedMarker.color} disabled={isPlaying} onChange={(event) => commitDocumentOps([{ type: 'update-marker', shotId: shot.id, markerId: selectedMarker.id, patch: { color: event.target.value } }], 'Set marker colour')}/></label>
+          <button type="button" className="pc-wide pc-danger-action" disabled={isPlaying} onClick={() => { if (commitDocumentOps([{ type: 'delete-marker', shotId: shot.id, markerId: selectedMarker.id }], 'Delete marker')) setMediaSelection(null) }}>Delete marker</button>
+        </section>}
+
         {selectedAnimation && <section className="pc-animation-inspector pc-contextual-animation" aria-label="Animation inspector">
           <div className="pc-section-heading"><h2>Timing and motion</h2>{selectedAnimationLocked && <span>Locked target</span>}</div>
           {selectedAnimation.type === 'transform' && selectedAnimation.targetIds.length > 1 && <span className="pc-animation-lock-note" role="status">Split this legacy multi-target transform before editing absolute geometry.</span>}
@@ -3114,7 +4139,7 @@ export default function ProofCanvasEditor({
           {animationPropertyFields.map((field) => { const value = typeof selectedAnimation.properties[field.key] === 'number' ? Number(selectedAnimation.properties[field.key]) : field.fallback; return <label key={field.key}>{field.label}<input type="number" min={field.min} max={field.max} step="0.1" aria-label={field.label} defaultValue={value} key={`${selectedAnimation.id}-${field.key}-${String(selectedAnimation.properties[field.key])}`} disabled={isPlaying || selectedAnimationLocked || selectedAnimationCompatibilityUnsupported} onBlur={(event) => commitNumericInput(event, field, value, (next) => updateAnimation({ properties: { [field.key]: next } }, `Set ${field.label.toLowerCase()}`))}/></label> })}
           <button type="button" className="pc-danger-action" disabled={isPlaying || selectedAnimationLocked || selectedAnimationCompatibilityUnsupported} onClick={() => deleteTimelineAnimation(selectedAnimation)}>Delete animation</button>
         </section>}
-        {!primary && !selectedAnimation && selection.kind !== 'keyframes' && <section className="pc-context-summary" aria-label={selection.kind === 'project' ? 'Project inspector' : 'Shot inspector'}>
+        {!mediaSelection && !primary && !selectedAnimation && selection.kind !== 'keyframes' && <section className="pc-context-summary" aria-label={selection.kind === 'project' ? 'Project inspector' : 'Shot inspector'}>
           <div className="pc-section-heading"><h2>{selection.kind === 'project' ? 'Project' : 'Shot'}</h2><span>{selection.kind === 'project' ? project.settings.aspectRatio : `${shot.duration.toFixed(1)}s`}</span></div>
           {selection.kind === 'project' ? <>
             <p>{project.shots.length} shots · {project.settings.frameRate} fps · {project.settings.resolution.width}×{project.settings.resolution.height}</p>
@@ -3134,6 +4159,7 @@ export default function ProofCanvasEditor({
 
         <section id="pc-active-shot-panel" className="pc-timeline" role="tabpanel" aria-labelledby={`pc-shot-tab-${shot.id}`} aria-label="Animation timeline" data-shot-id={shot.id}><div className="pc-timeline-head"><div className="pc-transport" aria-label="Sequence transport"><button type="button" onClick={() => jumpSequenceTime(0)} aria-label="Jump to sequence start">↤</button><button type="button" className="pc-play-button" onClick={togglePlayback} aria-label={isPlaying ? 'Pause sequence' : 'Play sequence'} aria-pressed={isPlaying}>{isPlaying ? '❚❚' : '▶'}</button><button type="button" onClick={() => jumpSequenceTime(shotSequence.totalDuration)} aria-label="Jump to sequence end">↦</button></div><h2>Timeline</h2><label>Animation<select aria-label="Animation type" value={animationType} disabled={isPlaying} onChange={(event) => setAnimationType(event.target.value as AnimationType)}>{ANIMATION_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label><button type="button" onClick={addAnimation} disabled={isPlaying}>Add animation</button><IsolatedSequenceScrubber clock={playbackClockRef.current} isPlaying={isPlaying} pausedGlobalTime={pausedGlobalTime} duration={shotSequence.totalDuration} onSeek={jumpSequenceTime}/><button type="button" onClick={() => setTimelineCollapsed((value) => !value)} aria-expanded={!timelineCollapsed} aria-label={timelineCollapsed ? 'Expand shot timeline' : 'Collapse shot timeline'}>{timelineCollapsed ? 'Expand' : 'Collapse'}</button></div>
         {!timelineCollapsed && <ShotTimeline project={project} shot={shot} projectRevision={projectRevision} playhead={playhead} selection={selection} disabled={isPlaying} onSeek={jumpLocalPlayhead} onSelect={setEditorSelection} onCommit={commitRenderedTimelineIntent} onNotice={setStatus}/>}
+        {!timelineCollapsed && <MediaTimeline project={project} shot={shot} playhead={playhead} selected={mediaSelection} availableAssetIds={availableAssetIds} disabled={isPlaying} onSelect={selectMedia} onSeek={jumpLocalPlayhead} onReplaceAudio={replaceAudioClip} onReplaceCaption={replaceCaption} onDeleteAudio={deleteAudioClip} onDeleteCaption={deleteCaption} onAddAudioAsset={addAudioAsset}/>}
         <div ref={trackRef} className="pc-timeline-track" data-testid="timeline-track" onPointerMove={moveTimelineGesture} onPointerUp={endTimelineGesture} onPointerCancel={cancelTimelineGesture} onPointerDown={(event) => { if (event.target === event.currentTarget && trackRef.current) { const rect = trackRef.current.getBoundingClientRect(); jumpLocalPlayhead(Math.max(0, Math.min(shot.duration, (event.clientX - rect.left) / rect.width * shot.duration))) } }}>
           <IsolatedTimelinePlayhead clock={playbackClockRef.current} isPlaying={isPlaying} pausedPlayhead={playhead} duration={shot.duration} shotId={shot.id}/>{shot.animations.map((animation) => { const timing = timelineDraft?.id === animation.id ? timelineDraft : animation; const lane = animationLanes.get(animation.id) ?? 0; const targets = animation.targetIds.map((id) => shot.objects.find((object) => object.id === id)?.name ?? id).join(', '); const locked = animationTargetsLocked(shot, animation); const lockedNotice = () => { setSelectedAnimationId(animation.id); setStatus('This animation targets a locked object family; unlock it before editing the block.') }; return <button type="button" key={animation.id} className={`pc-animation-block ${selectedAnimationId === animation.id ? 'selected' : ''} ${locked ? 'locked' : ''}`} style={{ left: `${timing.start / shot.duration * 100}%`, width: `${Math.max(1.5, timing.duration / shot.duration * 100)}%`, top: `${8 + lane * 31}px` }} data-animation-id={animation.id} data-animation-type={animation.type} data-target-ids={animation.targetIds.join(' ')} data-timeline-lane={lane} data-start={timing.start} data-duration={timing.duration} data-locked={locked ? 'true' : 'false'} aria-disabled={locked} aria-label={`${animation.type} animation targeting ${targets}; ${locked ? 'locked' : 'drag the right edge to resize'}`} onKeyDown={(event) => { if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); event.stopPropagation(); deleteTimelineAnimation(animation) } }} onClick={() => setSelectedAnimationId(animation.id)} onPointerDown={(event) => { if (isPlaying) { event.stopPropagation(); setStatus('Pause preview before editing timeline blocks.'); return } if (locked) { event.stopPropagation(); lockedNotice(); return } beginTimelineGesture(event, animation, 'move') }}><span>{animation.type}</span><i aria-hidden="true" onPointerDown={(event) => { if (locked) { event.stopPropagation(); lockedNotice(); return } beginTimelineGesture(event, animation, 'resize') }}/></button> })}
         </div>
@@ -3155,9 +4181,22 @@ export default function ProofCanvasEditor({
       {commandPaletteOpen && <div ref={commandPaletteRef} className="pc-command-palette" role="dialog" aria-modal="true" aria-label="Command palette"><header><div><span>Command palette</span><h2>What would you like to do?</h2></div><button type="button" onClick={() => setCommandPaletteOpen(false)} aria-label="Close command palette">×</button></header><label><span className="pc-visually-hidden">Search commands</span><input ref={commandSearchRef} type="search" aria-label="Search commands" aria-controls="pc-editor-command-list" aria-activedescendant={activeCommandOptionId ?? undefined} placeholder="Search actions" value={commandSearch} onKeyDown={navigateCommandListbox} onChange={(event) => setCommandSearch(event.target.value)}/></label><div id="pc-editor-command-list" className="pc-command-list" role="listbox" aria-label="Editor commands" onKeyDown={navigateCommandListbox}>{aiCommandVisible && <button id="pc-command-option-ai" type="button" role="option" aria-selected={activeCommandOptionId === 'pc-command-option-ai'} onFocus={() => setActiveCommandOptionId('pc-command-option-ai')} onClick={() => { assistantTriggerRef.current = commandButtonRef.current; setCommandPaletteOpen(false); setAssistantOpen(true) }}><span>AI structured edit…</span><kbd>Review first</kbd></button>}{paletteCommands.map(({ command, id, disabled }) => <button id={id} type="button" role="option" aria-selected={activeCommandOptionId === id} key={command.id} disabled={disabled} onFocus={() => { if (!disabled) setActiveCommandOptionId(id) }} onClick={() => { if (commandController.execute(command.id, { source: 'palette', shiftKey: false })) setCommandPaletteOpen(false) }}><span>{command.label}</span><kbd>{command.shortcut.replace('Mod', 'Ctrl/Cmd')}</kbd></button>)}{paletteCommands.length === 0 && !aiCommandVisible && <p role="status">No commands match “{commandSearch}”.</p>}</div></div>}
 
       {utilityDialog && <div ref={utilityDialogRef} className="pc-utility-dialog" role="dialog" aria-modal="true" aria-label={utilityDialog === 'settings' ? 'Project settings' : utilityDialog === 'shortcuts' ? 'Keyboard shortcuts' : 'Render and export'}><header><div><span>{utilityDialog === 'render-export' ? 'Output' : 'Workspace'}</span><h2>{utilityDialog === 'settings' ? 'Project settings' : utilityDialog === 'shortcuts' ? 'Keyboard shortcuts' : 'Render and export'}</h2></div><button type="button" onClick={() => setUtilityDialog(null)} aria-label={`Close ${utilityDialog === 'settings' ? 'project settings' : utilityDialog === 'shortcuts' ? 'keyboard shortcuts' : 'render and export'}`}>×</button></header>
-        {utilityDialog === 'settings' && <div className="pc-settings-dialog"><p>Output settings are authored project data. Aspect changes recenter only untouched default cameras and preserve authored geometry.</p><fieldset className="pc-settings-grid" disabled={isPlaying}><label>Aspect ratio<select aria-label="Aspect ratio" value={project.settings.aspectRatio} onChange={(event) => updateProjectSettings({ aspectRatio: event.target.value as ProjectDocument['settings']['aspectRatio'] })}><option value="16:9">16:9 · landscape</option><option value="9:16">9:16 · portrait</option><option value="1:1">1:1 · square</option></select></label><label>Frame rate<select aria-label="Frame rate" value={project.settings.frameRate} onChange={(event) => updateProjectSettings({ frameRate: Number(event.target.value) as ProjectDocument['settings']['frameRate'] })}>{[15, 24, 30, 60].map((rate) => <option key={rate} value={rate}>{rate} fps</option>)}</select></label><label>Render preset<select aria-label="Render preset" value={project.settings.renderPreset} onChange={(event) => updateProjectSettings({ renderPreset: event.target.value as ProjectDocument['settings']['renderPreset'] })}><option value="draft">Draft</option><option value="720p">720p</option><option value="1080p">1080p</option></select></label><label>Preview quality<select aria-label="Settings preview quality" value={project.settings.previewQuality} onChange={(event) => updateProjectSettings({ previewQuality: event.target.value as ProjectDocument['settings']['previewQuality'] })}><option value="draft">Draft</option><option value="standard">Standard</option><option value="high">High</option></select></label></fieldset><dl><div><dt>Logical frame</dt><dd>{logicalFrame.width} × {logicalFrame.height}</dd></div><div><dt>Output</dt><dd>{resolutionFor(project.settings.aspectRatio, project.settings.renderPreset).width} × {resolutionFor(project.settings.aspectRatio, project.settings.renderPreset).height}</dd></div></dl></div>}
+        {utilityDialog === 'settings' && <div className="pc-settings-dialog">
+          <p>Output settings are authored project data. Choose how every static and animated coordinate should move before changing aspect ratio.</p>
+          <fieldset className="pc-aspect-policy" disabled={isPlaying}>
+            <legend>When aspect ratio changes</legend>
+            <label><input type="radio" name="aspect-conversion-policy" value="fit-all" checked={aspectConversionPolicy === 'fit-all'} onChange={() => setAspectConversionPolicy('fit-all')}/><span><strong>Fit all content</strong><small>Recommended · uniformly reframe objects, animation geometry, keyframes, and cameras inside the new canvas.</small></span></label>
+            <label><input type="radio" name="aspect-conversion-policy" value="preserve" checked={aspectConversionPolicy === 'preserve'} onChange={() => setAspectConversionPolicy('preserve')}/><span><strong>Preserve coordinates</strong><small>Keep exact authored coordinates; objects may land outside the new frame.</small></span></label>
+          </fieldset>
+          <fieldset className="pc-settings-grid" disabled={isPlaying}><label>Aspect ratio<select aria-label="Aspect ratio" value={project.settings.aspectRatio} onChange={(event) => updateProjectSettings({ aspectRatio: event.target.value as ProjectDocument['settings']['aspectRatio'] })}><option value="16:9">16:9 · landscape</option><option value="9:16">9:16 · portrait</option><option value="1:1">1:1 · square</option></select></label><label>Frame rate<select aria-label="Frame rate" value={project.settings.frameRate} onChange={(event) => updateProjectSettings({ frameRate: Number(event.target.value) as ProjectDocument['settings']['frameRate'] })}>{[15, 24, 30, 60].map((rate) => <option key={rate} value={rate}>{rate} fps</option>)}</select></label><label>Render preset<select aria-label="Render preset" value={project.settings.renderPreset} onChange={(event) => updateProjectSettings({ renderPreset: event.target.value as ProjectDocument['settings']['renderPreset'] })}><option value="draft">Draft</option><option value="720p">720p</option><option value="1080p">1080p</option></select></label><label>Preview quality<select aria-label="Settings preview quality" value={project.settings.previewQuality} onChange={(event) => updateProjectSettings({ previewQuality: event.target.value as ProjectDocument['settings']['previewQuality'] })}><option value="draft">Draft</option><option value="standard">Standard</option><option value="high">High</option></select></label></fieldset>
+          <div className="pc-frame-safety" data-frame-safety={outsideFrameObjectIds.size ? 'attention' : 'clear'} role="status">
+            <strong>{outsideFrameObjectIds.size ? `${outsideFrameObjectIds.size} static object${outsideFrameObjectIds.size === 1 ? '' : 's'} outside the current frame` : 'All static object bounds are inside the current frame'}</strong>
+            <span>{outsideFrameObjectIds.size ? 'Undo the last aspect change and choose Fit all content, or reposition the identified objects before rendering.' : 'Safe-area checks are current for every shot. Animated geometry is reframed when Fit all content is selected.'}</span>
+          </div>
+          <dl><div><dt>Logical frame</dt><dd>{logicalFrame.width} × {logicalFrame.height}</dd></div><div><dt>Output</dt><dd>{resolutionFor(project.settings.aspectRatio, project.settings.renderPreset).width} × {resolutionFor(project.settings.aspectRatio, project.settings.renderPreset).height}</dd></div></dl>
+        </div>}
         {utilityDialog === 'shortcuts' && <div className="pc-shortcut-dialog"><p>Ctrl on Windows/Linux and Command on macOS are shown together as Ctrl/Cmd. Native text editing wins inside fields except global Save, Commands, Render/Export, and Escape.</p>{(['Playback', 'Edit', 'Project', 'View'] as const).map((group) => <section key={group}><h3>{group}</h3><dl>{EDITOR_COMMANDS.filter((command) => command.group === group).map((command) => <div key={command.id}><dt>{command.label}</dt><dd><kbd>{command.shortcut.replace('Mod', 'Ctrl/Cmd')}</kbd></dd></div>)}</dl></section>)}</div>}
-        {utilityDialog === 'render-export' && <div className="pc-output-dialog"><p>MP4 output is generated by the pinned Manim renderer. Technical exports are deterministic snapshots of the current project; unsupported assets or timeline features remain explicit compiler diagnostics.</p><label>Render quality<select aria-label="Render quality" value={renderQuality} onChange={(event) => setRenderQuality(event.target.value as ClientRenderJob['quality'])}><option value="preview">Preview · faster</option><option value="production">Production · final quality</option></select></label><div className="pc-output-summary"><span>{project.settings.aspectRatio}</span><span>{project.settings.resolution.width}×{project.settings.resolution.height}</span><span>{project.settings.frameRate} fps</span><span>{project.shots.length} shots</span></div><div className="pc-output-actions"><button type="button" onClick={exportJson} aria-label="Export project JSON">Project JSON<span>Portable structured source</span></button><button type="button" onClick={exportPython} aria-label="Export Manim Python">Manim Python<span>Inspect compiler output</span></button><button type="button" className="pc-primary" onClick={() => void startRender(renderQuality)} disabled={renderPending || renderJob?.status === 'pending' || renderJob?.status === 'running'} aria-label="Render MP4">{renderPending ? 'Submitting…' : renderJob?.status === 'pending' || renderJob?.status === 'running' ? 'Rendering…' : `Render ${renderQuality} MP4`}<span>Genuine pinned Manim job</span></button></div></div>}
+        {utilityDialog === 'render-export' && <div className="pc-output-dialog"><p>MP4 output is generated by the pinned Manim renderer. Technical exports are deterministic snapshots of the current project; unsupported assets or timeline features remain explicit compiler diagnostics.</p><label>Render quality<select aria-label="Render quality" value={renderQuality} onChange={(event) => setRenderQuality(event.target.value as ClientRenderJob['quality'])}><option value="preview">Preview · faster</option><option value="production">Production · final quality</option></select></label><div className="pc-output-summary"><span>{project.settings.aspectRatio}</span><span>{project.settings.resolution.width}×{project.settings.resolution.height}</span><span>{project.settings.frameRate} fps</span><span>{project.shots.length} shots</span></div><div className="pc-output-actions"><button type="button" onClick={exportJson} aria-label="Export project JSON">Project JSON<span>Portable structured source</span></button><button type="button" onClick={exportPython} aria-label="Export Manim Python">Manim Python<span>Inspect compiler output</span></button><button type="button" onClick={() => void exportProjectPackage()} disabled={!durableProject || packagePending || saveState === 'conflict'} aria-label="Export ProofCanvas package">{packagePending ? 'Packaging…' : 'Project package'}<span>Project, assets, and integrity manifest</span></button><button type="button" className="pc-primary" onClick={() => void startRender(renderQuality)} disabled={renderPending || renderJob?.status === 'pending' || renderJob?.status === 'running'} aria-label="Render MP4">{renderPending ? 'Submitting…' : renderJob?.status === 'pending' || renderJob?.status === 'running' ? 'Rendering…' : `Render ${renderQuality} MP4`}<span>Genuine pinned Manim job</span></button></div></div>}
       </div>}
 
       {assistantOpen && <aside ref={assistantRef} className="pc-assistant-drawer" role="dialog" aria-modal="false" aria-label="AI command drawer"><header><div><span>Assistant</span><h2>Structured edit</h2></div><button type="button" onClick={() => setAssistantOpen(false)} aria-label="Close AI command drawer">×</button></header><section className="pc-ai" role="region" aria-label="AI command" data-ai-provider={aiProvider}><p className="pc-demo-label">{aiProvider === 'configured-provider' ? 'OpenAI structured operations — server configured' : 'Deterministic demo interpreter — limited commands'}</p><div className="pc-presets">{REQUIRED_AI_COMMANDS.map((command, index) => <button type="button" key={command} onClick={() => void runAi(command)} aria-label={`Run AI preset ${index + 1}: ${command}`} title={command} disabled={aiPending}>{index + 1}</button>)}</div><label>Instruction<textarea aria-label="Describe the edit" value={instruction} onChange={(event) => setInstruction(event.target.value)} rows={4}/></label><button type="button" className="pc-primary" onClick={() => void runAi()} aria-label="Propose edit" disabled={aiPending}>{aiPending ? 'Proposing…' : 'Propose edit'}</button>{aiError && <p className="pc-error" role="alert">{aiError}</p>}{proposal && <div className="pc-proposal" role="region" aria-label="Proposed changes"><strong>{proposal.intention}</strong><p>Validated against shot <code>{proposalBase?.shotId}</code>. Expand each operation to inspect exact before and after values.</p><ol>{proposalReviews.map((review, index) => <li key={`${proposal.operations[index]?.type}-${index}`} data-operation-kind={proposal.operations[index]?.type}><details><summary>{review.summary}</summary><pre>{review.details}</pre></details></li>)}</ol><div><button type="button" className="pc-primary" onClick={applyProposal}>Apply proposed changes</button><button type="button" onClick={() => { setProposal(null); setProposalBase(null); setCritique(null) }}>Discard proposed changes</button></div></div>}</section><section className="pc-critique" role="region" aria-label="Composition critique"><div className="pc-section-heading"><h2>Composition</h2><button type="button" onClick={() => setCritique({ issues: critiqueProject(project, { shotId: shot.id, proposedOperations: proposal?.operations }), revision: projectRevision, shotId: shot.id })}>Critique composition</button></div>{critique && <p className="pc-critique-provenance">Current revision · {shot.name}</p>}{critique && (critique.issues.length > 0 ? <ul>{critique.issues.map((item) => <li key={item.id} data-issue-kind={item.kind} data-object-ids={item.objectIds.join(' ')} data-severity={item.severity}><strong>{item.kind.replaceAll('-', ' ')}</strong><span>{item.explanation}</span><em>{item.proposedCorrection}</em></li>)}</ul> : <p className="pc-critique-clear" role="status">No deterministic composition issues found for this shot.</p>)}</section></aside>}
@@ -3170,8 +4209,9 @@ export default function ProofCanvasEditor({
         <header><div><span>Manim render</span><strong>{renderJob.status}</strong></div><button type="button" onClick={() => { setRenderJob(null); setRenderBaseRevision(null) }} aria-label="Dismiss render status">×</button></header>
         <p>Source <code>{renderJob.sourceSha256.slice(0, 12)}</code> · {renderJob.quality}</p>
         {!renderRepresentsCurrentProject && <p className="pc-render-stale" role="status">Render of an earlier project revision. Render again to reflect current edits.</p>}
-        {renderJob.status === 'succeeded' && <><video controls preload="metadata" aria-label="Rendered Manim preview" src={`/api/proofcanvas/render/${encodeURIComponent(renderJob.id)}/video`}/><a className="pc-download-render" href={`/api/proofcanvas/render/${encodeURIComponent(renderJob.id)}/video`} download="proofcanvas-render.mp4">Download MP4</a></>}
-        {renderJob.status === 'failed' && <p>{renderJob.error?.message ?? 'Manim could not render this generated scene.'}</p>}
+        {(renderJob.status === 'pending' || renderJob.status === 'running') && <><div className="pc-render-progress" role="progressbar" aria-label="Manim render progress" aria-valuetext={renderJob.status === 'pending' ? 'Waiting in the bounded render queue' : 'Rendering with Manim'}><span/></div><p>{renderJob.status === 'pending' ? 'Waiting in the bounded queue.' : 'Rendering the verified project snapshot.'}</p><button type="button" onClick={() => void cancelRender()} disabled={renderActionPending !== null}>{renderActionPending === 'cancel' ? 'Cancelling…' : 'Cancel render'}</button></>}
+        {renderJob.status === 'succeeded' && <><video controls preload="metadata" aria-label="Rendered Manim preview" src={`/api/proofcanvas/render/${encodeURIComponent(renderJob.id)}/video`}/><dl className="pc-render-metadata"><div><dt>Output</dt><dd>{renderJob.output ? `${renderJob.output.width}×${renderJob.output.height} · ${renderJob.output.fps} fps` : 'Verified MP4'}</dd></div><div><dt>Duration</dt><dd>{renderJob.video?.durationSeconds === undefined ? 'Verified by renderer' : `${renderJob.video.durationSeconds.toFixed(3)}s · ${renderJob.video.decodedFrames} frames`}</dd></div><div><dt>Streams</dt><dd>{renderJob.video?.videoCodec ? `${renderJob.video.videoCodec.toUpperCase()} video · ${renderJob.video.audioCodec ? `${renderJob.video.audioCodec.toUpperCase()} audio` : 'no audio'}` : 'Video metadata retained'}</dd></div><div><dt>Artifact</dt><dd>{renderJob.video ? `${renderJob.video.bytes.toLocaleString()} bytes · ${renderJob.video.sha256.slice(0, 12)}` : 'Unavailable'}</dd></div></dl><div className="pc-render-actions"><a className="pc-download-render" href={`/api/proofcanvas/render/${encodeURIComponent(renderJob.id)}/video`} download="proofcanvas-render.mp4">Download MP4</a><button type="button" onClick={() => void downloadRenderStill()} disabled={!renderRepresentsCurrentProject || renderActionPending !== null}>{renderActionPending === 'still' ? 'Exporting still…' : 'Download still at playhead'}</button></div></>}
+        {(renderJob.status === 'failed' || renderJob.status === 'cancelled') && <><p>{renderJob.status === 'cancelled' ? 'This render was cancelled before publication.' : renderJob.error?.message ?? 'Manim could not render this generated scene.'}</p><button type="button" onClick={() => void startRender(renderJob.quality)} disabled={renderPending || renderActionPending !== null}>{renderPending ? 'Submitting…' : `Retry ${renderJob.quality} render`}</button></>}
         {renderPollingPaused && (renderJob.status === 'pending' || renderJob.status === 'running') && <button type="button" onClick={() => { setRendererMessage(''); setRenderPollFailures(0); setRenderPollingPaused(false) }}>Resume status polling</button>}
       </section>}
       {exportPreview && <div ref={exportDialogRef} className="pc-export-dialog" role="dialog" aria-modal="true" aria-label={exportPreview.title}><header role="group"><h2>{exportPreview.title}</h2><button type="button" onClick={() => setExportPreview(null)} aria-label="Close export preview">×</button></header><div className="pc-export-body">{exportPreview.diagnostics && exportPreview.diagnostics.length > 0 && <section className="pc-export-diagnostics" aria-label="Compiler diagnostics"><h3>Compiler diagnostics</h3><ul>{exportPreview.diagnostics.map((diagnostic) => <li key={diagnostic}>{diagnostic}</li>)}</ul></section>}<pre tabIndex={0}>{exportPreview.contents}</pre></div></div>}

@@ -466,13 +466,61 @@ export const AssetMetadataSchema = z.object({
   id: IdSchema,
   filename: z.string().min(1).max(240).refine((value) => !/[\\/\u0000]/.test(value), "Asset filename must not contain a path"),
   mimeType: z.enum(["image/png", "image/jpeg", "image/webp", "image/svg+xml", "audio/wav", "audio/mpeg", "audio/mp4"]),
-  size: z.number().int().positive().max(512 * 1024 * 1024),
+  size: z.number().int().positive().max(64 * 1024 * 1024),
   sha256: z.string().regex(/^[0-9a-f]{64}$/),
   width: z.number().int().positive().max(16_384).optional(),
   height: z.number().int().positive().max(16_384).optional(),
   duration: PositiveTimelineDurationSchema.pipe(z.number().max(7_200)).optional(),
   provenance: z.enum(["uploaded", "generated", "bundled", "legacy-import"]),
 }).strict();
+
+export const AssetFitSchema = z.enum(["contain", "cover", "fill"]);
+export const AssetCropSchema = z.object({
+  x: z.number().finite().min(0).max(1),
+  y: z.number().finite().min(0).max(1),
+  width: z.number().finite().min(0.001).max(1),
+  height: z.number().finite().min(0.001).max(1),
+}).strict().superRefine((crop, context) => {
+  if (crop.x + crop.width > 1) context.addIssue({ code: "custom", path: ["width"], message: "Asset crop must remain inside the source width" });
+  if (crop.y + crop.height > 1) context.addIssue({ code: "custom", path: ["height"], message: "Asset crop must remain inside the source height" });
+});
+export const AssetMaskSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("none") }).strict(),
+  z.object({ kind: z.literal("circle") }).strict(),
+  z.object({
+    kind: z.literal("rounded-rectangle"),
+    radius: z.number().finite().min(0).max(PROOFCANVAS_SCHEMA_LIMITS.cornerRadiusMax),
+  }).strict(),
+]);
+export const AssetVisualSettingsSchema = z.object({
+  fit: AssetFitSchema.optional(),
+  preserveAspectRatio: z.boolean().optional(),
+  crop: AssetCropSchema.optional(),
+  mask: AssetMaskSchema.optional(),
+}).strict();
+
+export type AssetVisualSettings = z.infer<typeof AssetVisualSettingsSchema>;
+
+/** Exact visual defaults for an image/SVG object without mutating old documents. */
+export function assetVisualSettingsFor(
+  object: Pick<z.infer<typeof SceneObjectObjectSchema>, "type" | "properties">,
+): Required<Pick<AssetVisualSettings, "fit" | "preserveAspectRatio">> & Pick<AssetVisualSettings, "crop" | "mask"> {
+  if (object.type !== "image" && object.type !== "svg") {
+    throw new Error("Asset visual settings require an image or SVG object");
+  }
+  const parsed = AssetVisualSettingsSchema.parse({
+    ...(object.properties.fit === undefined ? {} : { fit: object.properties.fit }),
+    ...(object.properties.preserveAspectRatio === undefined ? {} : { preserveAspectRatio: object.properties.preserveAspectRatio }),
+    ...(object.properties.crop === undefined ? {} : { crop: object.properties.crop }),
+    ...(object.properties.mask === undefined ? {} : { mask: object.properties.mask }),
+  });
+  return {
+    fit: parsed.fit ?? "contain",
+    preserveAspectRatio: parsed.preserveAspectRatio ?? true,
+    ...(parsed.crop === undefined ? {} : { crop: parsed.crop }),
+    ...(parsed.mask === undefined ? {} : { mask: parsed.mask }),
+  };
+}
 
 export const CustomEasingPresetSchema = z.object({
   id: IdSchema,
@@ -560,9 +608,23 @@ const AudioClipObjectSchema = z.object({
   volume: z.number().finite().min(0).max(4),
   muted: z.boolean(),
   solo: z.boolean(),
-}).strict().refine(({ sourceStart, sourceEnd }) => compareTimelineTimes(sourceEnd, sourceStart) > 0, {
-  message: "Audio source end must be after its start",
-  path: ["sourceEnd"],
+  fadeIn: NonnegativeTimelineTimeSchema.pipe(z.number().max(7_200)).optional(),
+  fadeOut: NonnegativeTimelineTimeSchema.pipe(z.number().max(7_200)).optional(),
+}).strict().superRefine((clip, context) => {
+  if (compareTimelineTimes(clip.sourceEnd, clip.sourceStart) <= 0) {
+    context.addIssue({ code: "custom", path: ["sourceEnd"], message: "Audio source end must be after its start" });
+  }
+  const fadeIn = clip.fadeIn ?? 0;
+  const fadeOut = clip.fadeOut ?? 0;
+  if (isCanonicalTimelineTime(fadeIn) && isCanonicalTimelineTime(fadeOut) && isCanonicalTimelineTime(clip.duration)) {
+    try {
+      if (compareTimelineTimes(addCanonicalTimelineTimes(fadeIn, fadeOut), clip.duration) > 0) {
+        context.addIssue({ code: "custom", path: ["fadeOut"], message: "Audio fades must fit inside the clip duration" });
+      }
+    } catch {
+      context.addIssue({ code: "custom", path: ["fadeOut"], message: "Audio fades must fit inside the clip duration" });
+    }
+  }
 });
 export const AudioClipSchema = z.preprocess((candidate) => {
   return normalizeStartDurationInput(candidate);
@@ -1155,6 +1217,20 @@ const SceneObjectObjectSchema = z.object({
     if ((typeof assetId !== "string" || !IdSchema.safeParse(assetId).success) && (typeof source !== "string" || !isSafeAssetSource(source))) {
       context.addIssue({ code: "custom", path: ["properties"], message: "Asset object requires a valid assetId or a legacy local ProofCanvas source" });
     }
+    const visual = AssetVisualSettingsSchema.safeParse({
+      ...(object.properties.fit === undefined ? {} : { fit: object.properties.fit }),
+      ...(object.properties.preserveAspectRatio === undefined ? {} : { preserveAspectRatio: object.properties.preserveAspectRatio }),
+      ...(object.properties.crop === undefined ? {} : { crop: object.properties.crop }),
+      ...(object.properties.mask === undefined ? {} : { mask: object.properties.mask }),
+    });
+    if (!visual.success) {
+      const issue = visual.error.issues[0];
+      context.addIssue({
+        code: "custom",
+        path: ["properties", ...(issue?.path ?? [])],
+        message: issue?.message ?? "Asset visual settings are invalid",
+      });
+    }
   }
 });
 
@@ -1343,6 +1419,7 @@ export const StylePackSchema = z.object({
   }).strict(),
   annotation: z.object({
     treatment: z.enum(["plain", "marginal-hand"]),
+    fontFamily: z.string().min(1).max(120).optional(),
     offset: AnimationCoordinateSchema,
     roughness: z.number().finite().min(0).max(1),
   }).strict(),
@@ -1352,8 +1429,8 @@ export const StylePackSchema = z.object({
     curveWeight: z.number().finite().nonnegative().max(PROOFCANVAS_SCHEMA_LIMITS.strokeWidthMax),
   }).strict(),
   layout: z.object({
-    tendency: z.enum(["centred", "editorial-asymmetric"]),
-    titleAnchor: z.enum(["center", "upper-left"]),
+    tendency: z.enum(["centred", "editorial-asymmetric", "chalkboard-column"]),
+    titleAnchor: z.enum(["center", "upper-left", "upper-center"]),
     hierarchyContrast: z.number().finite().min(PROOFCANVAS_SCHEMA_LIMITS.typographyScaleMin).max(PROOFCANVAS_SCHEMA_LIMITS.hierarchyContrastMax),
   }).strict(),
   motion: z.object({
@@ -1365,6 +1442,14 @@ export const StylePackSchema = z.object({
     cameraMaxPan: z.number().finite().nonnegative().max(PROOFCANVAS_SCHEMA_LIMITS.animationCoordinateMagnitude),
     cameraMaxZoom: z.number().finite().min(1).max(PROOFCANVAS_SCHEMA_LIMITS.cameraZoomMax),
   }).strict(),
+  caption: z.object({
+    color: HexColorSchema,
+    background: HexColorSchema,
+    fontFamily: z.string().min(1).max(120),
+    fontSize: z.number().finite().min(8).max(144),
+    position: z.enum(["top", "center", "bottom"]),
+    maxWidth: z.number().finite().min(0.4).max(1),
+  }).strict().optional(),
 }).strict();
 
 function trackTargetKey(target: z.infer<typeof PropertyTrackTargetSchema>): string {
@@ -1943,6 +2028,8 @@ export type StylePack = z.infer<typeof StylePackSchema>;
 export type ProjectDocument = z.infer<typeof ProjectDocumentSchema>;
 export type ProjectSettings = z.infer<typeof ProjectSettingsSchema>;
 export type AssetMetadata = z.infer<typeof AssetMetadataSchema>;
+export type AudioClip = z.infer<typeof AudioClipSchema>;
+export type CaptionClip = z.infer<typeof CaptionClipSchema>;
 export type ObjectLifetime = z.infer<typeof ObjectLifetimeSchema>;
 export type PropertyTrack = z.infer<typeof PropertyTrackSchema>;
 export type PropertyKeyframe = z.infer<typeof PropertyKeyframeSchema>;

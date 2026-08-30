@@ -1,12 +1,14 @@
 import { z } from "zod";
 import { allocateId, collectProjectIds, collectShotIds } from "./ids";
-import { addTimelineTimes, compareTimelineTimes, logicalFrameFor, resolutionFor, subtractTimelineTimes } from "./frame";
+import { addTimelineTimes, canonicalTimelineTime, compareTimelineTimes, logicalFrameFor, resolutionFor, subtractTimelineTimes } from "./frame";
 import { firstVisibilityAnimationByTarget, previewShotAtTime } from "./preview";
 import { effectiveObjectLifetime, propertyTrackKey, samplePropertyTrack } from "./timeline";
 import { projectAuthoringTransitionIssue } from "./authoringPolicy";
 import { remapDeclaredObjectPropertyReferences } from "./objectReferences";
 import {
   AspectRatioSchema,
+  AudioClipSchema,
+  CaptionClipSchema,
   CustomEasingPresetSchema,
   FrameRateSchema,
   PositiveTimelineDurationSchema,
@@ -55,7 +57,7 @@ export const DocumentOperationSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("set-project-settings"),
     settings: ProjectSettingsInputSchema,
-    cameraPolicy: z.enum(["preserve", "recenter-default"]),
+    cameraPolicy: z.enum(["preserve", "recenter-default", "fit-all"]),
   }).strict(),
   z.object({ type: z.literal("add-shot"), shot: AuthorableShotSchema, index: z.number().int().nonnegative().optional() }).strict(),
   z.object({ type: z.literal("update-shot"), shotId: ShotSchema.shape.id, patch: ShotPatchSchema }).strict(),
@@ -67,6 +69,14 @@ export const DocumentOperationSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("add-marker"), shotId: ShotSchema.shape.id, marker: TimelineMarkerSchema }).strict(),
   z.object({ type: z.literal("update-marker"), shotId: ShotSchema.shape.id, markerId: TimelineMarkerSchema.shape.id, patch: MarkerPatchSchema }).strict(),
   z.object({ type: z.literal("delete-marker"), shotId: ShotSchema.shape.id, markerId: TimelineMarkerSchema.shape.id }).strict(),
+  z.object({ type: z.literal("add-audio-clip"), shotId: ShotSchema.shape.id, clip: AudioClipSchema }).strict(),
+  z.object({ type: z.literal("replace-audio-clip"), shotId: ShotSchema.shape.id, audioClipId: ShotSchema.shape.id, clip: AudioClipSchema }).strict(),
+  z.object({ type: z.literal("delete-audio-clip"), shotId: ShotSchema.shape.id, audioClipId: ShotSchema.shape.id }).strict(),
+  z.object({ type: z.literal("split-audio-clip"), shotId: ShotSchema.shape.id, audioClipId: ShotSchema.shape.id, time: PositiveTimelineDurationSchema, rightClipId: ShotSchema.shape.id }).strict(),
+  z.object({ type: z.literal("add-caption"), shotId: ShotSchema.shape.id, clip: CaptionClipSchema }).strict(),
+  z.object({ type: z.literal("replace-caption"), shotId: ShotSchema.shape.id, captionId: ShotSchema.shape.id, clip: CaptionClipSchema }).strict(),
+  z.object({ type: z.literal("delete-caption"), shotId: ShotSchema.shape.id, captionId: ShotSchema.shape.id }).strict(),
+  z.object({ type: z.literal("split-caption"), shotId: ShotSchema.shape.id, captionId: ShotSchema.shape.id, time: PositiveTimelineDurationSchema, rightCaptionId: ShotSchema.shape.id }).strict(),
   z.object({ type: z.literal("add-style"), style: StylePackSchema, index: z.number().int().nonnegative().optional() }).strict(),
   z.object({ type: z.literal("replace-style"), styleId: StylePackSchema.shape.id, style: StylePackSchema }).strict(),
   z.object({ type: z.literal("delete-style"), styleId: StylePackSchema.shape.id, fallbackStyleId: StylePackSchema.shape.id.optional() }).strict(),
@@ -179,6 +189,106 @@ function assertAnimationsCanBeStructurallyCopied(shots: readonly Shot[]): void {
   }
 }
 
+interface FrameReframe {
+  readonly scale: number;
+  x(value: number): number;
+  y(value: number): number;
+  length(value: number): number;
+  dimension(value: number): number;
+}
+
+/**
+ * A centred contain mapping between the two persisted logical frames. The
+ * single scale preserves authored proportions and guarantees that every point
+ * inside the previous frame maps inside the next frame.
+ */
+function fitAllReframe(
+  previousFrame: ReturnType<typeof logicalFrameFor>,
+  nextFrame: ReturnType<typeof logicalFrameFor>,
+): FrameReframe {
+  const scale = Math.min(
+    nextFrame.width / previousFrame.width,
+    nextFrame.height / previousFrame.height,
+  );
+  const stable = (value: number) => {
+    const result = Number(value.toPrecision(15));
+    return Object.is(result, -0) ? 0 : result;
+  };
+  return {
+    scale,
+    x: (value) => stable(nextFrame.centerX + (value - previousFrame.centerX) * scale),
+    y: (value) => stable(nextFrame.centerY + (value - previousFrame.centerY) * scale),
+    length: (value) => stable(value * scale),
+    dimension: (value) => Math.max(1, stable(value * scale)),
+  };
+}
+
+function reframeObjectVisualGeometry(object: SceneObject, frame: FrameReframe): void {
+  object.transform.x = frame.x(object.transform.x);
+  object.transform.y = frame.y(object.transform.y);
+  if (object.transform.width !== undefined) object.transform.width = frame.dimension(object.transform.width);
+  if (object.transform.height !== undefined) object.transform.height = frame.dimension(object.transform.height);
+
+  // Explicit per-object font and stroke values are part of the rendered local
+  // geometry. Project style tokens remain design defaults, not authored object
+  // coordinates; inherited and non-geometric style values are left untouched.
+  if (object.style.fontSize !== undefined) object.style.fontSize = Math.max(1, frame.length(object.style.fontSize));
+  if (object.style.strokeWidth !== undefined) object.style.strokeWidth = frame.length(object.style.strokeWidth);
+
+  const shape = object.properties.shape;
+  if (!shape || typeof shape !== "object" || Array.isArray(shape)) return;
+  if (shape.kind === "rectangle" && typeof shape.cornerRadius === "number") {
+    shape.cornerRadius = frame.length(shape.cornerRadius);
+  } else if (shape.kind === "brace" && typeof shape.spacing === "number") {
+    shape.spacing = frame.length(shape.spacing);
+  } else if (shape.kind === "dashed-line") {
+    // Current dashed-shape lengths have a schema minimum of one logical unit.
+    // Contain conversion only shrinks, so keep boundary documents valid while
+    // scaling ordinary authored patterns uniformly.
+    if (typeof shape.dashLength === "number") shape.dashLength = Math.max(1, frame.length(shape.dashLength));
+    if (typeof shape.gapLength === "number") shape.gapLength = Math.max(1, frame.length(shape.gapLength));
+  }
+}
+
+function reframeShotToFit(shot: Shot, frame: FrameReframe): void {
+  for (const object of shot.objects) reframeObjectVisualGeometry(object, frame);
+
+  shot.camera.x = frame.x(shot.camera.x);
+  shot.camera.y = frame.y(shot.camera.y);
+
+  for (const track of shot.propertyTracks) {
+    if (track.target.kind === "audio") continue;
+    const mapValue = track.property === "x"
+      ? frame.x
+      : track.property === "y"
+        ? frame.y
+        : track.target.kind === "object" && (track.property === "width" || track.property === "height")
+          ? frame.dimension
+          : track.target.kind === "object" && track.property === "strokeWidth"
+            ? frame.length
+          : undefined;
+    if (!mapValue) continue;
+    for (const keyframe of track.keyframes) {
+      if (typeof keyframe.value === "number") keyframe.value = mapValue(keyframe.value);
+    }
+  }
+
+  for (const animation of shot.animations) {
+    if (animation.type !== "move" && animation.type !== "transform" && animation.type !== "camera-focus") continue;
+    const properties = animation.properties;
+    if (typeof properties.x === "number") properties.x = frame.x(properties.x);
+    if (typeof properties.y === "number") properties.y = frame.y(properties.y);
+    if (animation.type === "move") {
+      if (typeof properties.deltaX === "number") properties.deltaX = frame.length(properties.deltaX);
+      if (typeof properties.deltaY === "number") properties.deltaY = frame.length(properties.deltaY);
+    }
+    if (animation.type === "transform") {
+      if (typeof properties.width === "number") properties.width = frame.dimension(properties.width);
+      if (typeof properties.height === "number") properties.height = frame.dimension(properties.height);
+    }
+  }
+}
+
 function applyOne(project: ProjectDocument, operation: DocumentOperation): AppliedDocumentOperation {
   switch (operation.type) {
     case "rename-project":
@@ -187,7 +297,10 @@ function applyOne(project: ProjectDocument, operation: DocumentOperation): Appli
     case "set-project-settings": {
       const previousFrame = logicalFrameFor(project.settings.aspectRatio);
       const nextFrame = logicalFrameFor(operation.settings.aspectRatio);
-      if (operation.cameraPolicy === "recenter-default") {
+      if (operation.cameraPolicy === "fit-all") {
+        const frame = fitAllReframe(previousFrame, nextFrame);
+        for (const shot of project.shots) reframeShotToFit(shot, frame);
+      } else if (operation.cameraPolicy === "recenter-default") {
         for (const shot of project.shots) {
           const hasAuthoredCameraMotion = shot.animations.some(({ type }) => type === "camera-focus")
             || shot.propertyTracks.some(({ target }) => target.kind === "camera");
@@ -205,7 +318,7 @@ function applyOne(project: ProjectDocument, operation: DocumentOperation): Appli
         ...cloneSerializable(operation.settings),
         resolution: resolutionFor(operation.settings.aspectRatio, operation.settings.renderPreset),
       };
-      return applied(`Updated project settings to ${operation.settings.aspectRatio} ${operation.settings.frameRate}fps`);
+      return applied(`Updated project settings to ${operation.settings.aspectRatio} ${operation.settings.frameRate}fps${operation.cameraPolicy === "fit-all" ? " and fit all authored content" : ""}`);
     }
     case "add-shot": {
       assertShotIdsAreFresh(project, operation.shot);
@@ -285,6 +398,104 @@ function applyOne(project: ProjectDocument, operation: DocumentOperation): Appli
       if (!marker) throw new DocumentOperationValidationError(`Marker not found: ${operation.markerId}`);
       shot.markers = shot.markers.filter(({ id }) => id !== marker.id);
       return applied(`Deleted marker ${marker.name}`);
+    }
+    case "add-audio-clip": {
+      const shot = shotById(project, operation.shotId);
+      requireFreshId(project, operation.clip.id);
+      shot.audioClips.push(cloneSerializable(operation.clip));
+      shot.audioClips.sort((left, right) => compareTimelineTimes(left.start, right.start) || left.id.localeCompare(right.id));
+      return applied(`Added audio clip ${operation.clip.name}`);
+    }
+    case "replace-audio-clip": {
+      if (operation.clip.id !== operation.audioClipId) throw new DocumentOperationValidationError("Replacement audio clip must preserve its stable ID");
+      const shot = shotById(project, operation.shotId);
+      const index = shot.audioClips.findIndex(({ id }) => id === operation.audioClipId);
+      if (index < 0) throw new DocumentOperationValidationError(`Audio clip not found: ${operation.audioClipId}`);
+      shot.audioClips[index] = cloneSerializable(operation.clip);
+      shot.audioClips.sort((left, right) => compareTimelineTimes(left.start, right.start) || left.id.localeCompare(right.id));
+      return applied(`Updated audio clip ${operation.clip.name}`);
+    }
+    case "delete-audio-clip": {
+      const shot = shotById(project, operation.shotId);
+      const clip = shot.audioClips.find(({ id }) => id === operation.audioClipId);
+      if (!clip) throw new DocumentOperationValidationError(`Audio clip not found: ${operation.audioClipId}`);
+      shot.audioClips = shot.audioClips.filter(({ id }) => id !== clip.id);
+      shot.propertyTracks = shot.propertyTracks.filter(({ target }) => target.kind !== "audio" || target.audioClipId !== clip.id);
+      return applied(`Deleted audio clip ${clip.name}`);
+    }
+    case "split-audio-clip": {
+      const shot = shotById(project, operation.shotId);
+      const index = shot.audioClips.findIndex(({ id }) => id === operation.audioClipId);
+      if (index < 0) throw new DocumentOperationValidationError(`Audio clip not found: ${operation.audioClipId}`);
+      requireFreshId(project, operation.rightClipId);
+      const clip = shot.audioClips[index];
+      const clipEnd = addTimelineTimes(clip.start, clip.duration);
+      if (compareTimelineTimes(operation.time, clip.start) <= 0 || compareTimelineTimes(operation.time, clipEnd) >= 0) {
+        throw new DocumentOperationValidationError("Audio split time must be inside the clip");
+      }
+      if ((clip.fadeIn ?? 0) > 0 || (clip.fadeOut ?? 0) > 0) {
+        throw new DocumentOperationValidationError("Remove audio fades before splitting so the envelope is not changed");
+      }
+      if (shot.propertyTracks.some(({ target }) => target.kind === "audio" && target.audioClipId === clip.id)) {
+        throw new DocumentOperationValidationError("Remove or bake audio volume keyframes before splitting so interpolation is not changed");
+      }
+      const leftDuration = subtractTimelineTimes(operation.time, clip.start);
+      const rightDuration = subtractTimelineTimes(clipEnd, operation.time);
+      const sourceSpan = subtractTimelineTimes(clip.sourceEnd, clip.sourceStart);
+      const sourceSplit = canonicalTimelineTime(clip.sourceStart + sourceSpan * (leftDuration / clip.duration));
+      if (compareTimelineTimes(sourceSplit, clip.sourceStart) <= 0 || compareTimelineTimes(sourceSplit, clip.sourceEnd) >= 0) {
+        throw new DocumentOperationValidationError("Audio source precision cannot represent this split exactly");
+      }
+      const left = { ...cloneSerializable(clip), duration: leftDuration, sourceEnd: sourceSplit };
+      const right = {
+        ...cloneSerializable(clip),
+        id: operation.rightClipId,
+        name: `${clip.name} split`.slice(0, 120),
+        start: operation.time,
+        duration: rightDuration,
+        sourceStart: sourceSplit,
+      };
+      shot.audioClips.splice(index, 1, left, right);
+      shot.audioClips.sort((leftClip, rightClip) => compareTimelineTimes(leftClip.start, rightClip.start) || leftClip.id.localeCompare(rightClip.id));
+      return applied(`Split audio clip ${clip.name}`);
+    }
+    case "add-caption": {
+      const shot = shotById(project, operation.shotId);
+      requireFreshId(project, operation.clip.id);
+      shot.captionClips.push(cloneSerializable(operation.clip));
+      shot.captionClips.sort((left, right) => compareTimelineTimes(left.start, right.start) || left.id.localeCompare(right.id));
+      return applied(`Added caption ${operation.clip.id}`);
+    }
+    case "replace-caption": {
+      if (operation.clip.id !== operation.captionId) throw new DocumentOperationValidationError("Replacement caption must preserve its stable ID");
+      const shot = shotById(project, operation.shotId);
+      const index = shot.captionClips.findIndex(({ id }) => id === operation.captionId);
+      if (index < 0) throw new DocumentOperationValidationError(`Caption not found: ${operation.captionId}`);
+      shot.captionClips[index] = cloneSerializable(operation.clip);
+      shot.captionClips.sort((left, right) => compareTimelineTimes(left.start, right.start) || left.id.localeCompare(right.id));
+      return applied(`Updated caption ${operation.captionId}`);
+    }
+    case "delete-caption": {
+      const shot = shotById(project, operation.shotId);
+      const clip = shot.captionClips.find(({ id }) => id === operation.captionId);
+      if (!clip) throw new DocumentOperationValidationError(`Caption not found: ${operation.captionId}`);
+      shot.captionClips = shot.captionClips.filter(({ id }) => id !== clip.id);
+      return applied(`Deleted caption ${clip.id}`);
+    }
+    case "split-caption": {
+      const shot = shotById(project, operation.shotId);
+      const index = shot.captionClips.findIndex(({ id }) => id === operation.captionId);
+      if (index < 0) throw new DocumentOperationValidationError(`Caption not found: ${operation.captionId}`);
+      requireFreshId(project, operation.rightCaptionId);
+      const clip = shot.captionClips[index];
+      if (compareTimelineTimes(operation.time, clip.start) <= 0 || compareTimelineTimes(operation.time, clip.end) >= 0) {
+        throw new DocumentOperationValidationError("Caption split time must be inside the clip");
+      }
+      const left = { ...cloneSerializable(clip), end: operation.time };
+      const right = { ...cloneSerializable(clip), id: operation.rightCaptionId, start: operation.time };
+      shot.captionClips.splice(index, 1, left, right);
+      shot.captionClips.sort((leftClip, rightClip) => compareTimelineTimes(leftClip.start, rightClip.start) || leftClip.id.localeCompare(rightClip.id));
+      return applied(`Split caption ${clip.id}`);
     }
     case "add-style":
       requireFreshId(project, operation.style.id);

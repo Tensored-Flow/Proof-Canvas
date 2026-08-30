@@ -2,6 +2,8 @@ import type { SceneObject, Shot, StylePack } from "./schema";
 
 export const EDITORIAL_INK_STYLE_ID = "style-editorial-ink";
 export const RAW_MANIM_STYLE_ID = "style-raw-manim";
+export const SCIENTIFIC_MINIMAL_STYLE_ID = "style-scientific-minimal";
+export const NOCTURNE_CHALK_STYLE_ID = "style-nocturne-chalk";
 
 export const EDITORIAL_INK_STYLE: StylePack = Object.freeze({
   id: EDITORIAL_INK_STYLE_ID,
@@ -25,7 +27,7 @@ export const EDITORIAL_INK_STYLE: StylePack = Object.freeze({
   spacing: { unit: 8, margin: 48, objectGap: 18 },
   strokes: { fine: 1, regular: 1.75, emphasis: 3 },
   corners: { panel: 2, object: 1 },
-  annotation: { treatment: "marginal-hand", offset: 14, roughness: 0.32 },
+  annotation: { treatment: "marginal-hand", fontFamily: "Georgia, serif", offset: 14, roughness: 0.32 },
   graph: { gridOpacity: 0.12, axisWeight: 1.15, curveWeight: 2.25 },
   layout: { tendency: "editorial-asymmetric", titleAnchor: "upper-left", hierarchyContrast: 1.5 },
   motion: {
@@ -37,6 +39,7 @@ export const EDITORIAL_INK_STYLE: StylePack = Object.freeze({
     cameraMaxPan: 140,
     cameraMaxZoom: 1.35,
   },
+  caption: { color: "#f3eedf", background: "#252722", fontFamily: "Geist, Arial, sans-serif", fontSize: 30, position: "bottom", maxWidth: 0.82 },
 } satisfies StylePack);
 
 export const RAW_MANIM_STYLE: StylePack = Object.freeze({
@@ -61,7 +64,7 @@ export const RAW_MANIM_STYLE: StylePack = Object.freeze({
   spacing: { unit: 8, margin: 24, objectGap: 12 },
   strokes: { fine: 1, regular: 2, emphasis: 3 },
   corners: { panel: 0, object: 0 },
-  annotation: { treatment: "plain", offset: 8, roughness: 0 },
+  annotation: { treatment: "plain", fontFamily: "Arial, sans-serif", offset: 8, roughness: 0 },
   graph: { gridOpacity: 0.2, axisWeight: 1, curveWeight: 2 },
   layout: { tendency: "centred", titleAnchor: "center", hierarchyContrast: 1 },
   motion: {
@@ -73,15 +76,108 @@ export const RAW_MANIM_STYLE: StylePack = Object.freeze({
     cameraMaxPan: 80,
     cameraMaxZoom: 1.2,
   },
+  caption: { color: "#ffffff", background: "#000000", fontFamily: "Arial, sans-serif", fontSize: 28, position: "bottom", maxWidth: 0.84 },
+} satisfies StylePack);
+
+export const SCIENTIFIC_MINIMAL_STYLE: StylePack = Object.freeze({
+  id: SCIENTIFIC_MINIMAL_STYLE_ID,
+  name: "Scientific Minimal",
+  origin: "preset",
+  colors: {
+    background: "#f8fafc",
+    ink: "#14202b",
+    mutedInk: "#607080",
+    coolAccent: "#176b87",
+    warmAccent: "#c85a34",
+    rule: "#9aaab8",
+  },
+  typography: {
+    statement: "Inter, Helvetica Neue, Arial, sans-serif",
+    controls: "IBM Plex Mono, Menlo, monospace",
+    math: "STIX Two Math, Times New Roman, serif",
+    titleScale: 1.16,
+    bodyScale: 0.92,
+  },
+  spacing: { unit: 6, margin: 36, objectGap: 14 },
+  strokes: { fine: 0.75, regular: 1.25, emphasis: 2.5 },
+  corners: { panel: 4, object: 3 },
+  annotation: { treatment: "plain", fontFamily: "IBM Plex Mono, Menlo, monospace", offset: 10, roughness: 0 },
+  graph: { gridOpacity: 0.08, axisWeight: 1, curveWeight: 2 },
+  layout: { tendency: "centred", titleAnchor: "center", hierarchyContrast: 1.28 },
+  motion: {
+    defaultDuration: 0.55,
+    easing: "ease-in-out",
+    entrance: "fade-in",
+    exit: "fade-out",
+    emphasis: "emphasise",
+    cameraMaxPan: 90,
+    cameraMaxZoom: 1.2,
+  },
+  caption: { color: "#f8fafc", background: "#14202b", fontFamily: "Inter, Helvetica Neue, Arial, sans-serif", fontSize: 27, position: "bottom", maxWidth: 0.76 },
+} satisfies StylePack);
+
+export const NOCTURNE_CHALK_STYLE: StylePack = Object.freeze({
+  id: NOCTURNE_CHALK_STYLE_ID,
+  name: "Nocturne Chalk",
+  origin: "preset",
+  colors: {
+    background: "#101b1b",
+    ink: "#f0ead7",
+    mutedInk: "#b2b8a9",
+    coolAccent: "#77b7a5",
+    warmAccent: "#e39a70",
+    rule: "#70827b",
+  },
+  typography: {
+    statement: "Alegreya, Georgia, serif",
+    controls: "Geist Mono, Menlo, monospace",
+    math: "STIX Two Math, Times New Roman, serif",
+    titleScale: 1.38,
+    bodyScale: 1.04,
+  },
+  spacing: { unit: 10, margin: 58, objectGap: 24 },
+  strokes: { fine: 1.35, regular: 2.35, emphasis: 4 },
+  corners: { panel: 7, object: 6 },
+  annotation: { treatment: "marginal-hand", fontFamily: "Alegreya, Georgia, serif", offset: 20, roughness: 0.58 },
+  graph: { gridOpacity: 0.16, axisWeight: 1.5, curveWeight: 3.2 },
+  layout: { tendency: "chalkboard-column", titleAnchor: "upper-center", hierarchyContrast: 1.72 },
+  motion: {
+    defaultDuration: 1.05,
+    easing: "spring-soft",
+    entrance: "write",
+    exit: "fade-out",
+    emphasis: "emphasise",
+    cameraMaxPan: 110,
+    cameraMaxZoom: 1.28,
+  },
+  caption: { color: "#f0ead7", background: "#101b1b", fontFamily: "Alegreya, Georgia, serif", fontSize: 32, position: "bottom", maxWidth: 0.88 },
 } satisfies StylePack);
 
 export const DEFAULT_STYLE_PACKS: readonly StylePack[] = Object.freeze([
   EDITORIAL_INK_STYLE,
+  SCIENTIFIC_MINIMAL_STYLE,
+  NOCTURNE_CHALK_STYLE,
   RAW_MANIM_STYLE,
 ]);
 
 export function styleById(styles: readonly StylePack[], styleId: string): StylePack | undefined {
   return styles.find((style) => style.id === styleId);
+}
+
+const MUTED_TEXT_ROLES = new Set(["annotation", "data-label", "marginal-note", "subtitle"]);
+const COOL_ACCENT_TEXT_ROLES = new Set(["cool-label", "equation", "limit-equation", "main-claim"]);
+const WARM_ACCENT_TEXT_ROLES = new Set(["counter-claim", "warm-label"]);
+
+/** Resolve semantic demo typography through the active style while preserving explicit user colour. */
+export function resolvedObjectColor(
+  object: Pick<SceneObject, "semanticRole" | "style">,
+  style: StylePack,
+): string {
+  if (object.style.color !== undefined) return object.style.color;
+  if (object.semanticRole && MUTED_TEXT_ROLES.has(object.semanticRole)) return style.colors.mutedInk;
+  if (object.semanticRole && COOL_ACCENT_TEXT_ROLES.has(object.semanticRole)) return style.colors.coolAccent;
+  if (object.semanticRole && WARM_ACCENT_TEXT_ROLES.has(object.semanticRole)) return style.colors.warmAccent;
+  return style.colors.ink;
 }
 
 /** One effective graph-curve style for inspector, preview, and compiler. */

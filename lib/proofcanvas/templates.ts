@@ -1,4 +1,4 @@
-import { createCantorDemoProject } from "./demo";
+import { createCantorV1Project } from "./demo";
 import { PROJECT_SCHEMA_VERSION, ProjectDocumentSchema, cloneSerializable, type ProjectDocument } from "./schema";
 import { DEFAULT_STYLE_PACKS, EDITORIAL_INK_STYLE_ID } from "./styles";
 import { logicalFrameFor, resolutionFor } from "./frame";
@@ -19,7 +19,7 @@ export function createProjectTemplate(
 ): ProjectDocument {
   const safeTitle = normalizedTitle(title);
   if (kind === "sample") {
-    const sample = cloneSerializable(createCantorDemoProject());
+    const sample = cloneSerializable(createCantorV1Project());
     sample.metadata = { id: projectId, title: safeTitle, createdAt: now, updatedAt: now };
     return ProjectDocumentSchema.parse(sample);
   }

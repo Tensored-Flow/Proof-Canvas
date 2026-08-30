@@ -92,7 +92,7 @@ const StoryboardCard = memo(function StoryboardCard({
     onKeyDown={onKeyDown}
   >
     <span className="pc-storyboard-thumbnail-wrap" aria-hidden="true">
-      <CanvasThumbnail aspectRatio={project.settings.aspectRatio} shot={shot} previewStyle={previewStyle} visualRevision={visualRevision}/>
+      <CanvasThumbnail aspectRatio={project.settings.aspectRatio} shot={shot} previewStyle={previewStyle} projectId={project.metadata.id} assets={project.assets} visualRevision={visualRevision}/>
       {emptyAtStart && <span className="pc-storyboard-empty">Empty at 0s</span>}
     </span>
     <span className="pc-storyboard-card-meta"><b>{number}</b><strong>{shot.name}</strong><small>{compactTime(shot.duration)}</small></span>

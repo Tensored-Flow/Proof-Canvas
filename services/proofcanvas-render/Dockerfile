@@ -3,6 +3,13 @@ FROM manimcommunity/manim@sha256:89ab433ce59134a4dcf351deb2511e067ab354393c0bb7d
 USER root
 WORKDIR /app
 
+# The private media protocol uses only shell-free argv invocations, but still
+# requires the pinned FFmpeg/ffprobe executables for bounded audio muxing and
+# independent final-stream verification.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg=7:7.1.5-0+deb13u1 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt requirements.lock /app/
 RUN while IFS= read -r requirement; do \
       grep -Fqx "$requirement \\" /app/requirements.lock; \

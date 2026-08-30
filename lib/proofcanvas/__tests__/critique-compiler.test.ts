@@ -998,4 +998,44 @@ describe("Manim compiler", () => {
 
     expect(() => compileManim(project)).toThrow();
   });
+
+  test("emits the exact bounded raster helper for crop, cover, aspect and rounded mask", () => {
+    const project = cloneSerializable(createCantorDemoProject());
+    const shot = project.shots[0];
+    project.assets = [{
+      id: "asset-visual-parity", filename: "parity.webp", mimeType: "image/webp", size: 100,
+      sha256: "a".repeat(64), width: 640, height: 360, provenance: "uploaded",
+    }];
+    shot.objects = [{
+      id: "object-visual-parity", type: "image", name: "Parity", locked: false, visible: true,
+      transform: { x: 640, y: 360, width: 320, height: 240, rotation: 0, scaleX: 1, scaleY: 1 },
+      style: {},
+      properties: {
+        assetId: "asset-visual-parity", fit: "cover", preserveAspectRatio: true,
+        crop: { x: 0.1, y: 0.2, width: 0.7, height: 0.6 },
+        mask: { kind: "rounded-rectangle", radius: 24 },
+      },
+    }];
+    shot.animations = [];
+    const result = compileManim(ProjectDocumentSchema.parse(project), { assetsById: new Map([[
+      "asset-visual-parity", { path: `assets/${"a".repeat(64)}.webp`, mimeType: "image/webp", width: 640, height: 360 },
+    ]]) });
+    expect(result.diagnostics.some(({ severity }) => severity === "error")).toBe(false);
+    expect(result.python).toContain("from PIL import Image, ImageChops, ImageDraw");
+    expect(result.python).toContain(`proofcanvas_image("assets/${"a".repeat(64)}.webp", 0.1, 0.2, 0.7, 0.6, "cover", True, 320, 240, "rounded-rectangle", 24.0)`);
+    expect(validateWithRendererPolicy(result.python).status).toBe(0);
+
+    for (const properties of [
+      { assetId: "asset-visual-parity", fit: "contain" as const, preserveAspectRatio: true, crop: { x: 0, y: 0, width: 0.5, height: 1 } },
+      { assetId: "asset-visual-parity", fit: "fill" as const, preserveAspectRatio: false, mask: { kind: "circle" as const } },
+    ]) {
+      const variant = cloneSerializable(project);
+      variant.shots[0].objects[0].properties = properties;
+      const compiled = compileManim(ProjectDocumentSchema.parse(variant), { assetsById: new Map([[
+        "asset-visual-parity", { path: `assets/${"a".repeat(64)}.webp`, mimeType: "image/webp", width: 640, height: 360 },
+      ]]) });
+      expect(compiled.python).toContain(`, "${properties.fit}", ${properties.preserveAspectRatio ? "True" : "False"}, 320, 240, "${properties.mask?.kind ?? "none"}`);
+      expect(validateWithRendererPolicy(compiled.python).status).toBe(0);
+    }
+  });
 });

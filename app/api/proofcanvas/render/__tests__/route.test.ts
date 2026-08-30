@@ -1,3 +1,5 @@
+/** @jest-environment node */
+
 jest.mock("next/server", () => ({
   NextResponse: {
     json(body: unknown, init: { status?: number; headers?: Record<string, string> } = {}) {
@@ -36,10 +38,12 @@ jest.mock("@/lib/proofcanvas/repository.server", () => {
     }
   }
   const getProject = jest.fn();
+  const getProjectAsset = jest.fn();
   return {
     ProjectRepositoryError,
-    projectRepository: jest.fn(() => ({ getProject })),
+    projectRepository: jest.fn(() => ({ getProject, getProjectAsset })),
     __mockGetProject: getProject,
+    __mockGetProjectAsset: getProjectAsset,
   };
 });
 
@@ -52,8 +56,11 @@ jest.mock("@/lib/proofcanvas/renderClient.server", () => {
   return {
     RenderClientError,
     readBoundedJson: jest.fn(),
+    referencedRenderAssetIds: jest.fn(() => []),
     submitRender: jest.fn(),
     getRenderJob: jest.fn(),
+    cancelRenderJob: jest.fn(),
+    fetchRenderStill: jest.fn(),
   };
 });
 
@@ -65,20 +72,28 @@ import {
 } from "@/lib/proofcanvas/auth.server";
 import {
   RenderClientError,
+  cancelRenderJob,
+  fetchRenderStill,
   getRenderJob,
   readBoundedJson,
   submitRender,
 } from "@/lib/proofcanvas/renderClient.server";
-import { GET as GET_STATUS } from "../[jobId]/route";
+import { DELETE as DELETE_JOB, GET as GET_STATUS } from "../[jobId]/route";
+import { GET as GET_STILL } from "../[jobId]/still/route";
 import { POST } from "../route";
 
-const { __mockGetProject: mockGetProject } = jest.requireMock("@/lib/proofcanvas/repository.server") as {
+const { __mockGetProject: mockGetProject, __mockGetProjectAsset: mockGetProjectAsset } = jest.requireMock("@/lib/proofcanvas/repository.server") as {
   __mockGetProject: jest.Mock;
+  __mockGetProjectAsset: jest.Mock;
+};
+const { referencedRenderAssetIds: mockReferencedRenderAssetIds } = jest.requireMock("@/lib/proofcanvas/renderClient.server") as {
+  referencedRenderAssetIds: jest.Mock;
 };
 
 const job = {
   id: "abcdefghijklmnopqrstuvwx",
   quality: "preview" as const,
+  output: { width: 1280, height: 720, fps: 30 as const, expectedDurationSeconds: 1 },
   sourceSha256: "a".repeat(64),
   status: "pending" as const,
   createdAt: 1000,
@@ -121,8 +136,72 @@ beforeEach(() => {
   (authorizeStateChangingRequest as jest.Mock).mockReturnValue({ tokenHash: "session" });
   (authenticateRequest as jest.Mock).mockReturnValue({ tokenHash: "session" });
   mockGetProject.mockReturnValue(durableProject());
+  mockReferencedRenderAssetIds.mockReturnValue([]);
   process.env.PROOFCANVAS_RENDER_URL = "http://renderer.example:8080";
   process.env.PROOFCANVAS_RENDER_TOKEN = TOKEN;
+});
+
+test("POST resolves only the selected render's project-scoped trusted assets", async () => {
+  const body = { projectId: PROJECT_ID, revision: REVISION, shotId: "shot-cantor-construction", quality: "preview" };
+  const asset = { asset: { id: "asset-render-one" }, bytes: Buffer.from("trusted") };
+  (readBoundedJson as jest.Mock).mockResolvedValue(body);
+  mockReferencedRenderAssetIds.mockReturnValue(["asset-render-one"]);
+  mockGetProjectAsset.mockReturnValue(asset);
+  (submitRender as jest.Mock).mockResolvedValue(job);
+
+  const response = await POST(request());
+
+  expect(response.status).toBe(202);
+  expect(mockReferencedRenderAssetIds).toHaveBeenCalledWith(project, body.shotId);
+  expect(mockGetProjectAsset).toHaveBeenCalledWith({ projectId: PROJECT_ID, assetId: "asset-render-one" });
+  expect(submitRender).toHaveBeenCalledWith({ project, assets: [asset], shotId: body.shotId, quality: body.quality });
+});
+
+test("DELETE authorizes and forwards bounded cancellation", async () => {
+  const cancelled = { ...job, status: "cancelled", completedAt: 1001, error: { code: "render-cancelled", message: "Render was cancelled." } };
+  (cancelRenderJob as jest.Mock).mockResolvedValue(cancelled);
+  const response = await DELETE_JOB(request(), { params: Promise.resolve({ jobId: job.id }) });
+  expect(response.status).toBe(200);
+  expect(authorizeStateChangingRequest).toHaveBeenCalled();
+  expect(cancelRenderJob).toHaveBeenCalledWith(job.id);
+  expect(await response.json()).toEqual({ ok: true, job: cancelled });
+});
+
+test("still GET authenticates and preserves the exact hash-bound PNG receipt", async () => {
+  const bytes = Buffer.concat([Buffer.from("\x89PNG\r\n\x1a\n", "binary"), Buffer.alloc(56, 7)]);
+  (fetchRenderStill as jest.Mock).mockResolvedValue({
+    body: new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } }),
+    bytes: bytes.byteLength,
+    sourceSha256: "a".repeat(64),
+    stillSha256: "b".repeat(64),
+    timeSeconds: 0.46666667,
+  });
+
+  const response = await GET_STILL(
+    new Request(`https://proofcanvas.test/api/proofcanvas/render/${job.id}/still?time=0.5`),
+    { params: Promise.resolve({ jobId: job.id }) },
+  );
+
+  expect(response.status).toBe(200);
+  expect(authenticateRequest).toHaveBeenCalledTimes(1);
+  expect(fetchRenderStill).toHaveBeenCalledWith(job.id, 0.5);
+  expect(response.headers.get("content-type")).toBe("image/png");
+  expect(response.headers.get("content-length")).toBe(String(bytes.byteLength));
+  expect(response.headers.get("x-proofcanvas-source-sha256")).toBe("a".repeat(64));
+  expect(response.headers.get("x-proofcanvas-still-sha256")).toBe("b".repeat(64));
+  expect(response.headers.get("x-proofcanvas-still-time")).toBe("0.46666667");
+  expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes);
+});
+
+test("still GET rejects ambiguous query parameters before renderer access", async () => {
+  const response = await GET_STILL(
+    new Request(`https://proofcanvas.test/api/proofcanvas/render/${job.id}/still?time=0.5&extra=1`),
+    { params: Promise.resolve({ jobId: job.id }) },
+  );
+
+  expect(response.status).toBe(400);
+  expect(await response.json()).toMatchObject({ ok: false, code: "invalid_still_time" });
+  expect(fetchRenderStill).not.toHaveBeenCalled();
 });
 
 afterAll(() => {
@@ -139,7 +218,7 @@ test("POST accepts the strict public envelope and returns an asynchronous job", 
   expect(response.status).toBe(202);
   expect(response.headers.get("cache-control")).toContain("no-store");
   expect(await response.json()).toEqual({ ok: true, projectId: PROJECT_ID, revision: REVISION, job });
-  expect(submitRender).toHaveBeenCalledWith({ project, shotId: body.shotId, quality: body.quality });
+  expect(submitRender).toHaveBeenCalledWith({ project, assets: [], shotId: body.shotId, quality: body.quality });
   expect(mockGetProject).toHaveBeenCalledWith(PROJECT_ID);
 });
 

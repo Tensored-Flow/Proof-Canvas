@@ -10,6 +10,7 @@ from proofcanvas_render.policy import (
     MAX_RATE_LAMBDAS,
     MAX_SOURCE_BYTES,
     PROOFCANVAS_CUBIC_BEZIER_HELPER,
+    PROOFCANVAS_IMAGE_HELPER,
     SourcePolicyError,
     validate_generated_source,
 )
@@ -79,8 +80,56 @@ def source_with_cubic_helper(statement: str, helper: str = PROOFCANVAS_CUBIC_BEZ
     return f"from manim import *\nimport math\n\n{helper}\nclass GeneratedScene(MovingCameraScene):\n    def construct(self):\n" + statement
 
 
+def source_with_image_helper(statement: str, helper: str = PROOFCANVAS_IMAGE_HELPER) -> str:
+    return f"from manim import *\nimport math\nimport numpy as np\nfrom PIL import Image, ImageChops, ImageDraw\n\n{helper}\nclass GeneratedScene(MovingCameraScene):\n    def construct(self):\n" + statement
+
+
+def test_rejects_any_image_helper_ast_or_import_mutation() -> None:
+    path = "assets/" + "a" * 64 + ".png"
+    statement = (
+        f'        pc_asset = proofcanvas_image("{path}", 0.0, 0.0, 1.0, 1.0, "cover", True, 64, 48, "circle", 0.0).set_opacity(1.0)\n'
+        "        pc_asset.stretch_to_fit_width(2.0).stretch_to_fit_height(1.5)\n"
+        "        pc_asset.shift([0.0, 0.0, 0])\n"
+        "        self.add(pc_asset)\n"
+    )
+    validate(source_with_image_helper(statement))
+    with pytest.raises(SourcePolicyError, match="helper"):
+        validate(source_with_image_helper(statement, PROOFCANVAS_IMAGE_HELPER.replace("LANCZOS", "BILINEAR")))
+    with pytest.raises(SourcePolicyError, match="import"):
+        validate(source_with_image_helper(statement).replace("ImageDraw", "ImageFilter", 1))
+
+
 def validate(source: str) -> None:
     validate_generated_source(source, hashlib.sha256(source.encode("utf-8")).hexdigest())
+
+
+@pytest.mark.parametrize(
+    ("constructor", "suffix"),
+    [("ImageMobject", "png"), ("SVGMobject", "svg")],
+)
+def test_accepts_only_hash_addressed_trusted_asset_constructors(constructor: str, suffix: str) -> None:
+    path = f"assets/{'a' * 64}.{suffix}"
+    validate(source_with(
+        f'        pc_asset = {constructor}("{path}").set_opacity(0.75)\n'
+        "        pc_asset.stretch_to_fit_width(1.0).stretch_to_fit_height(1.0)\n"
+        "        pc_asset.shift([0.0, 0.0, 0])\n"
+        "        self.add(pc_asset)\n"
+    ))
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        'ImageMobject("../asset.png")',
+        f'ImageMobject("assets/{"a" * 64}.svg")',
+        f'SVGMobject("assets/{"a" * 64}.png")',
+        f'ImageMobject("assets/{"A" * 64}.png")',
+        f'ImageMobject("assets/{"a" * 64}.png", image_mode="RGBA")',
+    ],
+)
+def test_rejects_asset_constructor_paths_outside_exact_transport(expression: str) -> None:
+    with pytest.raises(SourcePolicyError):
+        validate(source_with(f"        pc_asset = {expression}\n"))
 
 
 @pytest.mark.parametrize(

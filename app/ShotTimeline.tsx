@@ -55,7 +55,7 @@ export default function ShotTimeline({ project, shot, projectRevision, playhead,
   const viewport = { start: 0, end: shot.duration, widthPx: timelineWidth }
   const interval = chooseTimelineRulerInterval(viewport, project.settings.frameRate, 72)
   const marks = [...iterateTimelineRulerMarks(viewport, project.settings.frameRate, interval.frameStep)]
-  const tracks = useMemo(() => orderedPropertyTracks(shot).filter(({ target }) => target.kind !== 'audio'), [shot])
+  const tracks = useMemo(() => orderedPropertyTracks(shot), [shot])
   const rows = useMemo(() => projectEditorTimelineRows(shot), [shot])
   const selectedRefs = selection.kind === 'keyframes' && selection.shotId === shot.id ? selection.keyframes : []
   const selectedSet = new Set(selectedRefs.map(refKey))
@@ -204,6 +204,7 @@ export default function ShotTimeline({ project, shot, projectRevision, playhead,
             </div>
           </div>
         })}
+        {tracks.filter(({ target }) => target.kind === 'audio').map((track) => renderTrackRow(track))}
       </div>
     </div>
   </section>

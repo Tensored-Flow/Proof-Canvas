@@ -878,7 +878,10 @@ test('protects a property-tracked object family from direct base-pose editing on
     onNotice={onNotice}
   />)
   expect(view.container.querySelector(`[data-object-id="${object.id}"]`)).toHaveAttribute('data-temporal-pose', 'animated')
-  expect(view.container.querySelector('.pc-selection-handles')).not.toBeInTheDocument()
+  expect(view.container.querySelector('.pc-selection-handles')).toHaveAttribute('data-readonly', 'true')
+  expect(view.container.querySelector('.pc-selection-outline')).toBeInTheDocument()
+  expect(view.container.querySelector('.pc-resize-handle')).not.toBeInTheDocument()
+  expect(view.container.querySelector('.pc-rotate-handle')).not.toBeInTheDocument()
   fireEvent.pointerDown(view.container.querySelector(`[data-object-id="${object.id}"]`)!, { button: 0, pointerId: 1 })
   expect(onNotice).toHaveBeenCalledWith(expect.stringMatching(/animated geometry/))
 })

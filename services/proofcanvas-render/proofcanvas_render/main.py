@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import hmac
 import json
+import math
 import os
 from contextlib import asynccontextmanager
 from typing import Any, BinaryIO, Iterator
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from .jobs import JOB_ID_PATTERN, JobNotFoundError, QueueFullError, RenderQueue, VideoUnavailableError
-from .policy import MAX_SOURCE_BYTES, SourcePolicyError, validate_generated_source
+from .jobs import JOB_ID_PATTERN, JobNotCancellableError, JobNotFoundError, QueueFullError, RenderQueue, VideoUnavailableError
+from .media import MAX_RENDER_ASSET_BYTES, validate_render_payload
+from .policy import SourcePolicyError
 
-MAX_REQUEST_BYTES = 2 * MAX_SOURCE_BYTES + 16 * 1024
+MAX_REQUEST_BYTES = 258 * 1024 * 1024
 
 
 def _json(body: object, status: int = 200) -> JSONResponse:
@@ -58,17 +60,6 @@ async def _bounded_body(request: Request) -> bytes:
     return b"".join(chunks)
 
 
-def _request_payload(candidate: Any) -> tuple[str, str, str]:
-    if not isinstance(candidate, dict) or set(candidate) != {"source", "sourceSha256", "quality"}:
-        raise SourcePolicyError("Render request envelope is malformed")
-    source = candidate.get("source")
-    source_sha = candidate.get("sourceSha256")
-    quality = candidate.get("quality")
-    if not isinstance(source, str) or not isinstance(source_sha, str) or quality not in {"preview", "production"}:
-        raise SourcePolicyError("Render request fields are malformed")
-    return source, source_sha, quality
-
-
 def _video_chunks(stream: BinaryIO) -> Iterator[bytes]:
     try:
         while chunk := stream.read(1024 * 1024):
@@ -106,6 +97,7 @@ def create_app(queue: RenderQueue | None = None) -> FastAPI:
                 "manim": "0.21.0",
                 "queueCapacity": 2,
                 "renderTimeoutSeconds": 180,
+                "renderAssetBytes": MAX_RENDER_ASSET_BYTES,
             },
             200 if configured else 503,
         )
@@ -118,10 +110,9 @@ def create_app(queue: RenderQueue | None = None) -> FastAPI:
             return _error(401, "unauthorized", "Renderer authorization failed.")
         try:
             raw = await _bounded_body(request)
-            candidate = json.loads(raw)
-            source, source_sha, quality = _request_payload(candidate)
-            validated = validate_generated_source(source, source_sha)
-            job = jobs.submit(validated, quality)  # type: ignore[arg-type]
+            candidate = json.loads(raw, parse_constant=lambda _value: (_ for _ in ()).throw(json.JSONDecodeError("non-finite JSON number", "", 0)))
+            validated, quality = validate_render_payload(candidate)
+            job = jobs.submit(validated, quality)
         except (UnicodeDecodeError, json.JSONDecodeError):
             return _error(400, "invalid-json", "Render request must be valid JSON.")
         except SourcePolicyError:
@@ -143,6 +134,58 @@ def create_app(queue: RenderQueue | None = None) -> FastAPI:
         except JobNotFoundError:
             return _error(404, "job-not-found", "Render job was not found.")
         return _json({"ok": True, "job": job.public()})
+
+    @service.delete("/v1/render/{job_id}")
+    async def cancel(job_id: str, request: Request) -> JSONResponse:
+        if _configured_token() is None:
+            return _error(503, "render-unavailable", "Renderer authentication is not configured.")
+        if not _authorized(request):
+            return _error(401, "unauthorized", "Renderer authorization failed.")
+        if not JOB_ID_PATTERN.fullmatch(job_id):
+            return _error(404, "job-not-found", "Render job was not found.")
+        try:
+            job = jobs.cancel(job_id)
+        except JobNotFoundError:
+            return _error(404, "job-not-found", "Render job was not found.")
+        except JobNotCancellableError:
+            return _error(409, "render-not-cancellable", "Completed render jobs cannot be cancelled.")
+        return _json({"ok": True, "job": job.public()})
+
+    @service.get("/v1/render/{job_id}/still")
+    async def still(job_id: str, request: Request) -> Response:
+        if _configured_token() is None:
+            return _error(503, "render-unavailable", "Renderer authentication is not configured.")
+        if not _authorized(request):
+            return _error(401, "unauthorized", "Renderer authorization failed.")
+        if not JOB_ID_PATTERN.fullmatch(job_id):
+            return _error(404, "job-not-found", "Render job was not found.")
+        query = request.query_params.multi_items()
+        if len(query) != 1 or query[0][0] != "time":
+            return _error(400, "invalid-still-time", "Still export requires exactly one bounded time value.")
+        try:
+            time_seconds = float(query[0][1])
+        except ValueError:
+            return _error(400, "invalid-still-time", "Still export time is invalid.")
+        if not math.isfinite(time_seconds) or time_seconds < 0:
+            return _error(400, "invalid-still-time", "Still export time is invalid.")
+        try:
+            result = jobs.still(job_id, time_seconds)
+        except JobNotFoundError:
+            return _error(404, "job-not-found", "Render job was not found.")
+        except VideoUnavailableError:
+            return _error(409, "still-unavailable", "A decoded still is unavailable at that time.")
+        return Response(
+            result.content,
+            media_type="image/png",
+            headers={
+                "Cache-Control": "private, no-store, max-age=0",
+                "Content-Length": str(len(result.content)),
+                "X-ProofCanvas-Source-SHA256": result.source_sha256,
+                "X-ProofCanvas-Still-SHA256": result.sha256,
+                "X-ProofCanvas-Still-Time": f"{result.time_seconds:.8f}".rstrip("0").rstrip("."),
+                "X-Robots-Tag": "noindex, nofollow",
+            },
+        )
 
     @service.get("/v1/render/{job_id}/video")
     async def video(job_id: str, request: Request):
