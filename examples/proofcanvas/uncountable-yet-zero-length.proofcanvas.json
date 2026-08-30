@@ -1,12 +1,33 @@
 {
   "activeStyleId": "style-editorial-ink",
-  "assets": [],
-  "customEasings": [],
+  "assets": [
+    {
+      "duration": 90,
+      "filename": "proofcanvas-deterministic-pulse-90s.wav",
+      "id": "asset-proofcanvas-deterministic-audio",
+      "mimeType": "audio/wav",
+      "provenance": "bundled",
+      "sha256": "c3346b09725f0faa637b1e1eb4b3ab520cbf522d44ef80e5c406c9b0de9a20af",
+      "size": 1440044
+    }
+  ],
+  "customEasings": [
+    {
+      "curve": {
+        "x1": 0.22,
+        "x2": 0.34,
+        "y1": 0.72,
+        "y2": 1
+      },
+      "id": "easing-cantor-settle",
+      "name": "Cantor settle"
+    }
+  ],
   "metadata": {
     "createdAt": "2026-08-23T00:00:00.000Z",
     "id": "project-uncountable-zero-length",
-    "title": "Uncountable, Yet Zero Length",
-    "updatedAt": "2026-08-23T00:00:00.000Z"
+    "title": "Uncountable, Yet Zero Length — V1",
+    "updatedAt": "2026-08-26T00:00:00.000Z"
   },
   "schemaVersion": 4,
   "settings": {
@@ -223,17 +244,73 @@
           "type": "fade-in"
         }
       ],
-      "audioClips": [],
+      "audioClips": [
+        {
+          "assetId": "asset-proofcanvas-deterministic-audio",
+          "duration": 21,
+          "fadeIn": 0.1,
+          "fadeOut": 0.1,
+          "id": "audio-cantor-1",
+          "muted": false,
+          "name": "Timing pulse 1",
+          "solo": false,
+          "sourceEnd": 21,
+          "sourceStart": 0,
+          "start": 0,
+          "volume": 0.32
+        }
+      ],
       "camera": {
         "rotation": 0,
         "x": 480,
         "y": 270,
         "zoom": 1
       },
-      "captionClips": [],
+      "captionClips": [
+        {
+          "end": 6.4,
+          "id": "caption-v1-construction-a",
+          "start": 0,
+          "style": {},
+          "text": "Begin with the closed unit interval and remove its open middle third."
+        },
+        {
+          "end": 14.2,
+          "id": "caption-v1-construction-b",
+          "start": 6.4,
+          "style": {},
+          "text": "Repeat the same removal inside every surviving interval."
+        },
+        {
+          "end": 21,
+          "id": "caption-v1-construction-c",
+          "start": 14.2,
+          "style": {},
+          "text": "After n stages, the surviving length is two thirds to the n."
+        }
+      ],
       "duration": 21,
       "id": "shot-cantor-construction",
-      "markers": [],
+      "markers": [
+        {
+          "color": "#315866",
+          "id": "marker-v1-construction-start",
+          "name": "Unit interval",
+          "time": 0
+        },
+        {
+          "color": "#315866",
+          "id": "marker-v1-construction-repeat",
+          "name": "Repeat in thirds",
+          "time": 6.4
+        },
+        {
+          "color": "#315866",
+          "id": "marker-v1-construction-limit",
+          "name": "Length equation",
+          "time": 14.2
+        }
+      ],
       "name": "The construction",
       "objects": [
         {
@@ -254,8 +331,8 @@
             "rotation": 0,
             "scaleX": 1,
             "scaleY": 1,
-            "width": 520,
-            "x": 300,
+            "width": 640,
+            "x": 360,
             "y": 72
           },
           "type": "text",
@@ -270,7 +347,6 @@
           },
           "semanticRole": "subtitle",
           "style": {
-            "color": "#4f534c",
             "fontSize": 19,
             "textAlign": "left"
           },
@@ -905,7 +981,6 @@
           },
           "semanticRole": "limit-equation",
           "style": {
-            "color": "#315866",
             "fontSize": 26,
             "textAlign": "left"
           },
@@ -930,7 +1005,6 @@
           },
           "semanticRole": "marginal-note",
           "style": {
-            "color": "#4f534c",
             "fontSize": 18,
             "roughEmphasis": true,
             "textAlign": "left"
@@ -942,13 +1016,1508 @@
             "scaleY": 1,
             "width": 190,
             "x": 770,
-            "y": 430
+            "y": 400
           },
           "type": "text",
           "visible": true
         }
       ],
-      "propertyTracks": []
+      "propertyTracks": [
+        {
+          "id": "track-v1-construction-note-x",
+          "keyframes": [
+            {
+              "id": "keyframe-v1-construction-note-x-a",
+              "interpolation": {
+                "curve": {
+                  "x1": 0.22,
+                  "x2": 0.34,
+                  "y1": 0.72,
+                  "y2": 1
+                },
+                "kind": "custom-bezier"
+              },
+              "time": 20.1,
+              "value": 790
+            },
+            {
+              "id": "keyframe-v1-construction-note-x-b",
+              "interpolation": {
+                "easing": "ease-out",
+                "kind": "eased"
+              },
+              "time": 20.5,
+              "value": 770
+            },
+            {
+              "id": "keyframe-v1-construction-note-x-c",
+              "interpolation": {
+                "kind": "hold"
+              },
+              "time": 21,
+              "value": 770
+            }
+          ],
+          "property": "x",
+          "target": {
+            "kind": "object",
+            "objectId": "object-margin-note"
+          }
+        }
+      ]
+    },
+    {
+      "animations": [
+        {
+          "duration": 0.8,
+          "easing": "editorial",
+          "id": "animation-v1-bookkeeping-title",
+          "properties": {},
+          "start": 0,
+          "targetIds": [
+            "object-v1-bookkeeping-title"
+          ],
+          "type": "write"
+        },
+        {
+          "duration": 1,
+          "easing": "editorial",
+          "id": "animation-v1-bookkeeping-sum",
+          "properties": {},
+          "start": 1,
+          "targetIds": [
+            "object-v1-bookkeeping-sum"
+          ],
+          "type": "write"
+        },
+        {
+          "duration": 0.8,
+          "easing": "editorial",
+          "id": "animation-v1-bookkeeping-brace",
+          "properties": {},
+          "start": 2.2,
+          "targetIds": [
+            "object-v1-bookkeeping-brace"
+          ],
+          "type": "create"
+        },
+        {
+          "duration": 1,
+          "easing": "editorial",
+          "id": "animation-v1-finite-create",
+          "properties": {},
+          "start": 3.2,
+          "targetIds": [
+            "object-v1-finite-intervals"
+          ],
+          "type": "create"
+        },
+        {
+          "duration": 0.6,
+          "easing": "editorial",
+          "id": "animation-v1-bookkeeping-arrow",
+          "properties": {},
+          "start": 4.5,
+          "targetIds": [
+            "object-v1-bookkeeping-arrow"
+          ],
+          "type": "create"
+        },
+        {
+          "duration": 0.8,
+          "easing": "editorial",
+          "id": "animation-v1-bookkeeping-note",
+          "properties": {},
+          "start": 5.2,
+          "targetIds": [
+            "object-v1-bookkeeping-note"
+          ],
+          "type": "fade-in"
+        },
+        {
+          "duration": 0.8,
+          "easing": "editorial",
+          "id": "animation-v1-bookkeeping-camera",
+          "properties": {
+            "x": 480,
+            "y": 325,
+            "zoom": 1.12
+          },
+          "start": 6.2,
+          "targetIds": [
+            "object-v1-finite-intervals"
+          ],
+          "type": "camera-focus"
+        }
+      ],
+      "audioClips": [
+        {
+          "assetId": "asset-proofcanvas-deterministic-audio",
+          "duration": 8,
+          "fadeIn": 0.1,
+          "fadeOut": 0.1,
+          "id": "audio-cantor-2",
+          "muted": false,
+          "name": "Timing pulse 2",
+          "solo": false,
+          "sourceEnd": 29,
+          "sourceStart": 21,
+          "start": 0,
+          "volume": 0.32
+        }
+      ],
+      "camera": {
+        "rotation": 0,
+        "x": 480,
+        "y": 270,
+        "zoom": 1
+      },
+      "captionClips": [
+        {
+          "end": 3.1,
+          "id": "caption-v1-bookkeeping-a",
+          "start": 0,
+          "style": {},
+          "text": "At stage n, there are 2 to the n minus one new gaps."
+        },
+        {
+          "end": 8,
+          "id": "caption-v1-bookkeeping-b",
+          "start": 3.1,
+          "style": {},
+          "text": "Finite length remains; only the limiting length vanishes."
+        }
+      ],
+      "duration": 8,
+      "id": "shot-cantor-bookkeeping",
+      "markers": [
+        {
+          "color": "#315866",
+          "id": "marker-v1-bookkeeping-sum",
+          "name": "Removed-length series",
+          "time": 1
+        },
+        {
+          "color": "#71402d",
+          "id": "marker-v1-bookkeeping-warning",
+          "name": "Finite versus limit",
+          "time": 5.2
+        }
+      ],
+      "name": "Finite bookkeeping",
+      "objects": [
+        {
+          "id": "object-v1-bookkeeping-title",
+          "locked": false,
+          "name": "What disappears",
+          "properties": {
+            "content": "What disappears at each stage?"
+          },
+          "semanticRole": "title",
+          "style": {
+            "fontSize": 36,
+            "fontWeight": 600
+          },
+          "transform": {
+            "height": 48,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 440,
+            "x": 250,
+            "y": 70
+          },
+          "type": "text",
+          "visible": true
+        },
+        {
+          "id": "object-v1-bookkeeping-sum",
+          "locked": false,
+          "name": "Removed length",
+          "properties": {
+            "content": "\\frac{1}{3}+2\\cdot\\frac{1}{9}+4\\cdot\\frac{1}{27}+...=1",
+            "mode": "display",
+            "renderer": "mathtex"
+          },
+          "semanticRole": "equation",
+          "style": {
+            "fontSize": 30
+          },
+          "transform": {
+            "height": 55,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 460,
+            "x": 250,
+            "y": 145
+          },
+          "type": "math",
+          "visible": true
+        },
+        {
+          "id": "object-v1-bookkeeping-brace",
+          "locked": false,
+          "name": "Removed pieces brace",
+          "properties": {
+            "label": "2^{n-1} pieces, each of length 3^{-n}"
+          },
+          "semanticRole": "brace",
+          "style": {
+            "stroke": "#71402d",
+            "strokeWidth": 2
+          },
+          "transform": {
+            "height": 36,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 560,
+            "x": 470,
+            "y": 232
+          },
+          "type": "brace",
+          "visible": true
+        },
+        {
+          "id": "object-v1-finite-intervals",
+          "locked": false,
+          "name": "Finite stage intervals",
+          "properties": {},
+          "semanticRole": "finite-stage",
+          "style": {},
+          "transform": {
+            "height": 90,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 620,
+            "x": 480,
+            "y": 330
+          },
+          "type": "group",
+          "visible": true
+        },
+        {
+          "id": "object-v1-finite-left",
+          "locked": false,
+          "name": "Left survivor",
+          "parentId": "object-v1-finite-intervals",
+          "properties": {
+            "stage": 2
+          },
+          "style": {
+            "fill": "#315866",
+            "opacity": 0.88
+          },
+          "transform": {
+            "height": 18,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 165,
+            "x": 260,
+            "y": 330
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-v1-finite-middle-left",
+          "locked": false,
+          "name": "Middle-left survivor",
+          "parentId": "object-v1-finite-intervals",
+          "properties": {
+            "stage": 2
+          },
+          "style": {
+            "fill": "#252722"
+          },
+          "transform": {
+            "height": 18,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 55,
+            "x": 405,
+            "y": 330
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-v1-finite-middle-right",
+          "locked": false,
+          "name": "Middle-right survivor",
+          "parentId": "object-v1-finite-intervals",
+          "properties": {
+            "stage": 2
+          },
+          "style": {
+            "fill": "#252722"
+          },
+          "transform": {
+            "height": 18,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 55,
+            "x": 555,
+            "y": 330
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-v1-finite-right",
+          "locked": false,
+          "name": "Right survivor",
+          "parentId": "object-v1-finite-intervals",
+          "properties": {
+            "stage": 2
+          },
+          "style": {
+            "fill": "#315866",
+            "opacity": 0.88
+          },
+          "transform": {
+            "height": 18,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 165,
+            "x": 700,
+            "y": 330
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-v1-bookkeeping-arrow",
+          "locked": false,
+          "name": "Conservation arrow",
+          "properties": {
+            "direction": "right"
+          },
+          "semanticRole": "inference",
+          "style": {
+            "stroke": "#71402d",
+            "strokeWidth": 2
+          },
+          "transform": {
+            "height": 30,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 330,
+            "x": 480,
+            "y": 407
+          },
+          "type": "arrow",
+          "visible": true
+        },
+        {
+          "id": "object-v1-bookkeeping-note",
+          "locked": false,
+          "name": "Finite versus limit note",
+          "properties": {
+            "content": "Every finite stage still has positive length.\nThe limit is the delicate step."
+          },
+          "semanticRole": "annotation",
+          "style": {
+            "fontSize": 19,
+            "roughEmphasis": true
+          },
+          "transform": {
+            "height": 58,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 520,
+            "x": 295,
+            "y": 475
+          },
+          "type": "text",
+          "visible": true
+        }
+      ],
+      "propertyTracks": [
+        {
+          "id": "track-v1-bookkeeping-note-y",
+          "keyframes": [
+            {
+              "id": "keyframe-v1-bookkeeping-note-y-a",
+              "interpolation": {
+                "curve": {
+                  "x1": 0.22,
+                  "x2": 0.34,
+                  "y1": 0.72,
+                  "y2": 1
+                },
+                "kind": "custom-bezier"
+              },
+              "time": 6.1,
+              "value": 485
+            },
+            {
+              "id": "keyframe-v1-bookkeeping-note-y-b",
+              "interpolation": {
+                "easing": "ease-out",
+                "kind": "eased"
+              },
+              "time": 7,
+              "value": 475
+            },
+            {
+              "id": "keyframe-v1-bookkeeping-note-y-c",
+              "interpolation": {
+                "kind": "hold"
+              },
+              "time": 8,
+              "value": 475
+            }
+          ],
+          "property": "y",
+          "target": {
+            "kind": "object",
+            "objectId": "object-v1-bookkeeping-note"
+          }
+        }
+      ]
+    },
+    {
+      "animations": [
+        {
+          "duration": 0.8,
+          "easing": "editorial",
+          "id": "animation-v1-address-title",
+          "properties": {},
+          "start": 0,
+          "targetIds": [
+            "object-v1-address-title"
+          ],
+          "type": "write"
+        },
+        {
+          "duration": 1,
+          "easing": "editorial",
+          "id": "animation-v1-address-expansion",
+          "properties": {},
+          "start": 1,
+          "targetIds": [
+            "object-v1-address-expansion"
+          ],
+          "type": "write"
+        },
+        {
+          "duration": 0.7,
+          "easing": "editorial",
+          "id": "animation-v1-address-choice",
+          "properties": {},
+          "start": 2.2,
+          "targetIds": [
+            "object-v1-address-choice"
+          ],
+          "type": "write"
+        },
+        {
+          "duration": 0.6,
+          "easing": "editorial",
+          "id": "animation-v1-address-brace",
+          "properties": {},
+          "start": 3,
+          "targetIds": [
+            "object-v1-address-brace"
+          ],
+          "type": "create"
+        },
+        {
+          "duration": 0.8,
+          "easing": "editorial",
+          "id": "animation-v1-address-arrows",
+          "properties": {},
+          "start": 3.8,
+          "targetIds": [
+            "object-v1-address-arrow-left",
+            "object-v1-address-arrow-right"
+          ],
+          "type": "create"
+        },
+        {
+          "duration": 0.7,
+          "easing": "editorial",
+          "id": "animation-v1-address-labels",
+          "properties": {},
+          "start": 4.8,
+          "targetIds": [
+            "object-v1-address-left-label",
+            "object-v1-address-right-label"
+          ],
+          "type": "fade-in"
+        },
+        {
+          "duration": 0.8,
+          "easing": "editorial",
+          "id": "animation-v1-address-note",
+          "properties": {},
+          "start": 5.7,
+          "targetIds": [
+            "object-v1-address-note"
+          ],
+          "type": "fade-in"
+        },
+        {
+          "duration": 0.7,
+          "easing": "editorial",
+          "id": "animation-v1-address-camera",
+          "properties": {
+            "x": 480,
+            "y": 390,
+            "zoom": 1.08
+          },
+          "start": 6.7,
+          "targetIds": [
+            "object-v1-address-note"
+          ],
+          "type": "camera-focus"
+        }
+      ],
+      "audioClips": [
+        {
+          "assetId": "asset-proofcanvas-deterministic-audio",
+          "duration": 8,
+          "fadeIn": 0.1,
+          "fadeOut": 0.1,
+          "id": "audio-cantor-3",
+          "muted": false,
+          "name": "Timing pulse 3",
+          "solo": false,
+          "sourceEnd": 37,
+          "sourceStart": 29,
+          "start": 0,
+          "volume": 0.32
+        }
+      ],
+      "camera": {
+        "rotation": 0,
+        "x": 480,
+        "y": 270,
+        "zoom": 1
+      },
+      "captionClips": [
+        {
+          "end": 4,
+          "id": "caption-v1-address-a",
+          "start": 0,
+          "style": {},
+          "text": "A surviving point has a ternary address made only from zeroes and twos."
+        },
+        {
+          "end": 8,
+          "id": "caption-v1-address-b",
+          "start": 4,
+          "style": {},
+          "text": "Those endless left-right choices form an uncountable family."
+        }
+      ],
+      "duration": 8,
+      "id": "shot-cantor-addresses",
+      "markers": [
+        {
+          "color": "#315866",
+          "id": "marker-v1-address-ternary",
+          "name": "Ternary address",
+          "time": 1
+        },
+        {
+          "color": "#315866",
+          "id": "marker-v1-address-cardinality",
+          "name": "Uncountability",
+          "time": 5.7
+        }
+      ],
+      "name": "Infinite addresses",
+      "objects": [
+        {
+          "id": "object-v1-address-title",
+          "locked": false,
+          "name": "Infinite addresses",
+          "properties": {
+            "content": "An address for every surviving point"
+          },
+          "semanticRole": "title",
+          "style": {
+            "fontSize": 35,
+            "fontWeight": 600
+          },
+          "transform": {
+            "height": 48,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 440,
+            "x": 245,
+            "y": 72
+          },
+          "type": "text",
+          "visible": true
+        },
+        {
+          "id": "object-v1-address-expansion",
+          "locked": false,
+          "name": "Ternary expansion",
+          "properties": {
+            "content": "x=0.a_1a_2a_3...{}_3",
+            "mode": "display",
+            "renderer": "mathtex"
+          },
+          "semanticRole": "equation",
+          "style": {
+            "fontSize": 34
+          },
+          "transform": {
+            "height": 55,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 470,
+            "x": 270,
+            "y": 150
+          },
+          "type": "math",
+          "visible": true
+        },
+        {
+          "id": "object-v1-address-choice",
+          "locked": false,
+          "name": "Digit choices",
+          "properties": {
+            "content": "a_k=0\\text{ or }2",
+            "mode": "display",
+            "renderer": "mathtex"
+          },
+          "semanticRole": "equation",
+          "style": {
+            "fontSize": 31
+          },
+          "transform": {
+            "height": 48,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 310,
+            "x": 325,
+            "y": 235
+          },
+          "type": "math",
+          "visible": true
+        },
+        {
+          "id": "object-v1-address-brace",
+          "locked": false,
+          "name": "Binary-choice brace",
+          "properties": {
+            "direction": "below",
+            "label": "left or right, forever"
+          },
+          "semanticRole": "brace",
+          "style": {
+            "stroke": "#71402d",
+            "strokeWidth": 2
+          },
+          "transform": {
+            "height": 30,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 330,
+            "x": 480,
+            "y": 282
+          },
+          "type": "brace",
+          "visible": true
+        },
+        {
+          "id": "object-v1-address-arrow-left",
+          "locked": false,
+          "name": "Choose left",
+          "properties": {
+            "branch": 0
+          },
+          "semanticRole": "choice",
+          "style": {
+            "stroke": "#315866",
+            "strokeWidth": 2
+          },
+          "transform": {
+            "height": 55,
+            "rotation": -12,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 190,
+            "x": 335,
+            "y": 355
+          },
+          "type": "arrow",
+          "visible": true
+        },
+        {
+          "id": "object-v1-address-arrow-right",
+          "locked": false,
+          "name": "Choose right",
+          "properties": {
+            "branch": 2
+          },
+          "semanticRole": "choice",
+          "style": {
+            "stroke": "#71402d",
+            "strokeWidth": 2
+          },
+          "transform": {
+            "height": 55,
+            "rotation": 12,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 190,
+            "x": 625,
+            "y": 355
+          },
+          "type": "arrow",
+          "visible": true
+        },
+        {
+          "id": "object-v1-address-left-label",
+          "locked": false,
+          "name": "Zero branch",
+          "properties": {
+            "content": "0 — keep left third"
+          },
+          "semanticRole": "cool-label",
+          "style": {
+            "fontSize": 17
+          },
+          "transform": {
+            "height": 32,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 180,
+            "x": 265,
+            "y": 425
+          },
+          "type": "text",
+          "visible": true
+        },
+        {
+          "id": "object-v1-address-right-label",
+          "locked": false,
+          "name": "Two branch",
+          "properties": {
+            "content": "2 — keep right third"
+          },
+          "semanticRole": "warm-label",
+          "style": {
+            "fontSize": 17
+          },
+          "transform": {
+            "height": 32,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 190,
+            "x": 620,
+            "y": 425
+          },
+          "type": "text",
+          "visible": true
+        },
+        {
+          "id": "object-v1-address-note",
+          "locked": false,
+          "name": "Cardinality note",
+          "properties": {
+            "content": "Infinite binary choices cannot be listed one by one."
+          },
+          "semanticRole": "main-claim",
+          "style": {
+            "fontSize": 22,
+            "fontWeight": 600
+          },
+          "transform": {
+            "height": 44,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 520,
+            "x": 285,
+            "y": 495
+          },
+          "type": "text",
+          "visible": true
+        }
+      ],
+      "propertyTracks": [
+        {
+          "id": "track-v1-address-note-opacity",
+          "keyframes": [
+            {
+              "id": "keyframe-v1-address-note-opacity-a",
+              "interpolation": {
+                "curve": {
+                  "x1": 0.22,
+                  "x2": 0.34,
+                  "y1": 0.72,
+                  "y2": 1
+                },
+                "kind": "custom-bezier"
+              },
+              "time": 6.5,
+              "value": 0.72
+            },
+            {
+              "id": "keyframe-v1-address-note-opacity-b",
+              "interpolation": {
+                "kind": "hold"
+              },
+              "time": 7.2,
+              "value": 1
+            },
+            {
+              "id": "keyframe-v1-address-note-opacity-c",
+              "interpolation": {
+                "kind": "hold"
+              },
+              "time": 8,
+              "value": 1
+            }
+          ],
+          "property": "opacity",
+          "target": {
+            "kind": "object",
+            "objectId": "object-v1-address-note"
+          }
+        }
+      ]
+    },
+    {
+      "animations": [
+        {
+          "duration": 0.7,
+          "easing": "editorial",
+          "id": "animation-v1-ledger-title",
+          "properties": {},
+          "start": 0,
+          "targetIds": [
+            "object-v1-ledger-title"
+          ],
+          "type": "write"
+        },
+        {
+          "duration": 0.7,
+          "easing": "editorial",
+          "id": "animation-v1-ledger-header",
+          "properties": {},
+          "start": 0.8,
+          "targetIds": [
+            "object-v1-ledger-header"
+          ],
+          "type": "write"
+        },
+        {
+          "duration": 0.35,
+          "easing": "editorial",
+          "id": "animation-v1-ledger-bar-0",
+          "properties": {},
+          "start": 1.7,
+          "targetIds": [
+            "object-v1-ledger-bar-0"
+          ],
+          "type": "create"
+        },
+        {
+          "duration": 0.3,
+          "easing": "editorial",
+          "id": "animation-v1-ledger-label-0",
+          "properties": {},
+          "start": 2.05,
+          "targetIds": [
+            "object-v1-ledger-label-0"
+          ],
+          "type": "write"
+        },
+        {
+          "duration": 0.35,
+          "easing": "editorial",
+          "id": "animation-v1-ledger-bar-1",
+          "properties": {},
+          "start": 2.4,
+          "targetIds": [
+            "object-v1-ledger-bar-1"
+          ],
+          "type": "create"
+        },
+        {
+          "duration": 0.3,
+          "easing": "editorial",
+          "id": "animation-v1-ledger-label-1",
+          "properties": {},
+          "start": 2.75,
+          "targetIds": [
+            "object-v1-ledger-label-1"
+          ],
+          "type": "write"
+        },
+        {
+          "duration": 0.35,
+          "easing": "editorial",
+          "id": "animation-v1-ledger-bar-2",
+          "properties": {},
+          "start": 3.1,
+          "targetIds": [
+            "object-v1-ledger-bar-2"
+          ],
+          "type": "create"
+        },
+        {
+          "duration": 0.3,
+          "easing": "editorial",
+          "id": "animation-v1-ledger-label-2",
+          "properties": {},
+          "start": 3.45,
+          "targetIds": [
+            "object-v1-ledger-label-2"
+          ],
+          "type": "write"
+        },
+        {
+          "duration": 0.35,
+          "easing": "editorial",
+          "id": "animation-v1-ledger-bar-3",
+          "properties": {},
+          "start": 3.8,
+          "targetIds": [
+            "object-v1-ledger-bar-3"
+          ],
+          "type": "create"
+        },
+        {
+          "duration": 0.3,
+          "easing": "editorial",
+          "id": "animation-v1-ledger-label-3",
+          "properties": {},
+          "start": 4.15,
+          "targetIds": [
+            "object-v1-ledger-label-3"
+          ],
+          "type": "write"
+        },
+        {
+          "duration": 0.35,
+          "easing": "editorial",
+          "id": "animation-v1-ledger-bar-4",
+          "properties": {},
+          "start": 4.5,
+          "targetIds": [
+            "object-v1-ledger-bar-4"
+          ],
+          "type": "create"
+        },
+        {
+          "duration": 0.3,
+          "easing": "editorial",
+          "id": "animation-v1-ledger-label-4",
+          "properties": {},
+          "start": 4.85,
+          "targetIds": [
+            "object-v1-ledger-label-4"
+          ],
+          "type": "write"
+        },
+        {
+          "duration": 0.5,
+          "easing": "editorial",
+          "id": "animation-v1-ledger-arrow",
+          "properties": {},
+          "start": 5.6,
+          "targetIds": [
+            "object-v1-ledger-arrow"
+          ],
+          "type": "create"
+        },
+        {
+          "duration": 0.5,
+          "easing": "editorial",
+          "id": "animation-v1-ledger-note",
+          "properties": {},
+          "start": 6.2,
+          "targetIds": [
+            "object-v1-ledger-note"
+          ],
+          "type": "fade-in"
+        },
+        {
+          "duration": 0.6,
+          "easing": "editorial",
+          "id": "animation-v1-ledger-camera",
+          "properties": {
+            "x": 500,
+            "y": 390,
+            "zoom": 1.1
+          },
+          "start": 6.9,
+          "targetIds": [
+            "object-v1-ledger-bar-4"
+          ],
+          "type": "camera-focus"
+        }
+      ],
+      "audioClips": [
+        {
+          "assetId": "asset-proofcanvas-deterministic-audio",
+          "duration": 8,
+          "fadeIn": 0.1,
+          "fadeOut": 0.1,
+          "id": "audio-cantor-4",
+          "muted": false,
+          "name": "Timing pulse 4",
+          "solo": false,
+          "sourceEnd": 45,
+          "sourceStart": 37,
+          "start": 0,
+          "volume": 0.32
+        }
+      ],
+      "camera": {
+        "rotation": 0,
+        "x": 480,
+        "y": 270,
+        "zoom": 1
+      },
+      "captionClips": [
+        {
+          "end": 4.5,
+          "id": "caption-v1-ledger-a",
+          "start": 0,
+          "style": {},
+          "text": "The surviving lengths are one, two thirds, four ninths, eight twenty-sevenths."
+        },
+        {
+          "end": 8,
+          "id": "caption-v1-ledger-b",
+          "start": 4.5,
+          "style": {},
+          "text": "Repeated multiplication by two thirds drives the sequence to zero."
+        }
+      ],
+      "duration": 8,
+      "id": "shot-cantor-ledger",
+      "markers": [
+        {
+          "color": "#315866",
+          "id": "marker-v1-ledger-values",
+          "name": "Length values",
+          "time": 1.7
+        },
+        {
+          "color": "#315866",
+          "id": "marker-v1-ledger-limit",
+          "name": "Convergence",
+          "time": 6.2
+        }
+      ],
+      "name": "The length ledger",
+      "objects": [
+        {
+          "id": "object-v1-ledger-title",
+          "locked": false,
+          "name": "Length ledger",
+          "properties": {
+            "content": "The numerical pattern"
+          },
+          "semanticRole": "title",
+          "style": {
+            "fontSize": 36,
+            "fontWeight": 600
+          },
+          "transform": {
+            "height": 48,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 430,
+            "x": 250,
+            "y": 66
+          },
+          "type": "text",
+          "visible": true
+        },
+        {
+          "id": "object-v1-ledger-header",
+          "locked": false,
+          "name": "Length rule",
+          "properties": {
+            "content": "L_n=(2/3)^n",
+            "mode": "display",
+            "renderer": "mathtex"
+          },
+          "semanticRole": "equation",
+          "style": {
+            "fontSize": 27
+          },
+          "transform": {
+            "height": 42,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 260,
+            "x": 620,
+            "y": 80
+          },
+          "type": "math",
+          "visible": true
+        },
+        {
+          "id": "object-v1-ledger-bar-0",
+          "locked": false,
+          "name": "Stage 0 length bar",
+          "properties": {
+            "length": "1",
+            "stage": 0
+          },
+          "semanticRole": "numerical-bar",
+          "style": {
+            "fill": "#315866",
+            "opacity": 0.9
+          },
+          "transform": {
+            "height": 18,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 420,
+            "x": 525,
+            "y": 190
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-v1-ledger-label-0",
+          "locked": false,
+          "name": "Stage 0 value",
+          "properties": {
+            "content": "L_0=1",
+            "mode": "display",
+            "renderer": "mathtex"
+          },
+          "semanticRole": "data-label",
+          "style": {
+            "fontSize": 22
+          },
+          "transform": {
+            "height": 34,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 205,
+            "x": 705,
+            "y": 188
+          },
+          "type": "math",
+          "visible": true
+        },
+        {
+          "id": "object-v1-ledger-bar-1",
+          "locked": false,
+          "name": "Stage 1 length bar",
+          "properties": {
+            "length": "2/3",
+            "stage": 1
+          },
+          "semanticRole": "numerical-bar",
+          "style": {
+            "fill": "#252722",
+            "opacity": 0.9
+          },
+          "transform": {
+            "height": 18,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 280,
+            "x": 455,
+            "y": 252
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-v1-ledger-label-1",
+          "locked": false,
+          "name": "Stage 1 value",
+          "properties": {
+            "content": "L_1=2/3",
+            "mode": "display",
+            "renderer": "mathtex"
+          },
+          "semanticRole": "data-label",
+          "style": {
+            "fontSize": 22
+          },
+          "transform": {
+            "height": 34,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 205,
+            "x": 705,
+            "y": 250
+          },
+          "type": "math",
+          "visible": true
+        },
+        {
+          "id": "object-v1-ledger-bar-2",
+          "locked": false,
+          "name": "Stage 2 length bar",
+          "properties": {
+            "length": "4/9",
+            "stage": 2
+          },
+          "semanticRole": "numerical-bar",
+          "style": {
+            "fill": "#315866",
+            "opacity": 0.9
+          },
+          "transform": {
+            "height": 18,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 187,
+            "x": 408.5,
+            "y": 314
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-v1-ledger-label-2",
+          "locked": false,
+          "name": "Stage 2 value",
+          "properties": {
+            "content": "L_2=4/9",
+            "mode": "display",
+            "renderer": "mathtex"
+          },
+          "semanticRole": "data-label",
+          "style": {
+            "fontSize": 22
+          },
+          "transform": {
+            "height": 34,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 205,
+            "x": 705,
+            "y": 312
+          },
+          "type": "math",
+          "visible": true
+        },
+        {
+          "id": "object-v1-ledger-bar-3",
+          "locked": false,
+          "name": "Stage 3 length bar",
+          "properties": {
+            "length": "8/27",
+            "stage": 3
+          },
+          "semanticRole": "numerical-bar",
+          "style": {
+            "fill": "#252722",
+            "opacity": 0.9
+          },
+          "transform": {
+            "height": 18,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 124,
+            "x": 377,
+            "y": 376
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-v1-ledger-label-3",
+          "locked": false,
+          "name": "Stage 3 value",
+          "properties": {
+            "content": "L_3=8/27",
+            "mode": "display",
+            "renderer": "mathtex"
+          },
+          "semanticRole": "data-label",
+          "style": {
+            "fontSize": 22
+          },
+          "transform": {
+            "height": 34,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 205,
+            "x": 705,
+            "y": 374
+          },
+          "type": "math",
+          "visible": true
+        },
+        {
+          "id": "object-v1-ledger-bar-4",
+          "locked": false,
+          "name": "Stage 4 length bar",
+          "properties": {
+            "length": "16/81",
+            "stage": 4
+          },
+          "semanticRole": "numerical-bar",
+          "style": {
+            "fill": "#315866",
+            "opacity": 0.9
+          },
+          "transform": {
+            "height": 18,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 83,
+            "x": 356.5,
+            "y": 438
+          },
+          "type": "rectangle",
+          "visible": true
+        },
+        {
+          "id": "object-v1-ledger-label-4",
+          "locked": false,
+          "name": "Stage 4 value",
+          "properties": {
+            "content": "L_4=16/81",
+            "mode": "display",
+            "renderer": "mathtex"
+          },
+          "semanticRole": "warm-label",
+          "style": {
+            "fontSize": 22
+          },
+          "transform": {
+            "height": 34,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 205,
+            "x": 705,
+            "y": 436
+          },
+          "type": "math",
+          "visible": true
+        },
+        {
+          "id": "object-v1-ledger-arrow",
+          "locked": false,
+          "name": "Decreasing sequence arrow",
+          "properties": {
+            "direction": "down"
+          },
+          "semanticRole": "trend",
+          "style": {
+            "stroke": "#71402d",
+            "strokeWidth": 2
+          },
+          "transform": {
+            "height": 220,
+            "rotation": 90,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 32,
+            "x": 825,
+            "y": 315
+          },
+          "type": "arrow",
+          "visible": true
+        },
+        {
+          "id": "object-v1-ledger-note",
+          "locked": false,
+          "name": "Convergence note",
+          "properties": {
+            "content": "multiply by 2/3\neach time"
+          },
+          "semanticRole": "annotation",
+          "style": {
+            "fontSize": 18,
+            "roughEmphasis": true
+          },
+          "transform": {
+            "height": 42,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 250,
+            "x": 670,
+            "y": 515
+          },
+          "type": "text",
+          "visible": true
+        }
+      ],
+      "propertyTracks": [
+        {
+          "id": "track-v1-ledger-final-width",
+          "keyframes": [
+            {
+              "id": "keyframe-v1-ledger-final-width-a",
+              "interpolation": {
+                "curve": {
+                  "x1": 0.22,
+                  "x2": 0.34,
+                  "y1": 0.72,
+                  "y2": 1
+                },
+                "kind": "custom-bezier"
+              },
+              "time": 6,
+              "value": 96
+            },
+            {
+              "id": "keyframe-v1-ledger-final-width-b",
+              "interpolation": {
+                "easing": "ease-out",
+                "kind": "eased"
+              },
+              "time": 7,
+              "value": 83
+            },
+            {
+              "id": "keyframe-v1-ledger-final-width-c",
+              "interpolation": {
+                "kind": "hold"
+              },
+              "time": 8,
+              "value": 83
+            }
+          ],
+          "property": "width",
+          "target": {
+            "kind": "object",
+            "objectId": "object-v1-ledger-bar-4"
+          }
+        }
+      ]
     },
     {
       "animations": [
@@ -1000,19 +2569,73 @@
             "object-conclusion-measure"
           ],
           "type": "camera-focus"
+        },
+        {
+          "duration": 0.8,
+          "easing": "editorial",
+          "id": "animation-v1-conclusion-equation",
+          "properties": {},
+          "start": 5.8,
+          "targetIds": [
+            "object-v1-conclusion-equation"
+          ],
+          "type": "write"
         }
       ],
-      "audioClips": [],
+      "audioClips": [
+        {
+          "assetId": "asset-proofcanvas-deterministic-audio",
+          "duration": 7,
+          "fadeIn": 0.1,
+          "fadeOut": 0.1,
+          "id": "audio-cantor-5",
+          "muted": false,
+          "name": "Timing pulse 5",
+          "solo": false,
+          "sourceEnd": 52,
+          "sourceStart": 45,
+          "start": 0,
+          "volume": 0.32
+        }
+      ],
       "camera": {
         "rotation": 0,
         "x": 480,
         "y": 270,
         "zoom": 1
       },
-      "captionClips": [],
+      "captionClips": [
+        {
+          "end": 3.5,
+          "id": "caption-v1-conclusion-a",
+          "start": 0,
+          "style": {},
+          "text": "The Cantor set has as many points as the full interval."
+        },
+        {
+          "end": 7,
+          "id": "caption-v1-conclusion-b",
+          "start": 3.5,
+          "style": {},
+          "text": "Yet its total length is zero."
+        }
+      ],
       "duration": 7,
       "id": "shot-cantor-conclusion",
-      "markers": [],
+      "markers": [
+        {
+          "color": "#315866",
+          "id": "marker-v1-conclusion-cardinality",
+          "name": "Uncountable",
+          "time": 1.4
+        },
+        {
+          "color": "#71402d",
+          "id": "marker-v1-conclusion-measure",
+          "name": "Zero length",
+          "time": 3.2
+        }
+      ],
       "name": "The paradox",
       "objects": [
         {
@@ -1048,7 +2671,6 @@
           },
           "semanticRole": "main-claim",
           "style": {
-            "color": "#315866",
             "fontSize": 31,
             "textAlign": "left"
           },
@@ -1071,9 +2693,8 @@
           "properties": {
             "content": "zero total length"
           },
-          "semanticRole": "main-claim",
+          "semanticRole": "counter-claim",
           "style": {
-            "color": "#71402d",
             "fontSize": 30,
             "textAlign": "left"
           },
@@ -1088,17 +2709,84 @@
           },
           "type": "text",
           "visible": true
+        },
+        {
+          "id": "object-v1-conclusion-equation",
+          "locked": false,
+          "name": "Cantor conclusion",
+          "properties": {
+            "content": "|C|=|[0,1]|,\\;m(C)=0",
+            "mode": "display",
+            "renderer": "mathtex"
+          },
+          "semanticRole": "conclusion",
+          "style": {
+            "fontSize": 28
+          },
+          "transform": {
+            "height": 48,
+            "rotation": 0,
+            "scaleX": 1,
+            "scaleY": 1,
+            "width": 430,
+            "x": 315,
+            "y": 465
+          },
+          "type": "math",
+          "visible": true
         }
       ],
-      "propertyTracks": []
+      "propertyTracks": [
+        {
+          "id": "track-v1-conclusion-equation-opacity",
+          "keyframes": [
+            {
+              "id": "keyframe-v1-conclusion-equation-opacity-a",
+              "interpolation": {
+                "curve": {
+                  "x1": 0.22,
+                  "x2": 0.34,
+                  "y1": 0.72,
+                  "y2": 1
+                },
+                "kind": "custom-bezier"
+              },
+              "time": 6.6,
+              "value": 0.76
+            },
+            {
+              "id": "keyframe-v1-conclusion-equation-opacity-b",
+              "interpolation": {
+                "kind": "hold"
+              },
+              "time": 7,
+              "value": 1
+            }
+          ],
+          "property": "opacity",
+          "target": {
+            "kind": "object",
+            "objectId": "object-v1-conclusion-equation"
+          }
+        }
+      ]
     }
   ],
   "styles": [
     {
       "annotation": {
+        "fontFamily": "Georgia, serif",
         "offset": 14,
         "roughness": 0.32,
         "treatment": "marginal-hand"
+      },
+      "caption": {
+        "background": "#252722",
+        "color": "#f3eedf",
+        "fontFamily": "Geist, Arial, sans-serif",
+        "fontSize": 30,
+        "maxWidth": 0.82,
+        "position": "bottom"
       },
       "colors": {
         "background": "#f3eedf",
@@ -1154,9 +2842,152 @@
     },
     {
       "annotation": {
+        "fontFamily": "IBM Plex Mono, Menlo, monospace",
+        "offset": 10,
+        "roughness": 0,
+        "treatment": "plain"
+      },
+      "caption": {
+        "background": "#14202b",
+        "color": "#f8fafc",
+        "fontFamily": "Inter, Helvetica Neue, Arial, sans-serif",
+        "fontSize": 27,
+        "maxWidth": 0.76,
+        "position": "bottom"
+      },
+      "colors": {
+        "background": "#f8fafc",
+        "coolAccent": "#176b87",
+        "ink": "#14202b",
+        "mutedInk": "#607080",
+        "rule": "#9aaab8",
+        "warmAccent": "#c85a34"
+      },
+      "corners": {
+        "object": 3,
+        "panel": 4
+      },
+      "graph": {
+        "axisWeight": 1,
+        "curveWeight": 2,
+        "gridOpacity": 0.08
+      },
+      "id": "style-scientific-minimal",
+      "layout": {
+        "hierarchyContrast": 1.28,
+        "tendency": "centred",
+        "titleAnchor": "center"
+      },
+      "motion": {
+        "cameraMaxPan": 90,
+        "cameraMaxZoom": 1.2,
+        "defaultDuration": 0.55,
+        "easing": "ease-in-out",
+        "emphasis": "emphasise",
+        "entrance": "fade-in",
+        "exit": "fade-out"
+      },
+      "name": "Scientific Minimal",
+      "origin": "preset",
+      "spacing": {
+        "margin": 36,
+        "objectGap": 14,
+        "unit": 6
+      },
+      "strokes": {
+        "emphasis": 2.5,
+        "fine": 0.75,
+        "regular": 1.25
+      },
+      "typography": {
+        "bodyScale": 0.92,
+        "controls": "IBM Plex Mono, Menlo, monospace",
+        "math": "STIX Two Math, Times New Roman, serif",
+        "statement": "Inter, Helvetica Neue, Arial, sans-serif",
+        "titleScale": 1.16
+      }
+    },
+    {
+      "annotation": {
+        "fontFamily": "Alegreya, Georgia, serif",
+        "offset": 20,
+        "roughness": 0.58,
+        "treatment": "marginal-hand"
+      },
+      "caption": {
+        "background": "#101b1b",
+        "color": "#f0ead7",
+        "fontFamily": "Alegreya, Georgia, serif",
+        "fontSize": 32,
+        "maxWidth": 0.88,
+        "position": "bottom"
+      },
+      "colors": {
+        "background": "#101b1b",
+        "coolAccent": "#77b7a5",
+        "ink": "#f0ead7",
+        "mutedInk": "#b2b8a9",
+        "rule": "#70827b",
+        "warmAccent": "#e39a70"
+      },
+      "corners": {
+        "object": 6,
+        "panel": 7
+      },
+      "graph": {
+        "axisWeight": 1.5,
+        "curveWeight": 3.2,
+        "gridOpacity": 0.16
+      },
+      "id": "style-nocturne-chalk",
+      "layout": {
+        "hierarchyContrast": 1.72,
+        "tendency": "chalkboard-column",
+        "titleAnchor": "upper-center"
+      },
+      "motion": {
+        "cameraMaxPan": 110,
+        "cameraMaxZoom": 1.28,
+        "defaultDuration": 1.05,
+        "easing": "spring-soft",
+        "emphasis": "emphasise",
+        "entrance": "write",
+        "exit": "fade-out"
+      },
+      "name": "Nocturne Chalk",
+      "origin": "preset",
+      "spacing": {
+        "margin": 58,
+        "objectGap": 24,
+        "unit": 10
+      },
+      "strokes": {
+        "emphasis": 4,
+        "fine": 1.35,
+        "regular": 2.35
+      },
+      "typography": {
+        "bodyScale": 1.04,
+        "controls": "Geist Mono, Menlo, monospace",
+        "math": "STIX Two Math, Times New Roman, serif",
+        "statement": "Alegreya, Georgia, serif",
+        "titleScale": 1.38
+      }
+    },
+    {
+      "annotation": {
+        "fontFamily": "Arial, sans-serif",
         "offset": 8,
         "roughness": 0,
         "treatment": "plain"
+      },
+      "caption": {
+        "background": "#000000",
+        "color": "#ffffff",
+        "fontFamily": "Arial, sans-serif",
+        "fontSize": 28,
+        "maxWidth": 0.84,
+        "position": "bottom"
       },
       "colors": {
         "background": "#ffffff",

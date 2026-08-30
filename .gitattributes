@@ -1,0 +1,2 @@
+# Retained SubRip evidence intentionally uses canonical CRLF framing.
+examples/proofcanvas/*.srt -text -diff

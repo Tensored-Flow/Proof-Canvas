@@ -248,9 +248,18 @@
   "styles": [
     {
       "annotation": {
+        "fontFamily": "Georgia, serif",
         "offset": 14,
         "roughness": 0.32,
         "treatment": "marginal-hand"
+      },
+      "caption": {
+        "background": "#252722",
+        "color": "#f3eedf",
+        "fontFamily": "Geist, Arial, sans-serif",
+        "fontSize": 30,
+        "maxWidth": 0.82,
+        "position": "bottom"
       },
       "colors": {
         "background": "#ffffff",
@@ -306,9 +315,152 @@
     },
     {
       "annotation": {
+        "fontFamily": "IBM Plex Mono, Menlo, monospace",
+        "offset": 10,
+        "roughness": 0,
+        "treatment": "plain"
+      },
+      "caption": {
+        "background": "#14202b",
+        "color": "#f8fafc",
+        "fontFamily": "Inter, Helvetica Neue, Arial, sans-serif",
+        "fontSize": 27,
+        "maxWidth": 0.76,
+        "position": "bottom"
+      },
+      "colors": {
+        "background": "#f8fafc",
+        "coolAccent": "#176b87",
+        "ink": "#14202b",
+        "mutedInk": "#607080",
+        "rule": "#9aaab8",
+        "warmAccent": "#c85a34"
+      },
+      "corners": {
+        "object": 3,
+        "panel": 4
+      },
+      "graph": {
+        "axisWeight": 1,
+        "curveWeight": 2,
+        "gridOpacity": 0.08
+      },
+      "id": "style-scientific-minimal",
+      "layout": {
+        "hierarchyContrast": 1.28,
+        "tendency": "centred",
+        "titleAnchor": "center"
+      },
+      "motion": {
+        "cameraMaxPan": 90,
+        "cameraMaxZoom": 1.2,
+        "defaultDuration": 0.55,
+        "easing": "ease-in-out",
+        "emphasis": "emphasise",
+        "entrance": "fade-in",
+        "exit": "fade-out"
+      },
+      "name": "Scientific Minimal",
+      "origin": "preset",
+      "spacing": {
+        "margin": 36,
+        "objectGap": 14,
+        "unit": 6
+      },
+      "strokes": {
+        "emphasis": 2.5,
+        "fine": 0.75,
+        "regular": 1.25
+      },
+      "typography": {
+        "bodyScale": 0.92,
+        "controls": "IBM Plex Mono, Menlo, monospace",
+        "math": "STIX Two Math, Times New Roman, serif",
+        "statement": "Inter, Helvetica Neue, Arial, sans-serif",
+        "titleScale": 1.16
+      }
+    },
+    {
+      "annotation": {
+        "fontFamily": "Alegreya, Georgia, serif",
+        "offset": 20,
+        "roughness": 0.58,
+        "treatment": "marginal-hand"
+      },
+      "caption": {
+        "background": "#101b1b",
+        "color": "#f0ead7",
+        "fontFamily": "Alegreya, Georgia, serif",
+        "fontSize": 32,
+        "maxWidth": 0.88,
+        "position": "bottom"
+      },
+      "colors": {
+        "background": "#101b1b",
+        "coolAccent": "#77b7a5",
+        "ink": "#f0ead7",
+        "mutedInk": "#b2b8a9",
+        "rule": "#70827b",
+        "warmAccent": "#e39a70"
+      },
+      "corners": {
+        "object": 6,
+        "panel": 7
+      },
+      "graph": {
+        "axisWeight": 1.5,
+        "curveWeight": 3.2,
+        "gridOpacity": 0.16
+      },
+      "id": "style-nocturne-chalk",
+      "layout": {
+        "hierarchyContrast": 1.72,
+        "tendency": "chalkboard-column",
+        "titleAnchor": "upper-center"
+      },
+      "motion": {
+        "cameraMaxPan": 110,
+        "cameraMaxZoom": 1.28,
+        "defaultDuration": 1.05,
+        "easing": "spring-soft",
+        "emphasis": "emphasise",
+        "entrance": "write",
+        "exit": "fade-out"
+      },
+      "name": "Nocturne Chalk",
+      "origin": "preset",
+      "spacing": {
+        "margin": 58,
+        "objectGap": 24,
+        "unit": 10
+      },
+      "strokes": {
+        "emphasis": 4,
+        "fine": 1.35,
+        "regular": 2.35
+      },
+      "typography": {
+        "bodyScale": 1.04,
+        "controls": "Geist Mono, Menlo, monospace",
+        "math": "STIX Two Math, Times New Roman, serif",
+        "statement": "Alegreya, Georgia, serif",
+        "titleScale": 1.38
+      }
+    },
+    {
+      "annotation": {
+        "fontFamily": "Arial, sans-serif",
         "offset": 8,
         "roughness": 0,
         "treatment": "plain"
+      },
+      "caption": {
+        "background": "#000000",
+        "color": "#ffffff",
+        "fontFamily": "Arial, sans-serif",
+        "fontSize": 28,
+        "maxWidth": 0.84,
+        "position": "bottom"
       },
       "colors": {
         "background": "#ffffff",

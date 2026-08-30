@@ -4,7 +4,10 @@
   "schemaVersion": 4,
   "compilerDeterministic": true,
   "pythonAstParsed": true,
-  "durationSeconds": 28,
+  "packageRoundTripVerified": true,
+  "packageByteStable": true,
+  "deterministicAudioSha256": "c3346b09725f0faa637b1e1eb4b3ab520cbf522d44ef80e5c406c9b0de9a20af",
+  "durationSeconds": 52,
   "requiredAiCommandsExercised": 5,
   "diagnostics": [
     {
@@ -15,40 +18,204 @@
   ],
   "files": {
     "uncountable-yet-zero-length.proofcanvas.json": {
-      "bytes": 31142,
-      "sha256": "8800d5510fcc6ef2e1de6c1797773e8e69afbc4e52defb7613f8369f22e40ce2"
+      "bytes": 77989,
+      "sha256": "27267836323cd5aa9b2726221120375c59a7f02feac101872f4ba790d492fe19"
     },
     "uncountable-yet-zero-length.py": {
-      "bytes": 19861,
-      "sha256": "014eae0e47ed5c1dd0dfa936ac2358ff111daf9366849a7ba8a187484bbbca57"
+      "bytes": 43383,
+      "sha256": "6b553c27ee5635f2762d4fd7b7e5c86f96919bb4deb6092693fe4ec1bdf5705d"
+    },
+    "proofcanvas-deterministic-pulse-90s.wav": {
+      "bytes": 1440044,
+      "sha256": "c3346b09725f0faa637b1e1eb4b3ab520cbf522d44ef80e5c406c9b0de9a20af"
+    },
+    "uncountable-yet-zero-length.proofcanvas": {
+      "bytes": 1519113,
+      "sha256": "5a60fd5288ff354beffb955625872f3004f7f3fa1a80c16557c2a5b8ed63a974"
+    },
+    "uncountable-yet-zero-length.srt": {
+      "bytes": 1073,
+      "sha256": "dfd780c5607bb0761ea77f188f48eb8d35b26a4c8ae115444eacbf5398f5ba09"
+    },
+    "browser-import-proof-caption.srt": {
+      "bytes": 68,
+      "sha256": "70fc287d6abbc10d6fa1eca61425b9bb19278d8599cc8baba4df14bed8dc1363"
     },
     "ai-command-results.json": {
       "bytes": 14246,
-      "sha256": "a11b5e781d85a9859031172fcc27409070230eabaa0bcb6a28ec836305e7d2c1"
+      "sha256": "4364b13908f8aa1408e3183b48684120dec1200f1f01b7429ce0695692db60f7"
     },
     "uncountable-yet-zero-length.mp4": {
-      "bytes": 445731,
-      "sha256": "0f540ea8373e327ee41f8e134615783c85543da37e7b4fd378a3c4d2d64bd7b0"
+      "bytes": 1637395,
+      "sha256": "2c4d554b2985e25568c97223a6818d98e2f677732d8a2f4b81cde07135703645"
     },
     "render-metadata.json": {
-      "bytes": 617,
-      "sha256": "206e8e7d821261a2487c4fe4c5e3c20e67902b9c2cd2040c4ce50c32788fdbdf"
+      "bytes": 1215,
+      "sha256": "9d8721937371e1c8e8f76660a87746bf5ce9ff9e5d379cd633f9e57bffc1b902"
+    },
+    "stress-results.json": {
+      "bytes": 2021,
+      "sha256": "cec044911793e4f2f295e4495579c1062a33823b398f5b721075a1b50d442fa1"
     },
     "evidence/browser-summary.json": {
-      "bytes": 1033,
-      "sha256": "7533f24db23606d35d5a583f995a11d7633ae829324a73834605ed53c0f56262"
+      "bytes": 7427,
+      "sha256": "549c22164a195995f5c5614a1f91d847b87e321a6295e4a8bc0f5c631e16a2cf"
+    },
+    "evidence/proofcanvas-dashboard-1920x1080.png": {
+      "bytes": 56490,
+      "sha256": "1ff341d18434343e260d1a3f274be4b3b354af96e3bfa11a63e313e3f3ed93d5"
+    },
+    "evidence/proofcanvas-blank-editor-1920x1080.png": {
+      "bytes": 116364,
+      "sha256": "926bea23bea289d7d9caa55ad6361e13e75208f3118346bf3058da08564ac85b"
+    },
+    "evidence/proofcanvas-selected-text-1920x1080.png": {
+      "bytes": 222757,
+      "sha256": "858349cb84926f5fd8bc82c59ac16db229a726af248dd509bc0fc1ac0c017ca6"
+    },
+    "evidence/proofcanvas-selected-graph-1920x1080.png": {
+      "bytes": 156782,
+      "sha256": "b30fa10cb21ba9d1178b234da5e52589083bd1342eebdd1686cfca7181fc7d4a"
+    },
+    "evidence/proofcanvas-timeline-keyframes-1920x1080.png": {
+      "bytes": 211002,
+      "sha256": "41e734b3338554b316b272f64813aa579717e0c0d03313c45792c4c9b1784424"
+    },
+    "evidence/proofcanvas-style-lab-1920x1080.png": {
+      "bytes": 211298,
+      "sha256": "e664498114b7a52fb6c1a1f2a8f87d980313b97570501701ae2142ad353ea6db"
+    },
+    "evidence/proofcanvas-style-nocturne-chalk-1920x1080.png": {
+      "bytes": 222347,
+      "sha256": "bacc554b36c1b1282dc352452a2167d549f5078391774d52886513256b59a506"
+    },
+    "evidence/proofcanvas-style-scientific-minimal-1920x1080.png": {
+      "bytes": 220297,
+      "sha256": "f09c07125c74a601fe6c04f966306d11b60680f3da8f5c9df55d34c3f2509f94"
+    },
+    "evidence/proofcanvas-animation-inspector-1920x1080.png": {
+      "bytes": 197237,
+      "sha256": "60211cd25dcb5d64a80a7fd6e709043e501210bba6a33b836281160d999274d2"
+    },
+    "evidence/proofcanvas-ai-proposal-review-1920x1080.png": {
+      "bytes": 224124,
+      "sha256": "f284f2f596533d47e8763ab6cf036b8ba121f5b3f7cc861b05ec08bf953f1de8"
+    },
+    "evidence/proofcanvas-render-dialog-1440x900.png": {
+      "bytes": 181745,
+      "sha256": "e4e3455da72b9f42b18838eab00f663e96b1072fe8a065e02870c2e4933e22bf"
+    },
+    "evidence/proofcanvas-editorial-1920x1080.png": {
+      "bytes": 191740,
+      "sha256": "ce015a39ed7ea92d06e22cd874eb2c124faa6220bc83b7ee96db1a65a42c0b1f"
     },
     "evidence/proofcanvas-editorial-1440x900.png": {
-      "bytes": 152591,
-      "sha256": "6c8fe5f8ef38a7c8b656f6240ae5d6847700ddf8d40c8c45a808f90522df5895"
+      "bytes": 153594,
+      "sha256": "4c4f0a8a3191825f8f9b0b1213a63207604fc8ec1c445fd02db3a25e02fd5551"
     },
     "evidence/proofcanvas-editorial-1280x800.png": {
-      "bytes": 135846,
-      "sha256": "2a4d069a76c3207f0ff2600f46acb764c32b3049835fb0e969ee4d1a933d86ef"
+      "bytes": 158328,
+      "sha256": "5bec536ed1fd0aea196faea669476eb5e680f9477f1a09009fb62b7814f8eb37"
+    },
+    "evidence/proofcanvas-narrow-editor-1024x768.png": {
+      "bytes": 110109,
+      "sha256": "122c13c0f52fe7bd555f5deb6142a5658043503e239c62cbfda98c7d29bbbfdb"
+    },
+    "evidence/proofcanvas-portrait-output-1440x900.png": {
+      "bytes": 122907,
+      "sha256": "1bbd170ae15cf5ebfcd3d1acb8899659fc98af7eb9ff482daa2027bd24b2e1f8"
+    },
+    "evidence/proofcanvas-still-current.png": {
+      "bytes": 82576,
+      "sha256": "72f21d915cfcad951202363bf9d82430506189d053e3050dc834c2505ea632e8"
     },
     "render-evidence/proofcanvas-manim-frame-12s.png": {
-      "bytes": 47174,
-      "sha256": "05301ce843dff1573d56574ecc19ae227037dbaa509f56905694f67792be1080"
+      "bytes": 86190,
+      "sha256": "e6d221786a74e46e4c1d04bfe96b4a6a02cc6273db8f89b10852a50c02c51acb"
+    },
+    "native-shape-parity/authoring-desktop-1440x900.png": {
+      "bytes": 143708,
+      "sha256": "35f81569ee1e416f42de0f06d0b3d03539dbd6b6d9dd1b2ca3100f6005c4975b"
+    },
+    "native-shape-parity/authoring-locked-1440x900.png": {
+      "bytes": 152180,
+      "sha256": "3125dd8bc65ddcd65cc30db787b662da2e8a3adcca8753245db781b6e118501b"
+    },
+    "native-shape-parity/authoring-playback-1440x900.png": {
+      "bytes": 145561,
+      "sha256": "39d3c7b4b6f04591e9fbe415d41436f8f63d965b70f723341a79778c9eadf1bd"
+    },
+    "native-shape-parity/authoring-portrait-1024x1366.png": {
+      "bytes": 205462,
+      "sha256": "94b8e275237cd40533cc8b2a24e9f677b4b703c97d9282bc2ed4dfbbccb63806"
+    },
+    "native-shape-parity/browser-authoring.json": {
+      "bytes": 4057,
+      "sha256": "b3cc5cf3bbbc98721187abb9bd2966c7c722d497e1cbed33f1d474d3ad2c0cd8"
+    },
+    "native-shape-parity/browser-capture.json": {
+      "bytes": 3941,
+      "sha256": "4cf82604f896cdfe5fd2b0aea7389906260eb2d027316a2b9f7a36dc22cafe8a"
+    },
+    "native-shape-parity/browser-report.json": {
+      "bytes": 2893,
+      "sha256": "eb460af6d9f4505207737ed64ed1eddb67e7b6ee2bce1b283f2f714e46b76c6a"
+    },
+    "native-shape-parity/browser-stage.png": {
+      "bytes": 12006,
+      "sha256": "d37b6c96bae43ce701bf19b53f7da5ac3852e4e016ba77ed3283130ad8ed7614"
+    },
+    "native-shape-parity/browser-stage.svg": {
+      "bytes": 3782,
+      "sha256": "4f5dfa6b35bc188d5e55f1fb2ced323ac4716faa6306a181a60af726c3df876a"
+    },
+    "native-shape-parity/comparison-dashed-line.png": {
+      "bytes": 1043,
+      "sha256": "50ad8011a828411a9b85b61b032d8b3d424017bdfd24876697c2f2775ea03021"
+    },
+    "native-shape-parity/comparison-double-arrow.png": {
+      "bytes": 1051,
+      "sha256": "a6b3d33e12171dcd93e63d62eb246a723489391767cd54ea35ae0b28d7e4db17"
+    },
+    "native-shape-parity/comparison-ellipse.png": {
+      "bytes": 1142,
+      "sha256": "1170b51dc7b90aab666269f2187a364fd35dc7015d76097c3dd4b5c505dd1338"
+    },
+    "native-shape-parity/comparison-freeform-path.png": {
+      "bytes": 1235,
+      "sha256": "c83434a09a290ab7ee05c763b13707c8421498086e45245f9dd80d756fd23d05"
+    },
+    "native-shape-parity/comparison-polygon.png": {
+      "bytes": 1035,
+      "sha256": "b0f5b208f6f6012e835181856f09d1322f40e30738626a379d01ed8415d6d52a"
+    },
+    "native-shape-parity/compiler.json": {
+      "bytes": 795,
+      "sha256": "5c0b63c90f3789050d3b1cf6f23bfbd03c192025e73354d7e82ab418515e5cb0"
+    },
+    "native-shape-parity/evidence-manifest.json": {
+      "bytes": 35913,
+      "sha256": "588979f32eaac16fbde8f6eec15e62fd80ba2b84e8932d3c89a6b820c032bd49"
+    },
+    "native-shape-parity/generated.py": {
+      "bytes": 2835,
+      "sha256": "eb59c5ea3a806d124e75ecb8109ca3dbaba6a8af0053ebd6a348bf58f2ea3c8b"
+    },
+    "native-shape-parity/manim-frame.png": {
+      "bytes": 13673,
+      "sha256": "4b411d98bb204e6327f3ac6f736de863fcb783b46be3a24dab4f2ef196fc9afe"
+    },
+    "native-shape-parity/manim-render.log": {
+      "bytes": 218,
+      "sha256": "79c122e77a0b6eb1ff716e8567a7c5b3a8d763a72c2f3083bf06ec033da57499"
+    },
+    "native-shape-parity/parity-report.json": {
+      "bytes": 43565,
+      "sha256": "7f0215469ef6c5bc9ef0f31fc259d858d2bba7f518ec3da9c2063b83f3b885e2"
+    },
+    "native-shape-parity/project.proofcanvas.json": {
+      "bytes": 12961,
+      "sha256": "7086e1e445c778a5d9b965553076d27c67fe1b4fd348e860a8c6562a51719be7"
     }
   }
 }

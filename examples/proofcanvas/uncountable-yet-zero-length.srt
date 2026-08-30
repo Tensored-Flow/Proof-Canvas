@@ -1,0 +1,44 @@
+1
+00:00:00,000 --> 00:00:06,400
+Begin with the closed unit interval and remove its open middle third.
+
+2
+00:00:06,400 --> 00:00:14,200
+Repeat the same removal inside every surviving interval.
+
+3
+00:00:14,200 --> 00:00:21,000
+After n stages, the surviving length is two thirds to the n.
+
+4
+00:00:21,000 --> 00:00:24,100
+At stage n, there are 2 to the n minus one new gaps.
+
+5
+00:00:24,100 --> 00:00:29,000
+Finite length remains; only the limiting length vanishes.
+
+6
+00:00:29,000 --> 00:00:33,000
+A surviving point has a ternary address made only from zeroes and twos.
+
+7
+00:00:33,000 --> 00:00:37,000
+Those endless left-right choices form an uncountable family.
+
+8
+00:00:37,000 --> 00:00:41,500
+The surviving lengths are one, two thirds, four ninths, eight twenty-sevenths.
+
+9
+00:00:41,500 --> 00:00:45,000
+Repeated multiplication by two thirds drives the sequence to zero.
+
+10
+00:00:45,000 --> 00:00:48,500
+The Cantor set has as many points as the full interval.
+
+11
+00:00:48,500 --> 00:00:52,000
+Yet its total length is zero.
+

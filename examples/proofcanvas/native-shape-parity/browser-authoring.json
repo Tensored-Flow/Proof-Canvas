@@ -1,10 +1,23 @@
 {
   "schemaVersion": 1,
   "projectId": "project-4e4154495645534841504553",
-  "parityProjectSha256": "e6e4d9bd32031b01bbd5c559fd01a6363ed791a40560d3e7ee804b0ecb99e538",
+  "parityProjectSha256": "7086e1e445c778a5d9b965553076d27c67fe1b4fd348e860a8c6562a51719be7",
   "projectSchemaVersion": 4,
   "initialObjectCount": 5,
   "authoredObjectCount": 10,
+  "qualificationBoundary": {
+    "renderedBaseFixture": {
+      "objectCount": 5,
+      "projectSha256": "7086e1e445c778a5d9b965553076d27c67fe1b4fd348e860a8c6562a51719be7",
+      "browserStageCaptured": true,
+      "genuineManimFrameCaptured": true
+    },
+    "postBaseAuthoringJourney": {
+      "objectCount": 10,
+      "purpose": "manual controls, refusal states, responsive layout, and persistence evidence",
+      "renderQualified": false
+    }
+  },
   "paletteCount": 16,
   "palettePresetIds": [
     "rectangle",
@@ -109,32 +122,32 @@
       "stageAspect": 0.5614947197400487,
       "inspectorClientWidth": 291,
       "inspectorScrollHeight": 1398,
-      "inspectorClientHeight": 972,
+      "inspectorClientHeight": 1052,
       "libraryClientWidth": 223
     }
   },
   "screenshots": {
     "desktop": {
       "path": "authoring-desktop-1440x900.png",
-      "sha256": "47d132374a22a99580d171eafeeb556bdac82ad435a63be473a2b7c5c5dcb64b",
+      "sha256": "35f81569ee1e416f42de0f06d0b3d03539dbd6b6d9dd1b2ca3100f6005c4975b",
       "width": 1440,
       "height": 900
     },
     "locked": {
       "path": "authoring-locked-1440x900.png",
-      "sha256": "66671efd503e6e970acccb880e16fbb3c9359cc0c9d4002ae7e9be65d3728b5c",
+      "sha256": "3125dd8bc65ddcd65cc30db787b662da2e8a3adcca8753245db781b6e118501b",
       "width": 1440,
       "height": 900
     },
     "playback": {
       "path": "authoring-playback-1440x900.png",
-      "sha256": "e9e9727310c2ca92ef9145f186877f175504644659af78eddf24299cae314a21",
+      "sha256": "39d3c7b4b6f04591e9fbe415d41436f8f63d965b70f723341a79778c9eadf1bd",
       "width": 1440,
       "height": 900
     },
     "portrait": {
       "path": "authoring-portrait-1024x1366.png",
-      "sha256": "73e7b6154c2298c7535f31556b2f9745095cec5896701e6b761bd8fbaeeb5331",
+      "sha256": "94b8e275237cd40533cc8b2a24e9f677b4b703c97d9282bc2ed4dfbbccb63806",
       "width": 1024,
       "height": 1366
     }

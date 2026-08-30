@@ -1,156 +1,120 @@
-# ProofCanvas V1 implementation plan
+# ProofCanvas V1 plan
 
-This plan maps the requested V1 work to the frozen acceptance contract in
-`.codex/quality-loop/proofcanvas-v1/QUALITY_CONTRACT.md`. A checked item means the engineering slice
-has been implemented and tested; it does not imply that the complete V1 acceptance criterion has
-passed.
+This plan maps the implemented release payload to the frozen acceptance contract summarized in
+[`V1_AUDIT.md`](./V1_AUDIT.md). The local AC-01 through AC-19 qualification packet and fresh
+independent review are complete as of 2026-08-30 UTC with no P0/P1/P2 findings. AC-17 uses the
+contract's exact unavailable external deployment-target blocker. AC-20 receipts are intentionally
+external to this self-identifying payload and must be verified from the remote refs.
 
-## Milestone 1 — authoritative V2 timeline foundation
+## Status vocabulary
 
-Acceptance criteria: AC-02, AC-07, AC-08.
+- **Locally qualified** — implementation and reproduced local evidence pass within the stated scope.
+- **Externally blocked** — an authenticated, authorized deployment target is unavailable.
+- **External publication receipts** — the remote branch, clean clone, `main` fast-forward, and
+  annotated tag are verified outside the immutable release payload.
 
-- Upgrade `ProjectDocument` to schema version 2 through a deterministic V1-to-V2 migration.
-- Add bounded project settings, portable asset metadata, object lifetimes, property/keyframe tracks,
-  audio clips, captions, markers, custom easing presets, stable IDs, and global references.
-- Add deterministic timeline indexing and sampling for numeric, colour, hold, eased, and custom
-  cubic-Bezier tracks.
-- Extend atomic operations/history for lifetimes, property tracks, and keyframes.
-- Apply supported visual and camera tracks in browser preview and deterministic Manim compilation.
-- Preserve the published semantic animation schedule and fail closed on unsupported collisions.
-- Evidence: migration, schema, timeline, operation/history, preview, compiler, type and build tests.
+## Milestone 0 — standalone baseline and contract
 
-This milestone does not add the final timeline UI, audio playback, asset ingestion, persistence, or
-renderer asset/audio transport. Those remain explicitly unqualified after Slice 1.
+Acceptance criteria: AC-01 and the working constraints. Status: **locally qualified; publication
+identity recorded externally**.
 
-Slice 1 also intentionally fails closed on compiler features that need later scheduling or transport
-work: property tracks whose first keyframe is after time zero, partial object lifetimes,
-hold/custom-Bezier segments, audio clips/tracks, and raster/SVG asset transport. Browser preview
-remains exact for delayed tracks and opacity-only assets, but these cases are not claimed as
-renderable until the final timeline/compiler and asset/audio milestones implement them.
+- The standalone repository, `main`, `codex/proofcanvas-v1`, and immutable annotated
+  `v0.1-autonomous-benchmark` baseline exist.
+- No unrelated workspace, package, remote, style, dependency, or source path is part of ProofCanvas.
+- The final release SHA/tree cannot be self-recorded by its own commit; AC-20 must record it from the
+  pushed refs and tag object after that commit exists.
 
-## Milestone 2 — private persistence and project dashboard
+## Milestone 1 — authoritative document and time foundation
 
-Acceptance criteria: AC-03, AC-04, parts of AC-05 and AC-18.
+Acceptance criteria: AC-02, AC-07, AC-08. Status: **locally qualified**.
 
-- Add private owner authentication, signed expiring sessions, CSRF protection, and logout.
-- Add a SQLite-backed repository abstraction, migrations, optimistic revisions, autosave,
-  checkpoints, recovery, duplicate/delete, backup, and restore.
-- Add dashboard CRUD and route the editor through a durable project ID.
-- Prove cross-browser and process-restart persistence.
+- `ProjectDocument` V4 is the sole editable authority and preserves registered V1/V2/V3 migration
+  semantics with loss-aware archival/quarantine.
+- Integer ticks, global references, lifetimes, clips, property tracks, keyframes, cameras, media,
+  captions, markers, easings, and output settings share one strict schema.
+- Preview and compiler share deterministic ordering, conflict, interpolation, gap, and duration
+  authority; unsupported combinations fail closed at authoring/render ingress.
 
-Slice 2 implements the engineering path: no-signup owner login; opaque expiring sessions and
-session-bound CSRF; protected dashboard/editor/AI/render routes; a checksummed STRICT SQLite
-repository; revision-CAS and idempotent mutations; autosave; explicit local recovery; checkpoints;
-duplicate/soft delete; validated online backup and offline restore; and live/ready endpoints.
-Automated Node/jsdom coverage proves repository reopen, two-connection CAS, API authentication,
-autosave serialization, and recovery semantics. Fresh real-browser, container-restart, and hosted
-persistent-volume evidence remains a Milestone 6 qualification item rather than an implementation
-claim.
+## Milestone 2 — private auth, persistence, and dashboard
 
-## Milestone 3 — professional editor and manual authoring
+Acceptance criteria: AC-03, AC-04. Status: **locally qualified**.
 
-Acceptance criteria: AC-05, AC-06, remaining AC-07 and AC-08, AC-11, AC-16.
+- Owner-only scrypt authentication, signed opaque sessions, exact Origin, session-bound CSRF,
+  logout revocation, and bounded login admission are implemented and exercised.
+- Checksummed STRICT SQLite provides durable CRUD, revision CAS, idempotency, checkpoints/recovery,
+  soft deletion, migrations, integrity, online backup, and offline atomic restore.
+- Fresh-context and controlled-process-restart journeys reopened server-owned project and asset state.
 
-- Decompose the editor shell into resizable library, canvas, contextual inspector, shot sequence,
-  multilayer timeline, top bar, dialogs, and subordinate assistant drawer.
-- Add playback, ruler, zoom/scroll/snap, layered tracks, clip/keyframe selection and editing,
-  lifetimes, markers, keyboard commands, marquee, guides, canvas zoom/pan, and exact inspector
-  diamonds.
-- Complete object/component/property coverage and Style Lab with three materially distinct styles.
-- Validate required desktop and portrait-authoring viewports in a real browser.
+## Milestone 3 — professional manual authoring
 
-### Milestone 3.1 — shared core and schema-v3 timeline
+Acceptance criteria: AC-05 through AC-08, AC-11, AC-16. Status: **locally qualified within the
+desktop-first V1 boundary**.
 
-- Make logical frame dimensions authoritative for landscape, portrait, and square authoring while
-  keeping geometry independent from editable project-local style starting points.
-- Add typed document/shot/marker/style/easing operations, conservative split/merge, delayed and
-  hold keyframe scheduling, partial lifetimes, and bounded custom cubic-Bezier compilation.
-- Move compiler-bound persisted time from schema-v2 floats to schema-v3 10 ns ticks. The database
-  migration preserves exact canonical V2 bytes and rewrites a project or checkpoint only when all
-  authored temporal relations remain injective and ordered after quantization.
-- Quarantine only the individual loss-prone document. A current project becomes read-only with an
-  authenticated byte-exact JSON export; a loss-prone historical checkpoint blocks only its own
-  recovery and export remains available even if its ready parent project is later soft-deleted.
-- Keep legacy render-unsupported easing combinations loadable, but reject them at every new
-  authoring/copy/provider ingress. Permit unrelated edits, deletion, or the exact easing-only repair.
-
-### Milestone 3.7 — exact native shape authoring
-
-- Preserve the five published V3 primitives, then advance ready documents to schema V4 for native
-  ellipse, polygon, dashed-line, double-arrow, and cubic freeform-path object types. Canonicalize
-  animation target sets with stable first-occurrence ordering: repeated V1-V3 IDs were redundant in
-  preview semantics, and their repeated compiler expansion was a defect rather than authored meaning.
-- Keep all 16 requested shape cards clickable and draggable. Rounded rectangle, highlight, dot,
-  underline, and cross-out remain honest editable compositions over the native vocabulary; bracket
-  is one open freeform contour.
-- Share exact bounded geometry across SVG preview and pinned Manim compilation: normalized vertices,
-  cubic nodes/handles, explicit caps/joins/tips, Manim-equivalent dash spacing, and endpoint editing.
-- Bound each generated dashed line to 256 children and all compiler-occurrence-weighted native
-  geometry to 4,096 points or dashes. Renderer policy independently revalidates the generated-source
-  grammar and immutable shape descriptors.
-- This milestone qualifies native geometry only; the complete V1 workflow, human visual taste,
-  and deployment remain open.
-
-### Milestone 3.7c — editable semantic-component library
-
-Acceptance criteria: the twelve-component portion of AC-06, with supporting manual-authoring and
-browser evidence.
-
-- Expand the stable component registry to exactly 12 ordered cards: Title & subtitle, Definition,
-  Theorem / proposition, Proof-step sequence, Equation derivation, Annotated graph, Case comparison,
-  Callout, Marginal note, Recursive construction, Vector explanation, and Example & abstraction.
-- Instantiate each card as one ordinary root group with directly editable leaves: 48 leaves and 60
-  objects across the complete library, with no implicit animations, lifetimes, tracks, raster assets,
-  or authored literal palette colours. Every math leaf explicitly uses the reviewed MathTex display
-  dialect; the graph is the restricted `sin(x)` expression and vector notation avoids unsupported
-  matrix environments.
-- Derive insertion defaults from the active project style, allocate IDs against the complete project
-  namespace, and clamp exact rotated descendant bounds 24 pixels inside every 16:9, 9:16, and 1:1
-  logical frame. Preflight the whole candidate document atomically against schema-v4 object, graph,
-  native-work, canonical-JSON, hierarchy, and reference limits before returning inserted objects.
-- Keep schema version 4: these components are authored compositions over the existing object model,
-  not a new persistence vocabulary. Component insertion remains editable, ungroupable, and
-  deterministically recompilable.
-- Expose the registry through searchable click and drag authoring. Click targets the live preview
-  camera centre; drops use inverse SVG/camera coordinates; playback, invalid payloads, and
-  unavailable components fail closed. Each successful insertion is one history transaction with
-  root-only selection, and representative components survive durable reload and JSON round trip.
-
-This slice implements and tests the twelve-component subrequirement of AC-06. AC-06 remains open
-for trusted image/SVG authoring and complete V1 qualification.
+- The editor provides direct canvas manipulation, library, inspector, layers, storyboard, layered
+  timeline, exact keyframes, camera, project settings, focus-canvas mode, zoom, shortcuts, snapping,
+  groups/layout, styles, and manual operation with AI disabled.
+- Landscape, narrower-laptop, and portrait-output journeys passed automated overflow, console,
+  request, and serious/critical axe checks. These do not certify assistive-technology conformance,
+  universal usability, or subjective visual quality.
+- Independent retained-evidence review found no P0/P1 visual defect. Its P2 evidence-scope finding is
+  resolved by distinguishing the exact five-object browser/Manim parity fixture from the later
+  ten-object authoring/control/refusal/layout screenshots; the latter are not post-edit render proof.
 
 ## Milestone 4 — assets, packages, audio, and captions
 
-Acceptance criteria: AC-09 and AC-10.
+Acceptance criteria: AC-09, AC-10 and media portions of AC-13. Status: **locally qualified**.
 
-- Add content-sniffed project-local assets, SVG sanitisation, hash deduplication, safe storage, and
-  bounded portable `.proofcanvas` import/export.
-- Add waveform generation, audio placement/trim/split/volume/fades/keyframes, synchronized playback,
-  captions, SRT/VTT handling, and deterministic fixtures.
+- Trusted project-local PNG, JPEG, WebP, sanitized SVG, WAV, and MP3 storage is bounded by content,
+  structure, decode, metadata, hash, aggregate, and filename authority. M4A remains unsupported.
+- Canonical `.proofcanvas` packages preserve internal IDs and assets/media while allocating a fresh
+  imported project identity; adversarial path/type/size/archive grammar and replay cases fail closed.
+- Audio waveform/edit/playback/mux and SRT/VTT caption editing/import/export are exercised through
+  unit, browser, restart, package, and decoded-output evidence.
 
-## Milestone 5 — complete rendering and representative project
+## Milestone 5 — render/export and representative V1 project
 
-Acceptance criteria: AC-13, AC-14, AC-15.
+Acceptance criteria: AC-13 through AC-15. Status: **locally qualified**.
 
-- Extend the private render protocol for V2 profiles, trusted assets, safe audio muxing, captions,
-  cancellation/retry, stills, durable recent results, and verified A/V metadata.
-- Expand the editable Cantor project to the required 45–60 second, five-shot V1 example.
-- Add and measure the deterministic stress fixture before optimizing hot paths.
+- The private sidecar validates generated source, referenced assets, numeric audio plans, output
+  settings, resource bounds, queue/cancel/retry/still behavior, and H.264/AAC decode metadata.
+- The retained five-shot, 52-second example includes canonical JSON, package, WAV, SRT, generated
+  Python, genuine Manim MP4, decoded frame, parity evidence, and a 50-member root manifest.
+- The deterministic stress fixture is 10 shots, 150 objects, 250 clips, 400 keyframes, and 90 audio
+  seconds. Its measurements are headless shared-core evidence, not browser-frame-rate or human-
+  usability proof.
 
-## Milestone 6 — qualification, deployment, and publication
+## Milestone 6 — AI, deployment, docs, review, and publication
 
-Acceptance criteria: AC-12 and AC-16 through AC-20.
+Acceptance criteria: AC-12, AC-16 through AC-20. Status: **local qualification and independent review
+complete; deployment externally blocked; publication receipts external**.
 
-- Run fresh correctness, test, timeline, compiler, security, UX, performance, and visual-authorship
-  reviews; repair all confirmed P0/P1 and adjudicate P2 findings.
-- Complete local production qualification, retained evidence, documentation, secret scans, genuine
-  landscape/portrait A/V renders, package round trip, accessibility checks, and clean-clone proof.
-- Attempt the authorized deployment flow only after local gates pass.
+- Manual operation is complete without AI. The optional configured path accepts only bounded typed
+  operations; the fallback is visibly labelled deterministic demonstration. No live-provider claim
+  is made.
+- Documentation, artifacts, dependency/security gates, production browser/restart journeys, parity,
+  and local production-TLS Compose qualification have current receipts in `V1_AUDIT.md`.
+- No Railway CLI/authenticated project, authorized host/domain/certificate, or production secret
+  context is available. AC-17 therefore passes only through the exact blocker path and makes no live
+  persistence, health, or hosted-URL claim.
+- Fresh final independent review passed with no P0/P1/P2 findings.
 
-## Deployment blocker context
+## Acceptance-state summary
 
-No hosted deployment has been attempted in Milestone 1. Railway authentication, project access,
-persistent-volume availability, private service networking, and production secrets have not yet
-been verified. This is currently an untested external-deployment prerequisite, not the single
-credential blocker allowed by AC-17. ProofCanvas must not be described as hosted or production-ready
-until the deployment milestone proves the exact blocker or qualifies a live HTTPS installation.
+| Contract area | Embedded qualification state |
+|---|---|
+| AC-01–16 | **Locally qualified** within the evidence and human-review boundaries in `V1_AUDIT.md` |
+| AC-17 deployment | **PASS only via exact external blocker**; no remote production deployment or URL |
+| AC-18 documentation | **Locally qualified**; current receipts and limitations reconciled |
+| AC-19 full quality gate | **PASS** — local executable gates and fresh independent review complete; no P0/P1/P2 |
+| AC-20 publication | **EXTERNAL RECEIPT** — branch push, clean clone, `main` fast-forward, annotated `v1.0.0`, remote verification |
+
+## Publication runbook
+
+1. Stage only intended repository files, excluding secrets, databases, caches, local environments,
+   and ignored agent state; commit and push `codex/proofcanvas-v1` without rewriting history.
+2. Clone that exact remote candidate into a fresh directory and rerun the documented install,
+   typecheck, build, artifact-verification, and ref checks.
+3. Re-fetch and require the documented remote `main` baseline, then fast-forward `main` without
+   force. Create one annotated `v1.0.0` only at the verified release commit.
+4. Verify remote candidate/main/tag commit equality plus tag object/peeled target, and record the
+   immutable release SHA/tree/tag receipt outside the self-identifying release commit.

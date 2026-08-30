@@ -26,8 +26,8 @@
         }
       ],
       "operationCount": 1,
-      "beforeProjectSha256": "8800d5510fcc6ef2e1de6c1797773e8e69afbc4e52defb7613f8369f22e40ce2",
-      "afterProjectSha256": "c117bb98f6f082f7dc970f70d971bcd5fe74b9c7303c3801dbc63a318352d5a2",
+      "beforeProjectSha256": "27267836323cd5aa9b2726221120375c59a7f02feac101872f4ba790d492fe19",
+      "afterProjectSha256": "b9c59775614c4539d82b2a5a5cb4a2a546295a6025ce2dbe96fbb3b1c59f763e",
       "historyEntries": 1,
       "undoRestoredExactProject": true,
       "semanticEvidence": {
@@ -74,8 +74,8 @@
         }
       ],
       "operationCount": 2,
-      "beforeProjectSha256": "8800d5510fcc6ef2e1de6c1797773e8e69afbc4e52defb7613f8369f22e40ce2",
-      "afterProjectSha256": "dd5c7214506bbe4c3739bc34a46bf5de2f6610877def36ff366df431794813db",
+      "beforeProjectSha256": "27267836323cd5aa9b2726221120375c59a7f02feac101872f4ba790d492fe19",
+      "afterProjectSha256": "335c5b860d9cabc7e06dd0bfe84e1b28a652d9b4cab336ed29404fba8ad99a4c",
       "historyEntries": 1,
       "undoRestoredExactProject": true,
       "semanticEvidence": {
@@ -141,8 +141,8 @@
         }
       ],
       "operationCount": 2,
-      "beforeProjectSha256": "8800d5510fcc6ef2e1de6c1797773e8e69afbc4e52defb7613f8369f22e40ce2",
-      "afterProjectSha256": "7617674e7f99a82a1c0253aa2a1856170d8cf5dcc61154eb4a1820d8b1957661",
+      "beforeProjectSha256": "27267836323cd5aa9b2726221120375c59a7f02feac101872f4ba790d492fe19",
+      "afterProjectSha256": "0a2f758b84e024f32fe7f3e16b1314453b27f88c7d0a403ff251864685734e06",
       "historyEntries": 1,
       "undoRestoredExactProject": true,
       "semanticEvidence": {
@@ -175,7 +175,7 @@
           "objectId": "object-title",
           "patch": {
             "transform": {
-              "x": 268
+              "x": 328
             },
             "style": {
               "textAlign": "left"
@@ -208,8 +208,8 @@
         }
       ],
       "operationCount": 4,
-      "beforeProjectSha256": "8800d5510fcc6ef2e1de6c1797773e8e69afbc4e52defb7613f8369f22e40ce2",
-      "afterProjectSha256": "078c9a01f7ed8cb3db18bb24f0b143528df6486ee516d400ec446c375ca5e5da",
+      "beforeProjectSha256": "27267836323cd5aa9b2726221120375c59a7f02feac101872f4ba790d492fe19",
+      "afterProjectSha256": "f5ccc2e41504203eca4c9d38f0b8183736409ea7f028c83d87e53adfe19e3ecc",
       "historyEntries": 1,
       "undoRestoredExactProject": true,
       "semanticEvidence": {
@@ -488,8 +488,8 @@
         }
       ],
       "operationCount": 26,
-      "beforeProjectSha256": "8800d5510fcc6ef2e1de6c1797773e8e69afbc4e52defb7613f8369f22e40ce2",
-      "afterProjectSha256": "c3d52c2b4dca6450766dd89c5f2904f8a03895f4a2279e69c8fb3b41d7935933",
+      "beforeProjectSha256": "27267836323cd5aa9b2726221120375c59a7f02feac101872f4ba790d492fe19",
+      "afterProjectSha256": "58036caa96a630123977fdbe06f6ce0ba46de38fb16ac0ae4e141e56e51badd2",
       "historyEntries": 1,
       "undoRestoredExactProject": true,
       "semanticEvidence": {

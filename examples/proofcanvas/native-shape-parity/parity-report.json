@@ -2,21 +2,31 @@
   "buildInputs": {
     "harnessSha256": {
       "analyze.py": "86b6ce373fca197b20413fbcd06bbe2e5ba8a9d4706bb53052bf27bc8967af0e",
-      "browser.capture.ts": "ad74239f1228c4ddbfdce8a459494d20ddcce8aa7ee5041cc27ac1120ee0443c",
+      "browser.capture.ts": "b7b972b6c91446b21004e73138f0d0905061207a82cb5b09b094a9448be2b557",
       "playwright.config.ts": "d56841dcfe6d06399ab42546369b0d8b8aa94a385a21d4eacb11488cf71b4da3",
       "project.ts": "59e25ab2537ada18fc154b75f9159e630bc54bd71818eb6e9195c390fc1a0db0",
       "publish.py": "7164169a88b8d3fce7b66852f3b4d9927c4db3d65e9c64ad7e288faf721eef27",
-      "run-browser-inner.sh": "5bdb2987e63e708b7fa5654ce1f42467983a2867e659ddea538270dc2eee9d73",
+      "run-browser-inner.sh": "20a772dc1f192ef2feea6d084c9f30492dea29b66f87eed2a2986ece0a4f563c",
       "run.sh": "7a70842010b635f2c3f4997e31a5814583ac2a8ca5cffc564ffdc4450578714a",
       "sanitize-browser-report.mjs": "f1227b23d9197a35fb38c296d01c43f8775dd38adbae793fa6f5825dfab0da27",
       "seed-and-compile.ts": "00c9b983d0d169be0de85fab73256f259fc355842b0dc8079a96ed48f10cb3bb",
-      "source_snapshot.py": "1ee4bb131f3e277987062611ab36a32f64802d56f93d5c2c71599c6f8ac98cb1"
+      "source_snapshot.py": "668d7d188689a2697dff282d19231f58c3ffccf9b0e9a1369635755832f74650"
     },
     "runtimeSourceFiles": [
       {
-        "bytes": 51453,
+        "bytes": 7740,
+        "path": "app/AudioPlayback.tsx",
+        "sha256": "51afdf6ed10b43e5ce013ce44b65e751beb6a832840ced912b399fdeb90528fe"
+      },
+      {
+        "bytes": 3862,
+        "path": "app/AudioWaveform.tsx",
+        "sha256": "9c5e74fb0008d3567cee972a5cc3c58b02d54b1b86a3d9d483479b03cea27c2c"
+      },
+      {
+        "bytes": 55541,
         "path": "app/CanvasStage.tsx",
-        "sha256": "1afddea3edf574f2981b44182cf1e4ff2959ca7ef27a501f519d42f6bd65dedf"
+        "sha256": "80cd19122d838c5b4e46e4b4fcda01dc6f4aefbe15c60996e4f842f7dcf04164"
       },
       {
         "bytes": 6886,
@@ -34,14 +44,24 @@
         "sha256": "6603081abaa913cc81f1546e27d72fd906f0bdfbc34ed5addc307d055b9fa12e"
       },
       {
+        "bytes": 5570,
+        "path": "app/MediaLibrary.tsx",
+        "sha256": "2a0e456c11275893cdb2ca0b29dea42c4a2a2ca67990122c7c3cad647070a7a9"
+      },
+      {
+        "bytes": 13817,
+        "path": "app/MediaTimeline.tsx",
+        "sha256": "87db92d1787f3402ab5cd85fe9ac887ab1371f647a643ee6684300910148c420"
+      },
+      {
         "bytes": 9568,
         "path": "app/ProjectDashboard.tsx",
         "sha256": "74ec809dfe9141157d14a576bab2811323a8e5ebe83aefb28db2b9b6ad94a328"
       },
       {
-        "bytes": 234190,
+        "bytes": 307004,
         "path": "app/ProofCanvasEditor.tsx",
-        "sha256": "ea8aa30ed52c1c782b0a35bc385254eb6f2ea4a5a2a44da7834696296083906a"
+        "sha256": "f382fad1d2165097bc3d3abdc686d450201a8f734a0fa6d8302c2f3757f3b858"
       },
       {
         "bytes": 4861,
@@ -49,24 +69,49 @@
         "sha256": "9d0f398605e09d178b54cf27fb98ceb9c09fc672b90a5704d693f5108f33a0e1"
       },
       {
-        "bytes": 11207,
+        "bytes": 11263,
         "path": "app/ShotStoryboard.tsx",
-        "sha256": "5240c14931ea24025f91efef2c8d84448670a362610d7d9cb36b85fa2cac7ac5"
+        "sha256": "4bcadce620a19857f22610c21fdafe42a25750f6401136d6a713037a70037576"
       },
       {
-        "bytes": 13746,
+        "bytes": 13801,
         "path": "app/ShotTimeline.tsx",
-        "sha256": "5bed82c4fa4bf72752c7dc057ebba9be0e9c8f24e7d2b6636ed3fe8d58a948ae"
+        "sha256": "5df6fa40360be4c86160a970b30b6984f8a4439b714f47179182a96e6048c87a"
       },
       {
-        "bytes": 57400,
+        "bytes": 15929,
+        "path": "app/StyleLab.tsx",
+        "sha256": "abcf6252b452319b5b5a97e7070f7306200d7c7f817c895568d985344b12aaf8"
+      },
+      {
+        "bytes": 6799,
+        "path": "app/__tests__/AudioPlayback.test.tsx",
+        "sha256": "b0288f5f79b324147bb763307b2a323bd376f39ba6666fa45960aa2548b0fe3a"
+      },
+      {
+        "bytes": 2660,
+        "path": "app/__tests__/AudioWaveform.test.tsx",
+        "sha256": "688749694c82dfdf114fbac1c46e2b79dcbb1ea1c03356ac232ffcaa28da0c6e"
+      },
+      {
+        "bytes": 6094,
+        "path": "app/__tests__/CanvasStage.media.test.tsx",
+        "sha256": "e41d4806d3eab25973039ffd7595999a6f5d60e42d65a5a6c303d57b7a7ba860"
+      },
+      {
+        "bytes": 57669,
         "path": "app/__tests__/CanvasStage.test.tsx",
-        "sha256": "f56cec3b576799f186decab2875812e15b882ed942045f3b33c90dd5930bc514"
+        "sha256": "e32a526f63ecdb7eaecd617e0fbe10ebaef2547dbb924c2784230bdbb21d4e85"
       },
       {
         "bytes": 8386,
         "path": "app/__tests__/KeyframeInspector.test.tsx",
         "sha256": "7a1dbb3f56135dbe326328cb140863dc73f6a0d0568b4e8362a2c01571a641df"
+      },
+      {
+        "bytes": 4226,
+        "path": "app/__tests__/MediaTimeline.test.tsx",
+        "sha256": "8a86db42714ea0b0006a4e5d877905a8f3c3a2d8e5d12738f69b6a3080e119bb"
       },
       {
         "bytes": 2120,
@@ -79,9 +124,9 @@
         "sha256": "c50cc648a29ae59957a9c6648c7bddbe765bddbae7068e5369686a1b124744cd"
       },
       {
-        "bytes": 35317,
+        "bytes": 39851,
         "path": "app/__tests__/ProofCanvasEditor.durable.test.tsx",
-        "sha256": "6a79aee5985960fedaaeb547c7828ea6946b439056cf8bc3a473efd3ad8a2f36"
+        "sha256": "ae0bb84c07c278c6fd8c68c6e1dd14e3615b82c51508b5afd38a97918062065f"
       },
       {
         "bytes": 10655,
@@ -92,6 +137,11 @@
         "bytes": 9559,
         "path": "app/__tests__/ProofCanvasEditor.math.test.tsx",
         "sha256": "fe64f6bb4e223d00050e306affcfa621223f3cd18109a1f1f8e0f4d3ba2cf98d"
+      },
+      {
+        "bytes": 16952,
+        "path": "app/__tests__/ProofCanvasEditor.media.test.tsx",
+        "sha256": "3a52dccfccefac4da60347c18ef988afda605c056403c28fac1b990ac492f16f"
       },
       {
         "bytes": 28358,
@@ -109,14 +159,14 @@
         "sha256": "a4024fedc14d4a79043fbf70cf6809259939d29c650f6ea2854a86e7ebf78523"
       },
       {
-        "bytes": 65066,
+        "bytes": 75006,
         "path": "app/__tests__/ProofCanvasEditor.test.tsx",
-        "sha256": "e3e7c8bbc75d5b9f2c007acbf5fb4f71c1f35bcf0e2b7806866c423e34d59b6b"
+        "sha256": "dca8235393a0bdb998e469c281a64017863ab6c3a90e966803a0eb88df8da49f"
       },
       {
-        "bytes": 13650,
+        "bytes": 14612,
         "path": "app/__tests__/ProofCanvasEditor.timeline.test.tsx",
-        "sha256": "5aa296b023a90480155c79cfb4d4f7a8b00c5e9157bf34a74eed0075c9bc7367"
+        "sha256": "9cb382e06b714cdba99c3590c0f161133e5469e2f2be23042871402a31f0b160"
       },
       {
         "bytes": 6910,
@@ -127,6 +177,11 @@
         "bytes": 6858,
         "path": "app/__tests__/ShotTimeline.test.tsx",
         "sha256": "b24ab3799dcf7dc32d85622615ad7bdabe30d5d8cc70c83f1166bc2b9628d2bd"
+      },
+      {
+        "bytes": 5462,
+        "path": "app/__tests__/StyleLab.test.tsx",
+        "sha256": "1c53e564549066ab2a84b4098d3a8cc7050a7bef42103e5d2c2ec7b4500ecb99"
       },
       {
         "bytes": 14098,
@@ -164,6 +219,21 @@
         "sha256": "9d5b33fea7e54915d58504ca25a1e98161b7110547fddf352c34b2204f634855"
       },
       {
+        "bytes": 2769,
+        "path": "app/api/projects/[projectId]/assets/[assetId]/route.ts",
+        "sha256": "81ba1c427fdc9cb89bfa53d59a966345df6efa3783475694c281cebc65c41110"
+      },
+      {
+        "bytes": 16286,
+        "path": "app/api/projects/[projectId]/assets/__tests__/route.test.ts",
+        "sha256": "a86e0ba3daa69df8caf2498011389881c6ed8fef329fb153a8b34c25990445f0"
+      },
+      {
+        "bytes": 4738,
+        "path": "app/api/projects/[projectId]/assets/route.ts",
+        "sha256": "6b116a0620621290bba5cc9fed0924c64bcb7d0afba78f786e246595119f95e7"
+      },
+      {
         "bytes": 1434,
         "path": "app/api/projects/[projectId]/checkpoints/route.ts",
         "sha256": "ab57f2f274ba2c823407066081b6e05c9e080901713ba87a38136a92ec6fcaec"
@@ -184,6 +254,11 @@
         "sha256": "7f280ab49a954fabe23579308dba426c19d7443d5e2dc8915df3b7f47a314d3d"
       },
       {
+        "bytes": 1365,
+        "path": "app/api/projects/[projectId]/package/route.ts",
+        "sha256": "2aa14487d6cf9929a750093c1367e69a79cfda0cf713c0d9263956463705a41e"
+      },
+      {
         "bytes": 1089,
         "path": "app/api/projects/[projectId]/recover/route.ts",
         "sha256": "bf329116e469b6a5f2a2ce474b09dda3c20587d1144e00d6bd8e54aaf50d4423"
@@ -192,6 +267,16 @@
         "bytes": 2924,
         "path": "app/api/projects/[projectId]/route.ts",
         "sha256": "584edf5a7a74c0d6ec8af284ab95fd50efbd4da4b4a86d5642983734529447af"
+      },
+      {
+        "bytes": 7870,
+        "path": "app/api/projects/import/__tests__/route.test.ts",
+        "sha256": "f3248118929011c33f89d11f5bb2f8c5b3ca36bcf4ffadf8efc6648d793f17dd"
+      },
+      {
+        "bytes": 2491,
+        "path": "app/api/projects/import/route.ts",
+        "sha256": "d27f1e573dc79d94af5107626394fe8be1d7d2b073bf6922755d955426874212"
       },
       {
         "bytes": 1203,
@@ -209,9 +294,14 @@
         "sha256": "16032dbdbb3937591d0a6f815a57d8f50a730d0c80b9d601b801d4b39caa4150"
       },
       {
-        "bytes": 992,
+        "bytes": 1487,
         "path": "app/api/proofcanvas/render/[jobId]/route.ts",
-        "sha256": "2950d6da3399704243ff1d353d1221b01c386fb522dd4e228dc6ded9ec6fa4b7"
+        "sha256": "a1d98a946ed348e7525748561f65c9499fce6aca3d703191579869d127a5f3a0"
+      },
+      {
+        "bytes": 1881,
+        "path": "app/api/proofcanvas/render/[jobId]/still/route.ts",
+        "sha256": "fe2aec27898486073e12f7bbdbe9e4fb5c10df3e99da8f87075d3c79f2c8eddb"
       },
       {
         "bytes": 1506,
@@ -219,14 +309,14 @@
         "sha256": "94bda8edfcdd890f1a58c3e710f715e3d92e58c28f7b7f9401dd862ae5764590"
       },
       {
-        "bytes": 8052,
+        "bytes": 12100,
         "path": "app/api/proofcanvas/render/__tests__/route.test.ts",
-        "sha256": "6e106f184817944f9b64d243ad82c928660b685e2510d0d8ec8e89ed69367208"
+        "sha256": "b20555cde72264cdafa5bec428331eb5d2a7ca87685595d7a1f95b46725e78ce"
       },
       {
-        "bytes": 4724,
+        "bytes": 4944,
         "path": "app/api/proofcanvas/render/route.ts",
-        "sha256": "fc9328215fab39bba75de4662cae4f52b910fcadf5486dcb5830d4a925961a26"
+        "sha256": "2b69c98ec5ac4b715a7c60884586b42f2eb8854e1d5167695c8dd7e9fa1517ef"
       },
       {
         "bytes": 1151,
@@ -274,9 +364,9 @@
         "sha256": "359229886c5cff5d7168a4ba666861901ce151a2afb9775aa3de718446f25d5f"
       },
       {
-        "bytes": 48041,
+        "bytes": 60916,
         "path": "app/proofcanvas.css",
-        "sha256": "3b7ce22dfc5479760d28b0e778d21f0cc11a1f1706e8cf765da7e7ca665fd4c3"
+        "sha256": "4852f0fabe0bd3e046002aeb6d577abd085bd212686c763f7d53fd23da51f8e2"
       },
       {
         "bytes": 474,
@@ -289,6 +379,16 @@
         "sha256": "c6681f032d29589aec01c5bca0b68b0fbeae4890c0cbd055d4b40857d28138a5"
       },
       {
+        "bytes": 23302,
+        "path": "lib/proofcanvas/__tests__/asset-content.server.test.ts",
+        "sha256": "4cce760ea2cad09cc4f3b5a99b678f5b16574b23d71b3efa1415f49fc4b89693"
+      },
+      {
+        "bytes": 4093,
+        "path": "lib/proofcanvas/__tests__/audio.test.ts",
+        "sha256": "010d468a9d9593285b832ecd77b4476305cb21b1a43778ac19165ee52c91161c"
+      },
+      {
         "bytes": 13273,
         "path": "lib/proofcanvas/__tests__/auth.server.test.ts",
         "sha256": "62ee51ab995380dca88dc1d71121960f1a584ee5c657fccc3f1b1144a669ba6f"
@@ -299,19 +399,24 @@
         "sha256": "a4111413be8231f0ab0bb8234cdc6db73a8243636d8beedd431dd43fdfa26345"
       },
       {
+        "bytes": 11150,
+        "path": "lib/proofcanvas/__tests__/captions.test.ts",
+        "sha256": "74d6a801fc13719597b0c469a3971806165de366a26f6fba9ef6937e764928f2"
+      },
+      {
         "bytes": 51923,
         "path": "lib/proofcanvas/__tests__/compiler-schedule.test.ts",
         "sha256": "f03a3dcbb27e23a8488875179cb6c9ad93e7f034aad808c57f93e155fab90f2c"
       },
       {
-        "bytes": 15793,
+        "bytes": 16013,
         "path": "lib/proofcanvas/__tests__/components.test.ts",
-        "sha256": "3335f44f7ec34d3d065465bccdab4f30441bff8d91ffb338464168e69ac5fd95"
+        "sha256": "92a78123c905e1e5469c254bd4877ad1372b3f1d20b7d8fa056f0e6fa51ade1a"
       },
       {
-        "bytes": 57006,
+        "bytes": 59440,
         "path": "lib/proofcanvas/__tests__/critique-compiler.test.ts",
-        "sha256": "eb73c44620d87fea49cc44673c2c8c7dd3db51cea6c0e1ca5c0e5dd60d5d67aa"
+        "sha256": "23899abbad02bcdb678b1de0a89c3f2e4b798d6d0404e443eeb54ccc313d5f56"
       },
       {
         "bytes": 2396,
@@ -319,9 +424,14 @@
         "sha256": "18cf2d0bd92062eea8fa74f869e520f3e20f749013536f24395a429f479d7c4e"
       },
       {
-        "bytes": 38671,
+        "bytes": 4667,
+        "path": "lib/proofcanvas/__tests__/demo-v1.test.ts",
+        "sha256": "d197ccb70b1af29c0dd2f73d574872c9bdbabeb0f57b38cf51a5cc887e332ff2"
+      },
+      {
+        "bytes": 48730,
         "path": "lib/proofcanvas/__tests__/document-operations.test.ts",
-        "sha256": "4c38ec16901222f9cc09e3808977245b2bb2a6151a99ea687d4628c915bd5391"
+        "sha256": "6868a9bc0d33ae80751c36ad89976e44b8aafb8697d6fa2400bad01d428d43c6"
       },
       {
         "bytes": 9070,
@@ -364,6 +474,16 @@
         "sha256": "b2ae487506ecd4e32dbcea4e28b3952b0f4686695073a735838c96b38a4d9ea2"
       },
       {
+        "bytes": 8078,
+        "path": "lib/proofcanvas/__tests__/media-operations.test.ts",
+        "sha256": "a7e01ceb9cee523e44c58262e3432172ac469143ac63842662579c2276326f75"
+      },
+      {
+        "bytes": 4203,
+        "path": "lib/proofcanvas/__tests__/media-schema.test.ts",
+        "sha256": "45af89813f143d02b801780e6f804c94575e3d2b92e26213b5224e860378b269"
+      },
+      {
         "bytes": 8523,
         "path": "lib/proofcanvas/__tests__/openai-provider.test.ts",
         "sha256": "933df8c6eff5a2605e0ec43579fd3c6df19b8ba1c23e941aac516bc7c50fc7a7"
@@ -379,14 +499,24 @@
         "sha256": "253c20224d5360a71204126b5acc6d16883a914be142fba138a4cfb9e3f6f72e"
       },
       {
-        "bytes": 17713,
-        "path": "lib/proofcanvas/__tests__/renderClient.server.test.ts",
-        "sha256": "51dad0b2d98848082d6ba68b7c27f1904ba28d951b4688b4110337ae912dd46f"
+        "bytes": 25259,
+        "path": "lib/proofcanvas/__tests__/project-package.server.test.ts",
+        "sha256": "aaf316991ad251e3fc89761da913954ca9972cce154265fde45931a8bfd5f9e9"
       },
       {
-        "bytes": 101124,
+        "bytes": 2806,
+        "path": "lib/proofcanvas/__tests__/project-package.test.ts",
+        "sha256": "7b448e783f10ca2b9e1a904d6c80159b3f8a3646e7f7cadc9fb58eb11c9d2068"
+      },
+      {
+        "bytes": 23120,
+        "path": "lib/proofcanvas/__tests__/renderClient.server.test.ts",
+        "sha256": "0854ea39675c883371fc310ea8355f97e1525187f92f6ffe086d9b497949bb08"
+      },
+      {
+        "bytes": 138163,
         "path": "lib/proofcanvas/__tests__/repository.server.test.ts",
-        "sha256": "fcc60bfc8b82c42c44243a3459fd84f7378a4417bfa162b819564633d17e3daf"
+        "sha256": "038550d02f7b98d95dd01018e977cd18775845bcbbb52dfee2c6be78ece93e9f"
       },
       {
         "bytes": 42085,
@@ -414,6 +544,16 @@
         "sha256": "fe514ed8435cd2e6c7621e1464531f9b59210317b7495029ad047a97bb6aabe7"
       },
       {
+        "bytes": 4389,
+        "path": "lib/proofcanvas/__tests__/stress-fixture.test.ts",
+        "sha256": "9d4675f08d7225aff6c7e76ef6070b28551d75653a90c4f03a684bff1fcfa608"
+      },
+      {
+        "bytes": 2396,
+        "path": "lib/proofcanvas/__tests__/styles-v1.test.ts",
+        "sha256": "e88b69d056406317a5a5a4adb5658bece6f8446f908aa4abcb66799a80f28906"
+      },
+      {
         "bytes": 57314,
         "path": "lib/proofcanvas/__tests__/timeline-foundation.test.ts",
         "sha256": "291b54f1eafc79c40b85afa0100ccca379626c4e04f4d42c5277ddfd03ec3ab8"
@@ -422,6 +562,16 @@
         "bytes": 11942,
         "path": "lib/proofcanvas/ai.ts",
         "sha256": "5af26429b22350604403d1b37af9812e2f01b3ff7f3ce1f4f2811132f7ba8b85"
+      },
+      {
+        "bytes": 72312,
+        "path": "lib/proofcanvas/assetContent.server.ts",
+        "sha256": "1943e3b2c2d5d4e0cf96fb2802d838536dcb615d033b6e35d9f0eae1505a09f3"
+      },
+      {
+        "bytes": 5074,
+        "path": "lib/proofcanvas/audio.ts",
+        "sha256": "19460d2a775ea283d3d4c3c60696a52ff6f846860b7e84086dc55424bf1553ec"
       },
       {
         "bytes": 14356,
@@ -434,14 +584,19 @@
         "sha256": "e531cf3a0c3486bc782cbd3acbe4ea29f144640f41594bea2b880ab4d9f5382f"
       },
       {
-        "bytes": 13473,
+        "bytes": 16534,
         "path": "lib/proofcanvas/backup.server.ts",
-        "sha256": "2269f65b37477b7cb7651b5d03c7442a12c2a35464ffb800ad07f9b69ce0e943"
+        "sha256": "1c13cfa65dedf21a55b3ba6fcf55655e8ae92fd8e921367954a27170e962ae21"
       },
       {
-        "bytes": 75685,
+        "bytes": 24702,
+        "path": "lib/proofcanvas/captions.ts",
+        "sha256": "b3aefdc047d06220707391a3a60a422c49aaf15d8f6e5b0faefad067fd6dd4b8"
+      },
+      {
+        "bytes": 82872,
         "path": "lib/proofcanvas/compiler.ts",
-        "sha256": "46dd3df77d4eef8fd9ffbf66d61df5b626318c1b4c0880b4aa9a569137c81ae5"
+        "sha256": "b94c44f0f638d8af2454e872626054748ab9fcefd77f649d129a1dc6e00d99d7"
       },
       {
         "bytes": 38798,
@@ -449,9 +604,9 @@
         "sha256": "7d70e35991b432fd27a8210f16e707a35ddde0a965501a601ab34b5720680d80"
       },
       {
-        "bytes": 20827,
+        "bytes": 20908,
         "path": "lib/proofcanvas/components.ts",
-        "sha256": "2866b476c2cfad36e87ad8c34061ad978dad516447f67e06e1e82ec518cbacb6"
+        "sha256": "93a791723a4e9d7697fe47cbdb09767ebb0f657ec5a6e3f8059d74e13d6b1324"
       },
       {
         "bytes": 3016,
@@ -459,9 +614,9 @@
         "sha256": "7281c822e46e4a998e1378dae5a68fc0fae172aa8b4a742814796e2b1fbcb53b"
       },
       {
-        "bytes": 12364,
+        "bytes": 12381,
         "path": "lib/proofcanvas/critique.ts",
-        "sha256": "99ef7f4c7210a4f93c4211c7009276cbef69d5f0cfe9e7ebd81950cc9ea9d6ed"
+        "sha256": "5492e5aaa394260f2ef35111c58484f59ef80b73b78fa7139de594c3924c44a1"
       },
       {
         "bytes": 1835,
@@ -469,19 +624,19 @@
         "sha256": "04babafb6a117faa40c7af363b04d431b9a58d653aa763b197fba367edbfa90f"
       },
       {
-        "bytes": 64919,
+        "bytes": 81234,
         "path": "lib/proofcanvas/database.server.ts",
-        "sha256": "137feb0cd0a77d6a46e5b83b3badc8970226c2260893d3e1485dec7c71dba29e"
+        "sha256": "db1d60c605a12c75d522e19b2bfa138f9604a065c43345ed94f38e966f4e259d"
       },
       {
-        "bytes": 11008,
+        "bytes": 29769,
         "path": "lib/proofcanvas/demo.ts",
-        "sha256": "70978eb6cd64cde429ef7f4408a67788f2034f36e257f11d63037d0bdaad8838"
+        "sha256": "c91f74a00741c4b952bf7cbe757c633126247cb5131fa851bf2ee2d6af21361f"
       },
       {
-        "bytes": 51330,
+        "bytes": 64004,
         "path": "lib/proofcanvas/documentOperations.ts",
-        "sha256": "465d8af00e6badf43fb8acf3c5469cc74e4268c9c55f5a8ba61d811320302449"
+        "sha256": "dcecc613a6f89ab1f63c3f96ecdfaffb131005eb45227c75b34fe36b0c6d8f9a"
       },
       {
         "bytes": 1990,
@@ -529,9 +684,9 @@
         "sha256": "4a063d183d55a40a4f492a6e28d22ea8553a9b8ae08deccc1ff5e70c53562ab6"
       },
       {
-        "bytes": 3840,
+        "bytes": 7879,
         "path": "lib/proofcanvas/http.server.ts",
-        "sha256": "6af7c957acd99752543c2b98ece7fd97231b98d019a854e14d86b6cd550a101d"
+        "sha256": "acb78cfd4ff1fc2c9f19ea30376ccc3f6e831f92796f5bf0b9d6381ec78aa4ea"
       },
       {
         "bytes": 2119,
@@ -564,19 +719,29 @@
         "sha256": "63c0e7f6349184259a0fa8b6c15c24a237151733ef39d1015f2e75a8c026e049"
       },
       {
-        "bytes": 15061,
+        "bytes": 44258,
+        "path": "lib/proofcanvas/projectPackage.server.ts",
+        "sha256": "3322500aab6161bc42d0b1b8233c85ff93121e3a59a3c88c45de15e4848a017d"
+      },
+      {
+        "bytes": 6215,
+        "path": "lib/proofcanvas/projectPackage.ts",
+        "sha256": "fec11c9e684fcc64b2d8bc1cab1157c0bac52dabd9edd6b8f32a20dec903b324"
+      },
+      {
+        "bytes": 31046,
         "path": "lib/proofcanvas/renderClient.server.ts",
-        "sha256": "cd73afde2e0d34859f7f2f5d6b65102e320e474f8cf1927220e52c40cd07a79b"
+        "sha256": "4fef07f7b4947e5b8feefd41a9cd72f3d465e05908f91b61c1ba9dd1892a63cf"
       },
       {
-        "bytes": 34397,
+        "bytes": 69195,
         "path": "lib/proofcanvas/repository.server.ts",
-        "sha256": "e46093a8e0b569b9e1395e1db0534128bd00a260832583cedbaae9606d3a36fa"
+        "sha256": "28de084cc36e8499085dc44fdce8418d2d1da1cefa40f7fbf0d570126e7fece6"
       },
       {
-        "bytes": 131550,
+        "bytes": 135979,
         "path": "lib/proofcanvas/schema.ts",
-        "sha256": "db41324893e83ee606753738437982869b6cb0c3a3bb5bf8d857c179570cd62b"
+        "sha256": "8127a39a0e6ffbc18b42ae7cf146569522ce9990b649250bd8bd9068574cc655"
       },
       {
         "bytes": 29578,
@@ -589,14 +754,19 @@
         "sha256": "9d8e71c87f3b0fae62b0db5e92045789c68c377400244e6a10354181ea2cd170"
       },
       {
-        "bytes": 7159,
-        "path": "lib/proofcanvas/styles.ts",
-        "sha256": "e24187e6fdca9a810f52ddacaa4a205761d9215d8f435ada45542ef475e1d683"
+        "bytes": 7250,
+        "path": "lib/proofcanvas/stressFixture.ts",
+        "sha256": "93aa0130c00d1fe9c615b5c809e6c96ff0b17457b0843e5f70726a0df4597b4a"
       },
       {
-        "bytes": 1849,
+        "bytes": 11219,
+        "path": "lib/proofcanvas/styles.ts",
+        "sha256": "acc48846a30d7e0830934ac2672d39f4ae53d2246645775a409d97576f18d96c"
+      },
+      {
+        "bytes": 1845,
         "path": "lib/proofcanvas/templates.ts",
-        "sha256": "eb6a9d8cbabd4d444ab5adad3c18910b8f87db5c66087958bde334d558c8b12b"
+        "sha256": "5b9daacbf07f9a2dd4c3e7e16347fa664cd14b9241ed744777cc15404027b60f"
       },
       {
         "bytes": 9379,
@@ -614,14 +784,14 @@
         "sha256": "83f6d3badfbc748268eeb7b44ce2d29259d42cac59bc3498cc4d04d542ae7ba6"
       },
       {
-        "bytes": 285833,
+        "bytes": 285764,
         "path": "package-lock.json",
-        "sha256": "1198cf50290786cb64b5bef3872c824e9fa02d74b3f7101b08b2b1f2352a78ec"
+        "sha256": "c5a2e1d9852ed34111eee78d71741235de606873288ec6b7c7c238da59c92285"
       },
       {
-        "bytes": 2274,
+        "bytes": 2558,
         "path": "package.json",
-        "sha256": "a275bdbdb8d62662a287db2b4ba4ccac80188cc15ac3a45206ea063f3bd88315"
+        "sha256": "8a97de6bc218151b1f5addf3052893bdfdd8c894c454f5f5a36db245d46baa2a"
       },
       {
         "bytes": 1031,
@@ -644,9 +814,9 @@
         "sha256": "01890a4ff0a10f6e4edeb52077a100e771863c5a9e799da3b25ab30f4455cbb3"
       },
       {
-        "bytes": 1567,
+        "bytes": 1898,
         "path": "services/proofcanvas-render/Dockerfile",
-        "sha256": "460aa26dfe607f2d0f06e7362c77a2fe41726a086cf8b5d48d8dc8ab77479712"
+        "sha256": "643c65df0a681493032f3b21456d243554755e1793f896a5fb733db2a22e8bca"
       },
       {
         "bytes": 145,
@@ -654,19 +824,24 @@
         "sha256": "b9e73f2a066fd09a777df8d9078c8d646ada25be0dcf331454178b12d8f59f3a"
       },
       {
-        "bytes": 17802,
+        "bytes": 42031,
         "path": "services/proofcanvas-render/proofcanvas_render/jobs.py",
-        "sha256": "afb3c75fe05f19760b7d531122439079198794f910af0a2b893a11c9acca0ab9"
+        "sha256": "db24768b0846c3f8eb537fc999f2ee013792c91ee3ee1bb68e99d381d2611d44"
       },
       {
-        "bytes": 6932,
+        "bytes": 9214,
         "path": "services/proofcanvas-render/proofcanvas_render/main.py",
-        "sha256": "d73ee364f7845622e8ed113116f8c0fda43a2d2baf3568ed66bae0436e649cd8"
+        "sha256": "094331c1f46c3d2dbf6b2e446088ada25c0ed522d1c9142f3ecfab5e76eb218f"
       },
       {
-        "bytes": 142439,
+        "bytes": 31703,
+        "path": "services/proofcanvas-render/proofcanvas_render/media.py",
+        "sha256": "3063e063d10c6e2181e0e6867494fa8d69ef8f2f793a5594aeae2e604393df41"
+      },
+      {
+        "bytes": 148802,
         "path": "services/proofcanvas-render/proofcanvas_render/policy.py",
-        "sha256": "87ae0cb005e3793d377eb60969325dc94579f67377694ac900bab49413b8cae0"
+        "sha256": "11e9ca14e157c2ab2f56681e732f5b0e6576ec6d5d487d1653cfa8c86e605d2e"
       },
       {
         "bytes": 1619,
@@ -684,40 +859,40 @@
   "failures": [],
   "harnessSha256": {
     "analyze.py": "86b6ce373fca197b20413fbcd06bbe2e5ba8a9d4706bb53052bf27bc8967af0e",
-    "browser.capture.ts": "ad74239f1228c4ddbfdce8a459494d20ddcce8aa7ee5041cc27ac1120ee0443c",
+    "browser.capture.ts": "b7b972b6c91446b21004e73138f0d0905061207a82cb5b09b094a9448be2b557",
     "playwright.config.ts": "d56841dcfe6d06399ab42546369b0d8b8aa94a385a21d4eacb11488cf71b4da3",
     "project.ts": "59e25ab2537ada18fc154b75f9159e630bc54bd71818eb6e9195c390fc1a0db0",
     "publish.py": "7164169a88b8d3fce7b66852f3b4d9927c4db3d65e9c64ad7e288faf721eef27",
-    "run-browser-inner.sh": "5bdb2987e63e708b7fa5654ce1f42467983a2867e659ddea538270dc2eee9d73",
+    "run-browser-inner.sh": "20a772dc1f192ef2feea6d084c9f30492dea29b66f87eed2a2986ece0a4f563c",
     "run.sh": "7a70842010b635f2c3f4997e31a5814583ac2a8ca5cffc564ffdc4450578714a",
     "sanitize-browser-report.mjs": "f1227b23d9197a35fb38c296d01c43f8775dd38adbae793fa6f5825dfab0da27",
     "seed-and-compile.ts": "00c9b983d0d169be0de85fab73256f259fc355842b0dc8079a96ed48f10cb3bb",
-    "source_snapshot.py": "1ee4bb131f3e277987062611ab36a32f64802d56f93d5c2c71599c6f8ac98cb1"
+    "source_snapshot.py": "668d7d188689a2697dff282d19231f58c3ffccf9b0e9a1369635755832f74650"
   },
   "inputs": {
     "authoringScreenshotSha256": {
-      "desktop": "47d132374a22a99580d171eafeeb556bdac82ad435a63be473a2b7c5c5dcb64b",
-      "locked": "66671efd503e6e970acccb880e16fbb3c9359cc0c9d4002ae7e9be65d3728b5c",
-      "playback": "e9e9727310c2ca92ef9145f186877f175504644659af78eddf24299cae314a21",
-      "portrait": "73e7b6154c2298c7535f31556b2f9745095cec5896701e6b761bd8fbaeeb5331"
+      "desktop": "35f81569ee1e416f42de0f06d0b3d03539dbd6b6d9dd1b2ca3100f6005c4975b",
+      "locked": "3125dd8bc65ddcd65cc30db787b662da2e8a3adcca8753245db781b6e118501b",
+      "playback": "39d3c7b4b6f04591e9fbe415d41436f8f63d965b70f723341a79778c9eadf1bd",
+      "portrait": "94b8e275237cd40533cc8b2a24e9f677b4b703c97d9282bc2ed4dfbbccb63806"
     },
-    "browserAuthoringJsonSha256": "a092263afc67797dcc7f542341a3edc960be96a174afe70739f6ab2eb104c23f",
-    "browserCaptureJsonSha256": "124fb6b05ae89e066548acf70760922875a1efab9a039e2c16fe23f56b03f416",
+    "browserAuthoringJsonSha256": "b3cc5cf3bbbc98721187abb9bd2966c7c722d497e1cbed33f1d474d3ad2c0cd8",
+    "browserCaptureJsonSha256": "4cf82604f896cdfe5fd2b0aea7389906260eb2d027316a2b9f7a36dc22cafe8a",
     "browserPixels": [
       960,
       540
     ],
     "browserPngSha256": "d37b6c96bae43ce701bf19b53f7da5ac3852e4e016ba77ed3283130ad8ed7614",
-    "browserReportJsonSha256": "f45db9a02ad4458c9a0d6e818393a739b23cf15bc4d502248c3a28db0ce9634a",
+    "browserReportJsonSha256": "eb460af6d9f4505207737ed64ed1eddb67e7b6ee2bce1b283f2f714e46b76c6a",
     "browserSvgSha256": "4f5dfa6b35bc188d5e55f1fb2ced323ac4716faa6306a181a60af726c3df876a",
-    "compilerJsonSha256": "78fc8fbbe3a9fe49ed74c8e584c6527da160597dec7a7081b9ae95002da65cc8",
+    "compilerJsonSha256": "5c0b63c90f3789050d3b1cf6f23bfbd03c192025e73354d7e82ab418515e5cb0",
     "manimPixels": [
       960,
       540
     ],
     "manimPngSha256": "4b411d98bb204e6327f3ac6f736de863fcb783b46be3a24dab4f2ef196fc9afe",
     "manimRenderLogSha256": "79c122e77a0b6eb1ff716e8567a7c5b3a8d763a72c2f3083bf06ec033da57499",
-    "projectSha256": "e6e4d9bd32031b01bbd5c559fd01a6363ed791a40560d3e7ee804b0ecb99e538",
+    "projectSha256": "7086e1e445c778a5d9b965553076d27c67fe1b4fd348e860a8c6562a51719be7",
     "sourceSha256": "eb59c5ea3a806d124e75ecb8109ca3dbaba6a8af0053ebd6a348bf58f2ea3c8b"
   },
   "method": {

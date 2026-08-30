@@ -1,37 +1,247 @@
 {
   "schemaVersion": 1,
   "journey": "complete structured edit-to-Manim journey",
-  "executions": 2,
+  "executions": 4,
   "skipped": 0,
   "retried": 0,
   "failures": 0,
+  "restart": {
+    "journey": "reopens the durable portrait project after a controlled application process restart",
+    "status": "passed",
+    "durationMs": 1703
+  },
+  "stress": {
+    "schemaVersion": 1,
+    "fixture": {
+      "shots": 10,
+      "objects": 150,
+      "animations": 250,
+      "keyframes": 400,
+      "audioSeconds": 90,
+      "canonicalBytes": 314885,
+      "canonicalSha256": "7bb4b480d484e123c572433307a8e6b9955817148308476d30dc01554aa75a4c"
+    },
+    "importedThroughOwnerUi": true,
+    "activeObjects": 15,
+    "activeAnimations": 25,
+    "activeKeyframes": 40,
+    "aggregateVerified": true,
+    "audioMetadataReady": true,
+    "timelineScrubbed": true,
+    "selectedObjects": 10,
+    "primaryInspectorUpdated": true,
+    "primaryEditReloadPersisted": true,
+    "playbackAdvanced": true,
+    "autosaveSaved": true,
+    "reloadPersisted": true,
+    "importDurationMs": 395,
+    "interactionDurationMs": 3481
+  },
   "screenshots": [
+    {
+      "project": "proofcanvas-chromium-1920",
+      "file": "proofcanvas-editorial-1920x1080.png",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 191740,
+      "sha256": "ce015a39ed7ea92d06e22cd874eb2c124faa6220bc83b7ee96db1a65a42c0b1f",
+      "status": "passed",
+      "durationMs": 28665
+    },
     {
       "project": "proofcanvas-chromium-1440",
       "file": "proofcanvas-editorial-1440x900.png",
       "width": 1440,
       "height": 900,
-      "bytes": 152591,
-      "sha256": "6c8fe5f8ef38a7c8b656f6240ae5d6847700ddf8d40c8c45a808f90522df5895",
+      "bytes": 153594,
+      "sha256": "4c4f0a8a3191825f8f9b0b1213a63207604fc8ec1c445fd02db3a25e02fd5551",
       "status": "passed",
-      "durationMs": 24130
+      "durationMs": 65076
     },
     {
       "project": "proofcanvas-chromium-1280",
       "file": "proofcanvas-editorial-1280x800.png",
       "width": 1280,
       "height": 800,
-      "bytes": 135846,
-      "sha256": "2a4d069a76c3207f0ff2600f46acb764c32b3049835fb0e969ee4d1a933d86ef",
+      "bytes": 158328,
+      "sha256": "5bec536ed1fd0aea196faea669476eb5e680f9477f1a09009fb62b7814f8eb37",
       "status": "passed",
-      "durationMs": 15039
+      "durationMs": 24639
+    },
+    {
+      "project": "dashboard",
+      "file": "proofcanvas-dashboard-1920x1080.png",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 56490,
+      "sha256": "1ff341d18434343e260d1a3f274be4b3b354af96e3bfa11a63e313e3f3ed93d5",
+      "status": "passed",
+      "durationMs": 28665
+    },
+    {
+      "project": "blank-editor",
+      "file": "proofcanvas-blank-editor-1920x1080.png",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 116364,
+      "sha256": "926bea23bea289d7d9caa55ad6361e13e75208f3118346bf3058da08564ac85b",
+      "status": "passed",
+      "durationMs": 28665
+    },
+    {
+      "project": "selected-text",
+      "file": "proofcanvas-selected-text-1920x1080.png",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 222757,
+      "sha256": "858349cb84926f5fd8bc82c59ac16db229a726af248dd509bc0fc1ac0c017ca6",
+      "status": "passed",
+      "durationMs": 28665
+    },
+    {
+      "project": "selected-graph",
+      "file": "proofcanvas-selected-graph-1920x1080.png",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 156782,
+      "sha256": "b30fa10cb21ba9d1178b234da5e52589083bd1342eebdd1686cfca7181fc7d4a",
+      "status": "passed",
+      "durationMs": 28665
+    },
+    {
+      "project": "timeline-keyframes",
+      "file": "proofcanvas-timeline-keyframes-1920x1080.png",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 211002,
+      "sha256": "41e734b3338554b316b272f64813aa579717e0c0d03313c45792c4c9b1784424",
+      "status": "passed",
+      "durationMs": 28665
+    },
+    {
+      "project": "style-lab",
+      "file": "proofcanvas-style-lab-1920x1080.png",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 211298,
+      "sha256": "e664498114b7a52fb6c1a1f2a8f87d980313b97570501701ae2142ad353ea6db",
+      "status": "passed",
+      "durationMs": 28665
+    },
+    {
+      "project": "style-nocturne-chalk",
+      "file": "proofcanvas-style-nocturne-chalk-1920x1080.png",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 222347,
+      "sha256": "bacc554b36c1b1282dc352452a2167d549f5078391774d52886513256b59a506",
+      "status": "passed",
+      "durationMs": 28665
+    },
+    {
+      "project": "style-scientific-minimal",
+      "file": "proofcanvas-style-scientific-minimal-1920x1080.png",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 220297,
+      "sha256": "f09c07125c74a601fe6c04f966306d11b60680f3da8f5c9df55d34c3f2509f94",
+      "status": "passed",
+      "durationMs": 28665
+    },
+    {
+      "project": "animation-inspector",
+      "file": "proofcanvas-animation-inspector-1920x1080.png",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 197237,
+      "sha256": "60211cd25dcb5d64a80a7fd6e709043e501210bba6a33b836281160d999274d2",
+      "status": "passed",
+      "durationMs": 28665
+    },
+    {
+      "project": "ai-proposal-review",
+      "file": "proofcanvas-ai-proposal-review-1920x1080.png",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 224124,
+      "sha256": "f284f2f596533d47e8763ab6cf036b8ba121f5b3f7cc861b05ec08bf953f1de8",
+      "status": "passed",
+      "durationMs": 28665
+    },
+    {
+      "project": "render-dialog",
+      "file": "proofcanvas-render-dialog-1440x900.png",
+      "width": 1440,
+      "height": 900,
+      "bytes": 181745,
+      "sha256": "e4e3455da72b9f42b18838eab00f663e96b1072fe8a065e02870c2e4933e22bf",
+      "status": "passed",
+      "durationMs": 65076
+    },
+    {
+      "project": "narrow-editor",
+      "file": "proofcanvas-narrow-editor-1024x768.png",
+      "width": 1024,
+      "height": 768,
+      "bytes": 110109,
+      "sha256": "122c13c0f52fe7bd555f5deb6142a5658043503e239c62cbfda98c7d29bbbfdb",
+      "status": "passed",
+      "durationMs": 24639
+    },
+    {
+      "project": "portrait-output-authoring",
+      "file": "proofcanvas-portrait-output-1440x900.png",
+      "width": 1440,
+      "height": 900,
+      "bytes": 122907,
+      "sha256": "1bbd170ae15cf5ebfcd3d1acb8899659fc98af7eb9ff482daa2027bd24b2e1f8",
+      "status": "passed",
+      "durationMs": 65076
     }
   ],
-  "render": {
-    "project": "proofcanvas-chromium-1440",
-    "fileValidatedInTemporaryRun": true,
-    "bytes": 467759,
-    "sha256": "c44f0e1a5eadf8bf91bc1ad5131c417fb37c10d50ea5c41dbfbdacb21ea07259",
-    "container": "mp4/ftyp"
+  "renders": [
+    {
+      "file": "proofcanvas-render.mp4",
+      "bytes": 1766973,
+      "sha256": "46dbe9395070c695c360d40b56717cbfadb4199bbd48bbee80f80b90d494c54e",
+      "videoCodec": "h264",
+      "audioCodec": "aac",
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "durationSeconds": 59.666667,
+      "decodedFrames": 1790,
+      "decodedAudioSamples": 2856960,
+      "fullDecodeVerified": true
+    },
+    {
+      "file": "proofcanvas-portrait-480x854-24fps.mp4",
+      "bytes": 23819,
+      "sha256": "2509320a6c0f0e8405f5cad64c62ba860f21367261a21d97152b48cca43f2834",
+      "videoCodec": "h264",
+      "audioCodec": null,
+      "width": 480,
+      "height": 854,
+      "fps": 24,
+      "durationSeconds": 2.541667,
+      "decodedFrames": 61,
+      "decodedAudioSamples": 0,
+      "fullDecodeVerified": true
+    }
+  ],
+  "still": {
+    "file": "proofcanvas-still-current.png",
+    "width": 1280,
+    "height": 720,
+    "bytes": 82576,
+    "sha256": "72f21d915cfcad951202363bf9d82430506189d053e3050dc834c2505ea632e8",
+    "decoder": "pillow-pinned-renderer-image",
+    "fullDecodeVerified": true
+  },
+  "package": {
+    "file": "proofcanvas-v1-roundtrip.proofcanvas",
+    "bytes": 1531406,
+    "sha256": "531c401fb47b7b1e9ee15ca1afc8f209f6d19c707a43f9614ad99a7d36e5bf73",
+    "roundTripVerifiedInBrowser": true
   }
 }

@@ -1,0 +1,84 @@
+{
+  "format": "proofcanvas-stress-results-v1",
+  "fixture": {
+    "shots": 10,
+    "objects": 150,
+    "animations": 250,
+    "keyframes": 400,
+    "audioSeconds": 90,
+    "canonicalBytes": 314885,
+    "canonicalSha256": "7bb4b480d484e123c572433307a8e6b9955817148308476d30dc01554aa75a4c"
+  },
+  "method": {
+    "clock": "performance.now monotonic milliseconds",
+    "iterations": 5,
+    "aggregation": "median with minimum and maximum retained; every sample must remain below its regression budget",
+    "scope": "headless shared-core operations; not a browser frame-rate or human-usability claim"
+  },
+  "environment": {
+    "node": "v24.18.1",
+    "platform": "linux",
+    "release": "6.8.0-136-generic",
+    "architecture": "x64",
+    "logicalCpuCount": 8
+  },
+  "metrics": {
+    "fixtureCreation": {
+      "medianMs": 17.403,
+      "minimumMs": 13.775,
+      "maximumMs": 18.145,
+      "budgetMs": 5000,
+      "pass": true
+    },
+    "editorLoad": {
+      "medianMs": 15.203,
+      "minimumMs": 13.775,
+      "maximumMs": 23.358,
+      "budgetMs": 5000,
+      "pass": true
+    },
+    "timelineInteraction": {
+      "medianMs": 0.265,
+      "minimumMs": 0.24,
+      "maximumMs": 0.277,
+      "budgetMs": 2000,
+      "pass": true
+    },
+    "playback": {
+      "medianMs": 3.653,
+      "minimumMs": 1.999,
+      "maximumMs": 4.273,
+      "budgetMs": 3000,
+      "pass": true
+    },
+    "selection": {
+      "medianMs": 0.058,
+      "minimumMs": 0.043,
+      "maximumMs": 0.089,
+      "budgetMs": 2000,
+      "pass": true
+    },
+    "inspectorUpdate": {
+      "medianMs": 30.633,
+      "minimumMs": 29.094,
+      "maximumMs": 32.634,
+      "budgetMs": 5000,
+      "pass": true
+    },
+    "autosaveSerialization": {
+      "medianMs": 14.353,
+      "minimumMs": 13.449,
+      "maximumMs": 15.36,
+      "budgetMs": 2000,
+      "pass": true
+    },
+    "compilation": {
+      "medianMs": 187.466,
+      "minimumMs": 184.078,
+      "maximumMs": 229.741,
+      "budgetMs": 10000,
+      "pass": true
+    }
+  },
+  "pass": true
+}

@@ -2,261 +2,303 @@
 
 ## Core invariants
 
-1. `ProjectDocument` is the only authoritative editable state.
-2. Every imported, persisted, or externally supplied document crosses the shared Zod schema.
-3. Mutations are typed `SceneOperation[]` transactions or validated whole-document commits.
-4. Stable IDs, hierarchy, locks, animation targets, and shot order survive unrelated edits.
-5. AI returns data operations only. It cannot return code or unlock objects.
-6. Generated Manim Python is deterministic output and is never imported as editable state.
-7. OpenAI and renderer credentials exist only on the server.
-8. Rendering accepts compiler-generated source only and fails closed if policy or isolation cannot
-   be established.
-9. One private owner is authenticated at every page and API boundary; proxy checks are advisory only.
-10. Durable mutations are revision-CAS and idempotent, and every stored document is schema-validated.
+1. `ProjectDocument` is the sole editable creative authority.
+2. Every imported, persisted, packaged, or provider-produced document crosses the shared strict Zod
+   schema before publication.
+3. Stable IDs, hierarchy, inherited locks, timing relations, asset references, and shot order survive
+   unrelated edits and portable-package round trips.
+4. Mutations are atomic typed `SceneOperation[]` transactions or validated whole-document commits.
+5. Generated Manim Python is deterministic output. It is never accepted as editable input.
+6. AI returns bounded data operations only; it cannot return code, bypass locks, or publish directly.
+7. Browser code never receives the owner password hash, session secret, OpenAI credential, renderer
+   bearer token, SQLite path, or renderer subprocess output.
+8. Uploaded media is content-authoritative. Client MIME/name/size claims are hints that must agree
+   with sniffed, parsed, decoded, and hashed bytes.
+9. Rendering accepts only compiler-generated source plus exact trusted project assets and a numeric
+   audio/output plan; it fails closed if policy, resource, or isolation checks cannot be established.
+10. The product has one private owner, one SQLite writer process, one render process, one running
+    render, and at most one pending render. Horizontal scale requires a different design.
 
-## Runtime flow
+## Runtime topology
 
 ```text
-Browser / -> authenticated dashboard -> /projects/[id]
+HTTPS browser
   |
-  +-- ProjectHistory.present ------------------------------+
-  |      |                                                  |
-  |      +-> CanvasStage -> previewShotAtTime -> SVG/KaTeX  |
-  |      +-> layers / inspector / shots / timeline          |
-  |      +-> canonical JSON -> CAS autosave / download      |
-  |      +-> compileManim -> diagnostics + Python download  |
-  |                                                         |
-  +-- direct edit -> SceneOperation[] -> applyOperations ---+
-  +-- projectId + revision -> authenticated Next route       |
-  |      +-> SQLite repository -> canonical document --------+
-  +-- AI request -> validated operations --------------------+
-  +-- render -> compiler -> private sidecar -> MP4
+  +-- owner login/session/CSRF
+  |
+  +-- Next.js application (one process)
+        |
+        +-- ProjectDocument V4 -> preview/history/editor
+        +-- authenticated project, asset, package, AI, and render APIs
+        +-- STRICT SQLite on a persistent local-locking volume
+        |     +-- canonical documents/checkpoints/mutation receipts
+        |     +-- content-addressed asset blobs + project-scoped references
+        |     +-- hashed sessions and login-rate state
+        |
+        +-- compiler -> generated Python + source SHA-256
+              +-- exact referenced asset bytes + numeric audio/output plan
+                    |
+                    +-- private bearer-authenticated render sidecar
+                          +-- AST/media/policy validation
+                          +-- isolated Manim process group
+                          +-- shell-free FFmpeg mux and ffprobe/decode verification
+                          +-- ephemeral MP4/still result
 ```
 
-`/proofcanvas` is a compatibility redirect to `/`, now the protected project dashboard. Selection, playhead, undo/redo history,
-unapplied proposals, critique results, and render status are transient React state. Only structured
-creative state is serialized.
+Only the web application is public. The sidecar has no public port and should have no outbound
+network route. `PROOFCANVAS_APP_ORIGIN` names the exact public HTTPS origin used for Origin and Secure
+cookie policy; proxy forwarding headers are not an authentication authority.
 
 ## Module map
 
-| Area | Files | Responsibility |
+| Area | Principal files | Responsibility |
 |---|---|---|
-| Editor | `app/ProofCanvasEditor.tsx`, `app/CanvasStage.tsx`, `app/proofcanvas.css` | Direct manipulation, layers, inspector, shots, timeline, persistence, AI review, critique, export, and render status |
-| Routes/UI | `app/page.tsx`, `app/ProjectDashboard.tsx`, `app/projects/[projectId]/`, `app/login/` | Protected dashboard, durable editor loader, and owner login |
-| Auth/storage | `lib/proofcanvas/auth.server.ts`, `database.server.ts`, `repository.server.ts`, `backup.server.ts` | Sessions, CSRF/origin checks, STRICT SQLite migrations, CAS/idempotency, checkpoints, and operations |
-| Schema | `lib/proofcanvas/schema.ts` | Versioned document, types, migration, global validation, and canonical JSON |
-| Operations/history | `lib/proofcanvas/operations.ts`, `documentOperations.ts`, `objectReferences.ts`, `history.ts` | Atomic edits, declared reference remapping, inherited locks, structural duplication, undo, and redo |
-| Preview/styles | `lib/proofcanvas/preview.ts`, `styles.ts` | Deterministic browser state and output-style grammar |
-| Components | `lib/proofcanvas/components.ts` | Exactly twelve ordered, style-derived semantic assemblies: 12 ordinary root groups and 48 editable leaves |
-| AI | `lib/proofcanvas/ai.ts`, `openaiProvider.ts` | Deterministic fallback, bounded provider context, strict output parsing, and local proposal validation |
-| Critique/compiler | `lib/proofcanvas/critique.ts`, `compiler.ts` | Deterministic diagnostics and validated Manim Python generation |
-| Next API boundary | `app/api/proofcanvas/**`, `lib/proofcanvas/renderClient.server.ts` | Bounded AI/render envelopes, server compilation, sidecar authentication, and response validation |
-| Render sidecar | `services/proofcanvas-render/` | AST policy, bounded queue, restricted Manim subprocess, MP4 validation, and streaming |
-| Evidence | `scripts/proofcanvas/`, `tests/browser/proofcanvas/`, `examples/proofcanvas/` | Deterministic artifacts, genuine rendering, browser acceptance, and retained evidence |
+| Editor shell | `app/ProofCanvasEditor.tsx`, `CanvasStage.tsx`, `ShotStoryboard.tsx`, `ShotTimeline.tsx`, `MediaTimeline.tsx` | Canvas, library, inspector, history, shots, layered timeline, playback, captions, audio, exports, render UI |
+| Media UI | `app/MediaLibrary.tsx`, `AudioPlayback.tsx`, `AudioWaveform.tsx` | Project-scoped upload, waveform, synchronized playback, audio placement |
+| Dashboard/auth pages | `app/page.tsx`, `app/login/`, `app/projects/[projectId]/` | Protected entry, durable editor loading, owner session flow |
+| API boundary | `app/api/auth/**`, `app/api/projects/**`, `app/api/proofcanvas/**` | Authentication, CSRF/Origin, framing, schema/CAS admission, render proxy |
+| Document model | `lib/proofcanvas/schema.ts`, `frame.ts`, `ids.ts` | V4 schema, deterministic migration, canonical JSON, time/output authority |
+| Operations/history | `operations.ts`, `documentOperations.ts`, `objectReferences.ts`, `history.ts` | Atomic changes, stable-reference repair, locks, duplication, undo/redo |
+| Preview/styles/components | `preview.ts`, `styles.ts`, `shapePresets.ts`, `components.ts` | Deterministic browser state, style inheritance, exact authoring assemblies |
+| Assets/packages | `assetContent.server.ts`, `projectPackage.ts`, `projectPackage.server.ts` | Sniff/decode/hash/sanitize media and canonical bounded package parsing/building |
+| Persistence | `database.server.ts`, `repository.server.ts`, `backup.server.ts` | Checksummed migrations, CAS/idempotency, blobs/references, checkpoints, backup/restore |
+| Audio/captions | `audio.ts`, `captions.ts` | Waveform and metadata helpers, SRT/VTT parsing, project-sequence SRT export |
+| AI | `ai.ts`, `openaiProvider.ts` | Deterministic fallback, strict Responses output, proposal validation |
+| Compiler/render client | `compiler.ts`, `renderClient.server.ts` | Deterministic Python, referenced-media plan, private sidecar protocol, bounded streaming |
+| Render sidecar | `services/proofcanvas-render/` | Independent source/media policy, queue/cancel, subprocess isolation, mux/verification/stills |
+| Evidence | `scripts/proofcanvas/`, `tests/browser/proofcanvas/`, `examples/proofcanvas/` | Reproducible fixtures, browser/restart journeys, genuine render, hashes, stress results |
 
-## Document and mutation boundary
+## Document, time, and output authority
 
-Schema version 4 describes metadata, aspect ratio, output styles, ordered shots, scene objects,
-groups, typed animations and property tracks, object lifetimes, portable asset metadata, audio and
-caption metadata, markers, custom easings, and camera state. The registered V1-to-V2 migration is
-deterministic; V2 remains a frozen float-time compatibility format, while the loss-aware V2-to-V3
-migration establishes one bounded 10 ns tick as the persisted and compiler time authority. It
-rewrites only documents whose positive spans, equality classes, strict ordering, containment,
-overlap/touching relations, event chronology, and frozen compiler-work admission remain lossless.
-Animation `targetIds` are a semantic set with stable first-occurrence ordering: published V1-V3
-schemas admitted repeated serialized IDs even though preview already evaluated each ID once. The
-V3-to-V4 migration removes only those redundant occurrences, then advances the version signal and
-adds five strictly described native types: ellipse, polygon, dashed line, double arrow, and
-one-contour cubic freeform path. Repeated compiler expansion was a defect, not authored meaning. Their
-normalized local coordinates use positive X right and positive Y down; compilation negates Y once.
-Every rendering field is explicit, polygon edges are simple, paths are bounded to 64 nodes, each
-line is bounded to 256 rendered dashes, and compiler-occurrence-weighted native geometry is capped
-at 4,096 points or dashes per project. The historical V1-to-V3 object vocabulary is frozen so a
-new object cannot be laundered through a falsely old version.
-Validation is global: it rejects duplicate IDs,
-missing or cyclic parents, invalid targets and timing, overlapping animation families, invalid
-style references, unsafe LaTeX or assets, unrestricted graph expressions, and values outside the
-compiler dialect. Future schema versions are rejected; registered migrations are parsed through
-the current schema before publication.
+Schema version 4 covers metadata; aspect/resolution/frame-rate/render settings; ordered shots; scene
+objects and nested groups; object lifetimes; semantic animations; property/keyframe tracks; cameras;
+styles; custom easings; assets; audio clips; captions; and markers. Validation is project-global: it
+rejects duplicate or dangling IDs, hierarchy cycles, invalid lock/reference transitions, unsupported
+timing overlaps, unsafe TeX/SVG/graph input, non-finite values, excessive fan-out, and compiler work
+above fixed budgets.
 
-Persistence migration is per document. Exact canonical V2 bytes and their SHA-256 are stored in an
-immutable archive before either a project or checkpoint is rewritten. A loss-prone current project
-is quarantined from editor, AI, render, and mutation paths and receives an authenticated no-store
-byte-exact export. A loss-prone checkpoint leaves its current project editable but cannot be
-recovered; its exact export remains addressable after parent soft deletion. Migration SQL, the
-versioned data-transform tag, archive writes, counters, and a complete integrity pass commit in one
-IMMEDIATE transaction. Invalid or noncanonical V2 data rolls the migration back rather than being
-reclassified as recoverable.
+Published V1 and V2 documents migrate deterministically through registered versions. The loss-aware
+V2-to-V3 migration quantizes persisted/compiler time to one 10 ns tick only when positive spans,
+equality classes, ordering, containment, overlap/touching, event chronology, and compiler admission
+remain lossless. Loss-prone legacy bytes are archived byte-for-byte and quarantined rather than
+silently changed. V3-to-V4 adds native geometry and canonicalizes repeated animation target IDs whose
+duplicates never represented distinct preview semantics.
 
-A separate checksummed database migration advances only canonical `ready` V3 projects and
-checkpoints to V4, stably canonicalizing target sets when needed. It leaves recovery-required V2
-bytes and immutable archive records untouched; the historical V2-to-V3 migration continues to
-publish canonical V3 bytes while preserving every exact V2 source in that archive.
+Canonical JSON recursively sorts object keys while preserving meaningful array order. Persistence,
+JSON export, package hashing, compilation, and evidence generation therefore share one serialization
+authority. Canonical project JSON is capped at 2 MiB.
 
-Canonical serialization recursively sorts object keys while preserving meaningful array order.
-This gives persistence, export, tests, and source hashing the same deterministic representation.
+Project settings bind output rather than merely labelling it. Supported aspects are 16:9, 9:16, and
+1:1; presets derive an allowed width/height pair for that aspect; and frame rate is one of 15, 24,
+30, or 60 fps. The render client includes exact width, height, fps, and a compiler-derived
+frame-aligned expected duration. The sidecar uses those values for Manim and rejects a successful
+artifact whose decoded frame count, duration, or stream metadata does not match.
 
-The broad document schema retains two legacy easing combinations so persisted V2 material can be
-opened and repaired. New add/update operations, full-document saves, structural duplication, and
-configured-provider output enforce the narrower authoring vocabulary. An unsupported legacy
-animation may remain exactly unchanged during unrelated edits, be deleted, or receive only the
-easing change that makes it render-supported; no ingress can silently create another copy.
+## Mutation, autosave, and recovery
 
-`applyOperations` clones the project, resolves stable IDs, enforces direct and inherited locks,
-applies every operation, repairs dependent references where the operation contract requires it,
-and validates the complete result. An exception publishes nothing. History stores the prior
-complete project, so a multi-operation action—including an AI proposal—undoes and redoes as one
-entry. Whole-document load, import, reset, component insertion, and shot editing use the same
-validate-before-publish rule.
+`applyOperations` clones the current project, resolves declared IDs, enforces direct and inherited
+locks, applies every operation, repairs dependent references where the operation contract permits,
+and validates the complete candidate. Any exception publishes nothing. One successful edit or AI
+proposal produces one history transaction.
 
-Semantic-component instantiation derives typography and strokes from the active style, allocates
-IDs against the complete project namespace, computes exact rotated-leaf bounds, and clamps them 24
-logical pixels inside every supported frame. The complete candidate document is schema-preflighted
-before publication. Click insertion uses the live preview camera centre; drag/drop maps the pointer
-through the inverse SVG and camera transforms. A successful insertion creates one history entry and
-selects only its ordinary root group.
+Durable writes carry the expected positive project revision and a 16–128 character mutation ID. A
+SQLite `IMMEDIATE` transaction checks the revision, records the canonical document and counters,
+increments the revision, and stores a response receipt. Reusing the mutation ID with the same action
+and request hash returns the original receipt; changing any bound request field returns an
+idempotency conflict. SQL compare-and-swap protects against another connection changing the revision
+between read and write.
 
-Structural copy operations rewrite only the declared `annotation-arrow` `properties.targetId`
-reference. Opaque `assetId`, `externalId`, and nested lookalike fields are intentionally preserved.
+The editor serializes autosaves and stops on a revision conflict instead of overwriting the server.
+A project-scoped browser snapshot exists only as an explicit recovery bridge. The user must choose to
+load it; it never wins silently over the durable repository.
 
-Groups maintain hierarchy pre-order. Reordering is sibling-only and keeps a group subtree
-contiguous. Group bounds are derived from rotated leaf-descendant geometry. Group transforms are
-baked into descendants before affected ancestor bounds are refreshed.
+Checkpoints store canonical documents with the same project metadata authority. Restore creates a
+pre-restore checkpoint and publishes the selected checkpoint in one transaction. Soft deletion hides
+the project while retaining the rows required for mutation replay, checkpoint/recovery, and integrity.
 
-## Preview and compiler
+## Authentication and HTTP trust boundary
 
-`previewShotAtTime` clamps the playhead, sorts blocks by `(start, id)`, derives object presence,
-preserves inherited visibility, and folds animation and camera effects into cloned preview state.
-The canvas then applies the active style and any temporary pointer gesture before drawing SVG.
+The installation has no signup or account enumeration. The configured owner password is stored as a
+scrypt hash. Login verification has a two-job non-queueing admission cap and a global ten-failure,
+15-minute window. Because the app does not trust client-controlled forwarding headers, source-aware
+rate limiting belongs at a trusted same-host ingress.
 
-Canvas gestures edit base poses, not sampled keyframes. After a move, scale, or transform affecting
-the selected family begins—or during an emphasis pulse—base-pose manipulation is refused. Scrub to
-the start of the block or edit the timeline instead.
+Sessions contain random token and CSRF material, are HMAC-signed, stored only as hashes in SQLite,
+expire within 12 hours, and are revoked at logout. The session cookie is `HttpOnly`,
+`SameSite=Strict`, path `/`, and Secure in production; the CSRF cookie is readable only so the browser
+can echo it in the required header. Every protected route authenticates independently. Mutating
+routes additionally require the exact configured Origin and session-bound double-submit token.
 
-The preview is intentionally approximate. Browser fonts, KaTeX, SVG paths, graph sampling, easing,
-group bounds, and camera interpolation can differ from Manim. The exported Python diagnostics and
-genuine MP4 are authoritative for rendered output.
+JSON readers enforce media type and a streaming byte limit. Binary upload/package readers reject
+content encoding, ranges, and transfer-framing, require one canonical `Content-Length`, preallocate
+only within the applicable limit, and require actual bytes to equal the declared length. Route errors
+are no-store and do not expose internal storage or renderer details.
 
-`compileManim` validates again and emits a deterministic `GeneratedScene(MovingCameraScene)`. It
-sanitizes stable variable names, maps editor coordinates to the Manim frame, emits shots as
-sections, makes time explicit, and compiles graphs from a restricted expression tree. It never
-evaluates project-supplied Python. Error diagnostics prevent render submission; warnings identify
-degraded or deployment-dependent behavior.
+## Trusted assets and lifecycle
 
-## AI trust boundary
+The content validator derives authority from bytes:
 
-`POST /api/proofcanvas/ai` authenticates before configuration or body work, then accepts bounded
-JSON containing `{projectId, revision}`, active shot, selected IDs, and instruction. It loads the
-active schema-validated document from SQLite. When both `OPENAI_API_KEY` and `PROOFCANVAS_OPENAI_MODEL` are set,
-the server uses strict Responses structured output. Provider output is converted into canonical
-operations, parsed locally, checked for unlocks and effective locks, and applied to a clone before
-the proposal is returned.
+- PNG structure, chunks, CRC, dimensions, compression geometry, and decoded-size bounds are checked.
+- JPEG marker/table/frame/scan structure is bounded, then Sharp performs a full warning-fatal pixel
+  decode in a resource-limited worker.
+- WebP RIFF/chunk/order/feature/dimension structure is bounded, then Sharp performs the same full pixel
+  decode.
+- SVG is parsed as a small local vector grammar. Scripts, styles, links, external resources, foreign
+  objects, events, unsafe URLs, and unbounded structure are rejected.
+- WAV and MP3 framing, stream metadata, duration, ancillary data, and frame counts are bounded.
+- M4A metadata exists in the compatibility schema/package vocabulary, but new `audio/mp4` content is
+  rejected until the entire preview/renderer path is reliable.
 
-The browser receives only an availability flag, never the credential. If configuration is absent,
-the UI exposes a visibly labelled deterministic interpreter with a deliberately small vocabulary.
-A configured provider error is surfaced as an error rather than silently relabelled as a successful
-fallback result.
+The validator sanitizes the filename and derives its extension, computes SHA-256, and returns a copy
+of the exact validated bytes. The repository stores one `asset_blobs` row per hash and one
+project-scoped `(project, asset ID, expected hash)` reference. Active project metadata must exactly
+match its bound blob. Two projects or IDs may share the same blob without weakening project scope.
 
-This boundary constrains operation shape and scope; it does not prove that a proposal is
-mathematically correct or aesthetically good. Applying remains an explicit user action.
+Deleting an unused asset removes it from the active document but retains its reference/content
+authority for idempotent replay and historical checkpoints. This is intentional, bounded retention;
+there is no automatic garbage-collection or retention UI in V1.
 
-## Render trust boundary
+| Asset/storage limit | Bound |
+|---|---:|
+| Active assets in one document | 256 |
+| Retained references per project | 1,024 |
+| One raster image | 32 MiB |
+| One SVG | 2 MiB |
+| One audio item / absolute item maximum | 64 MiB |
+| Decoded raster pixels | 64 million / 256 MiB RGBA |
+| Distinct retained blob bytes per project | 128 MiB |
+| Installation blobs | 4,096 |
+| Installation blob bytes | 4 GiB |
 
-The browser sends `{projectId, revision}` to authenticated same-origin Next.js routes. The server
-loads the active canonical document, rejects stale revisions, compiles it, rejects compiler errors or excessive duration/source size, hashes the generated
-Python, and forwards only `{ source, sourceSha256, quality }` to the private sidecar. The bearer
-token never reaches browser JavaScript.
+Repository reads revalidate blob bytes before serving, exporting, or rendering them. Startup
+readiness performs exact structural checks on each probe and one complete row/content pass per opened
+application connection. Backups and restores always perform the uncached full pass.
 
-The server keeps its upstream abort deadline active through bounded JSON consumption. MP4
-forwarding has a separate 60-second deadline, cancels upstream work when the browser disconnects,
-and requires the streamed byte count to equal the validated `Content-Length` without exceeding the
-256 MiB ceiling.
+## Portable `.proofcanvas` package
 
-The sidecar then:
+The package is a deliberately narrow, canonical ZIP dialect built and parsed in memory:
 
-- authenticates with constant-time token comparison;
-- checks exact request keys, sizes, source hash, and an allowlisted Python AST dialect;
-- creates a private job directory and invokes Manim with a shell-free argument vector;
-- sanitizes environment and proxy variables and applies process resource limits;
-- rejects and terminates a subprocess group if any descendant outlives its Manim leader;
-- permits one running and one pending job;
-- validates a single regular H.264 MP4, dimensions, frame rate, duration, frame count, and complete
-  decode before exposing it;
-- continuously drains subprocess output into a fixed-size tail, discards that private tail at the
-  sanitized queue boundary, and deletes completed jobs after ten minutes while retaining
-  bookkeeping for retry if filesystem deletion fails.
+```text
+mimetype
+manifest.json
+project.json
+assets/<lowercase-sha256>.<derived-extension> ... sorted by path
+```
 
-AST checking and process limits are not container isolation. A deployment must preserve the
-digest-pinned non-root image, read-only root filesystem, bounded tmpfs, dropped capabilities,
-`no-new-privileges`, memory/PID limits, and network isolation described in
-[`services/proofcanvas-render/README.md`](./services/proofcanvas-render/README.md). If the platform
-cannot enforce those controls, rendering should remain unavailable.
+Only STORE entries with canonical local/central headers, regular `0600` file attributes, zero extras
+and comments, exact contiguous offsets, CRC-32, printable ASCII safe paths, and a final 22-byte EOCD
+are accepted. Compression, data descriptors, encryption, ZIP64, multidisk archives, symlinks,
+duplicate/case-colliding names, traversal, gaps, overlaps, prefixes, and trailing bytes are rejected.
+Nothing is extracted to disk.
 
-## Capacity and persistence
+The manifest and project JSON must be canonical byte-for-byte. Project length/hash, asset ID/path/hash,
+content metadata, and the exact entry set/order are re-derived. Shared hashes use one archive entry.
+All parsing and content validation completes before the import writer transaction. Import gives the
+top-level project fresh metadata ID/timestamps, keeps all internal IDs, inserts/verifies blobs and
+references, and records the replay receipt atomically.
 
-The schema, canonical exporter, browser importer, and public render route share one 2 MiB UTF-8
-project limit. Imports are refused from file metadata before their contents are read, and schema
-validation guarantees that every valid project has an importable canonical export. Other schema
-limits bound fan-out, generic JSON nesting, hierarchy depth, content length, graph complexity, and
-numeric ranges before expensive work. Generated source is limited to 512 KiB. Selected authored
-duration and a conservative frame-rounded compiler estimate must both fit within 300 seconds.
+Limits are 132 MiB archive, 256 KiB manifest, 2 MiB project JSON, 64 MiB per asset entry, 128 MiB
+aggregate package asset bytes, 512 MiB aggregate decoded-raster admission, and at most 259 entries.
+The repository's 128 MiB per-project distinct-blob limit also applies. At peak, the input archive,
+validated copies, database binding, and one decoder may coexist; the format is bounded but not
+streaming. Deployment memory must reflect this and operators should prefer materially smaller
+packages.
 
-The renderer produces 854×480 at 15 fps for preview or 1280×720 at 30 fps for production. Output
-is capped at 310 seconds and 256 MiB; a Manim process has a 180-second timeout and 2 GiB address
-space. Its queue and job store are process-local: restarts lose jobs, and multiple Uvicorn workers
-would create independent queues.
+## Browser preview and media semantics
 
-Durable persistence is a configurable SQLite database with checksummed STRICT migrations, WAL,
-foreign keys, FULL synchronous writes, metadata-only dashboard queries, soft deletion, checkpoints,
-and online backup. Writes increment a positive revision and use compare-and-swap plus idempotent
-mutation IDs. A project-scoped `localStorage` snapshot is written only as a recovery bridge and is
-never applied automatically. A complete integrity pass validates the exact schema and migration
-manifest plus every project, checkpoint, mutation receipt, session, and rate-limit row before a
-backup is published or restored. Readiness performs the exact structural checks on every probe and
-the complete row pass once per opened application connection, avoiding an unbounded scan every 15
-seconds while supported repository writes remain validate-before-commit.
+`previewShotAtTime` produces deterministic object and camera state at a local shot time. The sequence
+player maps global time into ordered shots and uses the same timeline tick authority. Canvas camera
+composition applies centre translation, zoom, negative authored rotation, and negative camera pan;
+the compiler maps that to Manim's centred Y-up frame with one Y sign conversion.
 
-Database restore is an offline operation. Every supported writable database connection holds an
-exclusive transaction on a separate persistent `.proofcanvas-instance-lease.sqlite3` database in
-the canonical real target directory. Same-process writers share that lease only through an in-memory
-directory registry; maintenance is a distinct exclusive mode. Existing file symlinks resolve to the
-real target before lease and staging placement, and hardlinked database targets are rejected. SQLite
-releases the transaction if its owning process exits, so no PID liveness, same-PID adoption, or stale
-lock-file deletion is involved. Restore checkpoints the closed target, publishes and validates a
-byte-verified pre-restore backup, fsyncs staged files and directories, then atomically renames the
-staged database over the still-present target. This lease governs only code using ProofCanvas's
-supported database module; it is not a mandatory lock against a raw SQLite writer. Local filesystem
-locking semantics are required, raw-module bypasses are unsupported, and operators must still stop
-the application before restore.
+Audio playback derives the audible set from mute/solo, creates project-scoped authenticated asset
+URLs, applies source trim and a bounded 1/16x–16x playback rate, and follows playhead/play/pause/seek.
+Waveforms are deterministic summaries, not decoded PCM stored in the project. Audio clips, volume
+keyframes, captions, and markers remain structured timeline data.
 
-Old backups are upgraded only on a private copy. The source database bytes, inode/link target,
-mode, mtime, directory listing, and sidecars are not mutated by validation; restore publishes the
-fully migrated private copy. Ready V4 rows remain canonical and strict, while recovery archives
-retain the exact V2 source bytes. Every supported row mutation rewrites project-duration metadata
-from an integer-tick sum, including compatibility cleanup of older binary-dust counters.
+The browser and Manim do not share a rasterizer or typography engine. SVG DOM/KaTeX preview is an
+authoring approximation; source-level and selected decoded-frame parity tests qualify only their
+specified fixtures and tolerances. Native-shape evidence first compares the exact five-object base
+fixture in Chromium and Manim, then continues into a distinct ten-object manual-authoring journey;
+the latter qualifies controls, refusal states, persistence, and layout, not post-edit render parity.
 
-The dashboard returns at most the 500 newest active projects and recovery lists the 100 newest
-checkpoints; pagination and retention policy are deferred to later storage work.
-Render requests do not yet package trusted assets, so checked-in image paths require a future asset
-transfer design for remote rendering.
+## Compiler and renderer trust boundary
 
-## Current production gaps
+The public render request contains `{ projectId, revision, quality, shotId? }`. The Next.js route:
 
-- The private owner model has no sign-up, multi-user authorization, password reset, quotas, billing,
-  collaboration, or durable render jobs.
-- Login uses a process-wide two-job non-queueing scrypt admission cap and a ten-attempt global
-  15-minute window. Because ProofCanvas deliberately does not trust spoofable forwarding headers,
-  source-aware throttling must be enforced by a trusted same-host reverse proxy; the global window
-  can otherwise be abused to cause a temporary owner lockout.
-- The deterministic critic and model proposals require human mathematical and editorial judgment.
-- Accessibility automation and screenshots do not replace human assistive-technology or usability
-  testing.
-- Native-shape authoring was exercised at a 1024x1366 browser viewport with a 540x960 9:16 frame;
-  the complete portrait animation/render journey and mobile touch editing remain unqualified.
-- The exact twelve-card registry and representative component insertion and manipulation were
-  exercised at 1440×900 and 1280×800. This is partial semantic-component and browser evidence;
-  trusted image/SVG authoring and the remaining required viewports are still unqualified.
-- Arbitrary Python, Python round-tripping, sampled-pose keyframe editing, accounts, collaboration,
-  3D, and physics are out of scope. Trusted image/SVG authoring, asset transport and packages,
-  remaining animation vocabulary, and audio/caption completion remain V1 work and block a V1
-  release until their own gates pass.
+1. authenticates and checks Origin/CSRF;
+2. loads the active canonical revision and exact referenced asset bytes from the repository;
+3. selects the requested shot or complete sequence;
+4. validates render duration, media count/bytes, audio playback/keyframe dialect, and output profile;
+5. compiles deterministic Manim Python and rejects error diagnostics;
+6. hashes the UTF-8 source; and
+7. sends the private sidecar exactly
+   `{source, sourceSha256, quality, output, assets, audio}` under bearer authentication.
+
+Each asset envelope binds a content-derived path, MIME type, SHA-256, byte length, and canonical
+base64. The sidecar independently checks the envelope, hash, media structure, source AST asset
+references, and exact absence of unreferenced content before writing private `0600` files under one
+`0700` job directory.
+
+The generated-source policy allows only the compiler's imports, scene class, constant helper
+definitions, literal arguments, bounded methods, and immutable descriptor shapes. It rejects arbitrary
+imports/calls, private attributes, dynamic names, user code, filesystem APIs, control-flow expansion,
+and constructed strings. Raster crop/fit/masks use a fixed compiler helper over Pillow/NumPy;
+sanitized SVG uses `SVGMobject` only in its supported visual subset.
+
+Manim runs with `shell=False`, a fresh process group, sanitized environment/proxies, deterministic
+seeds, private HOME/TMP/XDG paths, and CPU, address-space, file-size, open-file, wall-time, log, PID,
+and artifact limits. Cancellation and timeout terminate the complete process group with bounded
+TERM/KILL escalation. A successful leader is still rejected if descendants survive.
+
+Audio muxing first probes each exact source asset, then constructs FFmpeg arguments from finite
+numeric literals only. It applies source trim, playback-rate decomposition, fades, volume/keyframe
+envelopes, and project placement without accepting filter text from the request. The final artifact
+must have one H.264 video stream, exact dimensions/fps/decoded frame count and expected duration, and,
+when audible clips exist, one AAC stream with a bounded sample count. Full video and audio decode is
+required before publication.
+
+Status returns only sanitized job metadata. Video and containing-frame still responses carry exact
+length and source/artifact hash headers and are streamed through bounded abortable Next.js proxies.
+The retained artifact verifier independently recomputes hashes for checked-in evidence.
+
+## Queue, cancellation, and restart loss
+
+The sidecar owns an in-memory queue and job store. One job runs; one waits; further submission returns
+429. Cancellation marks queued work terminal or signals the active process group. A completed job can
+produce a playhead-containing still and can be downloaded until its ten-minute TTL expires. Failed
+filesystem cleanup retains bookkeeping so cleanup can retry.
+
+Restart loses the queue, job metadata, MP4s, and still availability. The UI may resume polling a
+known job only while the same sidecar process retains it. This loss is accepted for V1 and must remain
+visible in deployment and operator documentation; no durable-render claim is permitted.
+
+## SQLite deployment and backup boundary
+
+The data directory holds `proofcanvas.sqlite3`, WAL/SHM sidecars while active, backups, and a separate
+`.proofcanvas-instance-lease.sqlite3`. Every supported writable process holds an exclusive
+transaction on that lease in the canonical real directory. Same-process connections share it only
+through an in-memory registry. The lease is not distributed and cannot stop a raw SQLite writer, so
+the database must be on a local filesystem with reliable SQLite locking and the app must run as one
+replica.
+
+Online backup uses SQLite's backup API, validates the copy completely, fsyncs staged data and
+directories, then publishes a private checksummed file. Restore is offline: it refuses an active
+supported writer, validates a private source copy (including any migration), transactionally removes
+all staged sessions and login-rate rows, revalidates and fsyncs that sanitized main file, publishes a
+verified pre-restore backup, and atomically renames the stage over the target. This prevents an older
+backup from resurrecting a revoked cookie, so every restore forces a fresh owner login. Operators
+must stop the app and every maintenance process before restore.
+
+## Production and evidence boundaries
+
+Production requires the topology in [`DEPLOYMENT.md`](./DEPLOYMENT.md): HTTPS ingress, exact Origin,
+one web replica, durable local-locking volume, private renderer network, secret injection, read-only
+containers, bounded tmpfs, non-root users, dropped capabilities, `no-new-privileges`, explicit memory
+and PID limits, and no renderer egress/public ingress. If those controls cannot be proven, leave MP4
+rendering disabled.
+
+Passing tests demonstrate the named engineering behavior only. They do not establish mathematical
+correctness of user content, accessibility conformance, human usability, subjective visual quality,
+privacy/rights clearance, live-provider quality, or hosted production reliability. Exact final
+qualification belongs in [`V1_AUDIT.md`](./V1_AUDIT.md), not in architectural assertions.

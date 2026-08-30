@@ -2,12 +2,12 @@
   "schemaVersion": 1,
   "browser": "151.0.7922.34",
   "projectId": "project-4e4154495645534841504553",
-  "projectSha256": "e6e4d9bd32031b01bbd5c559fd01a6363ed791a40560d3e7ee804b0ecb99e538",
+  "projectSha256": "7086e1e445c778a5d9b965553076d27c67fe1b4fd348e860a8c6562a51719be7",
   "screenshotSha256": "d37b6c96bae43ce701bf19b53f7da5ac3852e4e016ba77ed3283130ad8ed7614",
   "svgSha256": "4f5dfa6b35bc188d5e55f1fb2ced323ac4716faa6306a181a60af726c3df876a",
   "stagePixels": {
-    "width": 742.875,
-    "height": 416.984375
+    "width": 529.546875,
+    "height": 296.984375
   },
   "viewBox": {
     "width": 960,
@@ -26,10 +26,10 @@
         "height": 90
       },
       "screenBBox": {
-        "x": 342.46697998046875,
-        "y": 162.94415283203125,
-        "width": 131.08688354492188,
-        "height": 100.3258056640625
+        "x": 441.3212890625,
+        "y": 146.26895141601562,
+        "width": 93.36260986328125,
+        "height": 71.45399475097656
       },
       "dashCount": null
     },
@@ -44,10 +44,10 @@
         "height": 113.27999877929688
       },
       "screenBBox": {
-        "x": 505.244384765625,
-        "y": 158.95257568359375,
-        "width": 127.52685546875,
-        "height": 108.803466796875
+        "x": 557.2545166015625,
+        "y": 143.4260711669922,
+        "width": 90.8271484375,
+        "height": 77.491943359375
       },
       "dashCount": null
     },
@@ -62,10 +62,10 @@
         "height": 0
       },
       "screenBBox": {
-        "x": 673.3734741210938,
-        "y": 204.91976928710938,
-        "width": 133.360107421875,
-        "height": 16.37457275390625
+        "x": 676.9993286132812,
+        "y": 176.16481018066406,
+        "width": 94.98162841796875,
+        "height": 11.662277221679688
       },
       "dashCount": "6"
     },
@@ -80,10 +80,10 @@
         "height": 23.625
       },
       "screenBBox": {
-        "x": 857.5834350585938,
-        "y": 194.7245330810547,
-        "width": 135.59295654296875,
-        "height": 36.76506042480469
+        "x": 808.197265625,
+        "y": 168.903564453125,
+        "width": 96.5718994140625,
+        "height": 26.184783935546875
       },
       "dashCount": null
     },
@@ -98,38 +98,38 @@
         "height": 78.09309387207031
       },
       "screenBBox": {
-        "x": 564.8175659179688,
-        "y": 356.9853515625,
-        "width": 243.00335693359375,
-        "height": 76.8543701171875
+        "x": 599.6837158203125,
+        "y": 284.4688720703125,
+        "width": 173.0716552734375,
+        "height": 54.7371826171875
       },
       "dashCount": null
     }
   ],
   "authoring": {
-    "summarySha256": "a092263afc67797dcc7f542341a3edc960be96a174afe70739f6ab2eb104c23f",
+    "summarySha256": "b3cc5cf3bbbc98721187abb9bd2966c7c722d497e1cbed33f1d474d3ad2c0cd8",
     "screenshots": {
       "desktop": {
         "path": "authoring-desktop-1440x900.png",
-        "sha256": "47d132374a22a99580d171eafeeb556bdac82ad435a63be473a2b7c5c5dcb64b",
+        "sha256": "35f81569ee1e416f42de0f06d0b3d03539dbd6b6d9dd1b2ca3100f6005c4975b",
         "width": 1440,
         "height": 900
       },
       "locked": {
         "path": "authoring-locked-1440x900.png",
-        "sha256": "66671efd503e6e970acccb880e16fbb3c9359cc0c9d4002ae7e9be65d3728b5c",
+        "sha256": "3125dd8bc65ddcd65cc30db787b662da2e8a3adcca8753245db781b6e118501b",
         "width": 1440,
         "height": 900
       },
       "playback": {
         "path": "authoring-playback-1440x900.png",
-        "sha256": "e9e9727310c2ca92ef9145f186877f175504644659af78eddf24299cae314a21",
+        "sha256": "39d3c7b4b6f04591e9fbe415d41436f8f63d965b70f723341a79778c9eadf1bd",
         "width": 1440,
         "height": 900
       },
       "portrait": {
         "path": "authoring-portrait-1024x1366.png",
-        "sha256": "73e7b6154c2298c7535f31556b2f9745095cec5896701e6b761bd8fbaeeb5331",
+        "sha256": "94b8e275237cd40533cc8b2a24e9f677b4b703c97d9282bc2ed4dfbbccb63806",
         "width": 1024,
         "height": 1366
       }
